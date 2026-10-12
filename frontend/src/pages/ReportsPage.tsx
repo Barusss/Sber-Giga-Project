@@ -1,5 +1,5 @@
 import {useEffect,useState} from 'react'
-import {API,Finding,Project,request,json} from '../api/client'
+import {Finding,Project,request,json} from '../api/client'
 export function ReportsPage(){
  const [projects,setProjects]=useState<Project[]>([]),[project,setProject]=useState(''),[findings,setFindings]=useState<Finding[]>([]),[error,setError]=useState(''),[state,setState]=useState('draft')
  useEffect(()=>{request<Project[]>('/projects').then(setProjects).catch(e=>setError(e.message))},[])
