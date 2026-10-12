@@ -2,7 +2,7 @@ import enum
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from sqlalchemy import JSON, DateTime, Enum, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, DateTime, Enum, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, Boolean
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -153,3 +153,52 @@ class Finding(Base):
     evidence: Mapped[list] = mapped_column(JSON, default=list)
     review_status: Mapped[ReviewStatus] = mapped_column(Enum(ReviewStatus), default=ReviewStatus.pending)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class RequirementStatus(str, enum.Enum):
+    fulfilled = "fulfilled"
+    missing = "missing"
+    needs_review = "needs_review"
+
+
+class RequirementCategory(str, enum.Enum):
+    power = "power"
+    reliability = "reliability"
+    voltage = "voltage"
+    connection_point = "connection_point"
+    metering = "metering"
+    protection = "protection"
+    equipment = "equipment"
+    other = "other"
+
+
+class TURequirement(Base):
+    __tablename__ = "tu_requirements"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    document_id: Mapped[str] = mapped_column(ForeignKey("documents.id"), index=True)
+    clause_number: Mapped[str] = mapped_column(String(32))
+    category: Mapped[RequirementCategory] = mapped_column(Enum(RequirementCategory))
+    text: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class RequirementVerification(Base):
+    __tablename__ = "requirement_verifications"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    requirement_id: Mapped[str] = mapped_column(ForeignKey("tu_requirements.id"), index=True)
+    status: Mapped[RequirementStatus] = mapped_column(Enum(RequirementStatus))
+    confidence_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    matched_znp_clause_number: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    matched_znp_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tu_quote: Mapped[str | None] = mapped_column(Text, nullable=True)
+    znp_quote: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reasoning: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_confirmed_by_human: Mapped[bool] = mapped_column(Boolean, default=False)
+    human_override_status: Mapped[RequirementStatus | None] = mapped_column(Enum(RequirementStatus), nullable=True)
+    human_comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
