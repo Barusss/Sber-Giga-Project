@@ -1,0 +1,9 @@
+import {useEffect,useState} from 'react'
+import {Normative,json,request} from '../api/client'
+export function NormativesPage(){
+ const [items,setItems]=useState<Normative[]>([]),[code,setCode]=useState(''),[title,setTitle]=useState(''),[status,setStatus]=useState('active'),[replacement,setReplacement]=useState(''),[error,setError]=useState('')
+ const reload=()=>request<Normative[]>('/normatives').then(setItems).catch(e=>setError(e.message))
+ useEffect(()=>{reload()},[])
+ async function create(e:React.FormEvent){e.preventDefault();try{await request('/normatives',json('POST',{code,title,status,replacement:replacement||null}));setCode('');setTitle('');setReplacement('');reload()}catch(e){setError(String(e))}}
+ return <><h1>Проверка ГОСТ и НТД</h1><p className="muted">Участник №2. Реестр работает; извлечение нормативов и проверка ссылок — следующий этап.</p><form onSubmit={create} className="panel stack"><h2>Добавить норматив</h2><input value={code} onChange={e=>setCode(e.target.value)} placeholder="Обозначение" required/><input value={title} onChange={e=>setTitle(e.target.value)} placeholder="Название" required/><select value={status} onChange={e=>setStatus(e.target.value)}><option value="active">Действует</option><option value="obsolete">Устарел</option><option value="unknown">Неизвестно</option></select><input value={replacement} onChange={e=>setReplacement(e.target.value)} placeholder="Замена (необязательно)"/><button>Добавить</button></form>{error&&<p className="error">{error}</p>}<section className="panel"><h2>Локальный реестр</h2><table><thead><tr><th>Норматив</th><th>Название</th><th>Статус</th><th>Замена</th></tr></thead><tbody>{items.map(i=><tr key={i.id}><td>{i.code}</td><td>{i.title}</td><td>{i.status}</td><td>{i.replacement??'—'}</td></tr>)}</tbody></table>{!items.length&&<p className="muted">Реестр пока пуст.</p>}</section></>
+}
