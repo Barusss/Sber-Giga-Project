@@ -28,3 +28,33 @@ jobs:
           node-version: '22'
       - run: npm install
       - run: npm run build
+  postgres-integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: sber
+          POSTGRES_PASSWORD: sber
+          POSTGRES_DB: sber
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U sber -d sber"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 15
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      DATABASE_URL: postgresql+psycopg://sber:sber@localhost:5432/sber
+      TEST_POSTGRES_URL: postgresql+psycopg://sber:sber@localhost:5432/sber
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - run: alembic upgrade head
+      - run: pytest tests/test_pg_integration.py -q
