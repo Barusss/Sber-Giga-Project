@@ -5,9 +5,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.db import get_db
-from app.core.models import Document, DocumentKind, Fragment, Project, ReviewState
+from app.core.models import Chunk, ChunkSource, Document, DocumentKind, Fragment, Project, ReviewState
 from app.core.schemas import DocumentOut, FragmentOut, ProjectCreate, ProjectOut
-from app.documents.parser import extract_pages
+from app.documents.parser import extract_blocks
+from app.documents.chunking import build_chunks, CHUNKING_VERSION
 
 router = APIRouter(tags=["documents"])
 
@@ -48,7 +49,7 @@ async def upload_document(project_id: str, kind: DocumentKind = Form(...), file:
     if not data:
         raise HTTPException(422, "Empty file")
     try:
-        pages = extract_pages(data, suffix)
+        blocks = extract_blocks(data, suffix)
     except Exception as exc:
         raise HTTPException(422, "Cannot parse this document") from exc
     target = settings.upload_dir / f"{uuid4().hex}{suffix}"
@@ -57,8 +58,21 @@ async def upload_document(project_id: str, kind: DocumentKind = Form(...), file:
     document = Document(project_id=project_id, kind=kind, filename=Path(file.filename or "document").name[:255], stored_path=str(target), mime_type=file.content_type or "application/octet-stream")
     db.add(document)
     db.flush()
-    for pos, content in enumerate(pages, start=1):
-        db.add(Fragment(document_id=document.id, page=pos, position=0, text=content))
+    fragments = []
+    for block in blocks:
+        fragment = Fragment(document_id=document.id, **vars(block))
+        db.add(fragment)
+        fragments.append(fragment)
+    db.flush()
+    for position, draft in enumerate(build_chunks(fragments)):
+        chunk = Chunk(document_id=document.id, position=position, text=draft.text,
+                      page_start=draft.page_start, page_end=draft.page_end,
+                      section_path=draft.section_path, chunking_version=CHUNKING_VERSION)
+        db.add(chunk)
+        db.flush()
+        for source_position, piece in enumerate(draft.pieces):
+            db.add(ChunkSource(chunk_id=chunk.id, fragment_id=piece.fragment.id,
+                               position=source_position, start_offset=piece.start, end_offset=piece.end))
     db.commit()
     db.refresh(document)
     return document
