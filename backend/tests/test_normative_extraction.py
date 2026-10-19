@@ -46,7 +46,7 @@ def test_extract_multiple_pages_and_idempotency(client, monkeypatch):
     assert set(values) == {"ГОСТ 29322-92", "ГОСТ 30804.4.30-2013", "СП 256.1325800.2016"}
     assert {e["page"] for e in values["ГОСТ 29322-92"]["evidence"]} == {5, 6}
     assert all(f["review_status"] == "pending" for f in data["facts"])
-    assert all(f["extraction_version"] == "deepseek-normative-v1" for f in data["facts"])
+    assert all(f["extraction_version"] == "deepseek-normative-v2" for f in data["facts"])
     assert len(client.get(f"/api/v1/documents/{doc_id}/facts?fact_type=normative_reference").json()) == 3
     rerun = client.post(url)
     assert rerun.status_code == 200, rerun.text
