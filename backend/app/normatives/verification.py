@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.models import (
-    Document, Fact, FactEvidence, Finding, Normative, ReviewStatus,
+    Document, Fact, FactEvidence, Finding, Normative, NormativeVerification, ReviewStatus, now,
 )
 from app.normatives.extraction import normalize_code
 from app.normatives.registry import RegistryResult, RosstandartClient
@@ -77,6 +77,11 @@ def check_document_standards(
     cache = {
         normalize_code(row.code): row for row in db.scalars(select(Normative)).all()
     }
+    snapshots = {
+        row.code: row for row in db.scalars(
+            select(NormativeVerification).where(NormativeVerification.document_id == document.id)
+        ).all()
+    }
     existing_findings = db.scalars(
         select(Finding).where(
             Finding.project_id == document.project_id,
@@ -119,7 +124,25 @@ def check_document_standards(
             title=status.title, source_url=status.source_url,
             checked_at=status.checked_at, pages=pages, reason=status.reason,
         ))
-        if status.status == "unknown" or not status.source_url:
+        # Always persist the last attempt, including unknown results. Never display
+        # a previous successful lookup as if the most recent attempt succeeded.
+        confirmed = status.status in {"active", "obsolete"} and bool(status.source_url)
+        snapshot = snapshots.get(code)
+        if snapshot is None:
+            snapshot = NormativeVerification(document_id=document.id, code=code)
+            db.add(snapshot)
+            snapshots[code] = snapshot
+        snapshot.reference_kind = role
+        snapshot.status = status.status if confirmed else "unknown"
+        snapshot.registry_status = status.registry_status if confirmed else None
+        snapshot.title = status.title if confirmed else None
+        snapshot.replacement = status.replacement if confirmed else None
+        snapshot.source_url = status.source_url if confirmed else None
+        snapshot.checked_at = status.checked_at if confirmed else None
+        snapshot.attempted_at = now()
+        snapshot.reason = status.reason if not confirmed else None
+
+        if not confirmed:
             continue
 
         # Local registry contains only the most recent verified snapshot.
