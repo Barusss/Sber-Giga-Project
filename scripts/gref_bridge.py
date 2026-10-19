@@ -1,63 +1,78 @@
 #!/usr/bin/env python3
-"""GitHub Actions -> GREF INDEX. HTTP writes are performed only from CI."""
+"""GitHub Actions -> GREF INDEX. Execute commands via authenticated SSH."""
 
 import argparse
 import hashlib
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
-from urllib.error import HTTPError, URLError
-from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-SITE_URL = "https://ttvvgg5r.beget.tech/api.php"
 COMMANDS_PATH = Path(".gref/commands")
 
 
-class NoRedirects(HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        return None
-
-
-http = build_opener(NoRedirects())
+def ssh_options():
+    host = os.environ.get("GREF_SSH_HOST", "")
+    user = os.environ.get("GREF_SSH_USER", "")
+    port = os.environ.get("GREF_SSH_PORT", "22") or "22"
+    script = os.environ.get("GREF_SSH_SCRIPT_PATH", "")
+    key = Path.home() / ".ssh" / "gref_actions"
+    known_hosts = Path.home() / ".ssh" / "known_hosts"
+    if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9.-]{0,253}", host):
+        raise RuntimeError("Set valid GREF_SSH_HOST")
+    if not re.fullmatch(r"[a-zA-Z_][a-zA-Z0-9_-]{0,31}", user):
+        raise RuntimeError("Set valid GREF_SSH_USER")
+    if not port.isdigit() or not 1 <= int(port) <= 65535:
+        raise RuntimeError("Invalid SSH port")
+    if (not script or not script.endswith("/private/gref_cli.php")
+            or ".." in Path(script).parts):
+        raise RuntimeError("Set GREF_SSH_SCRIPT_PATH to actual private/gref_cli.php path")
+    if not key.is_file() or not known_hosts.is_file():
+        raise RuntimeError("Missing SSH key or trusted host fingerprint")
+    return host, user, port, script, key, known_hosts
 
 
 def api_call(action: str, payload=None) -> dict:
-    url = SITE_URL + "?action=" + action
+    host, user, port, script, key, known_hosts = ssh_options()
+    remote = "php " + shlex.quote(script)
+    if payload is None:
+        remote += " --check"
+    request = [
+        "ssh", "-T", "-p", port, "-i", str(key),
+        "-o", "BatchMode=yes",
+        "-o", "IdentitiesOnly=yes",
+        "-o", "StrictHostKeyChecking=yes",
+        "-o", "UserKnownHostsFile=" + str(known_hosts),
+        "-o", "ConnectTimeout=20",
+        user + "@" + host, remote
+    ]
     data = None
-    headers = {"Accept": "application/json"}
     if payload is not None:
-        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        headers["Content-Type"] = "application/json; charset=utf-8"
-        headers["X-API-Key"] = os.environ["GREF_API_KEY"]
-    request = Request(url, data=data, headers=headers, method="POST" if data is not None else "GET")
+        data = json.dumps({"action": action, **payload}, ensure_ascii=False).encode("utf-8")
+    completed = subprocess.run(
+        request, input=data, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        timeout=55, check=False
+    )
+    if completed.returncode != 0:
+        detail = completed.stderr.decode("utf-8", errors="replace").strip()
+        raise RuntimeError("SSH/PHP failed: " + detail[:500])
     try:
-        with http.open(request, timeout=20) as response:
-            content = response.read(20000).decode("utf-8")
-            if response.status != 200:
-                raise RuntimeError("GREF API: HTTP " + str(response.status))
-    except HTTPError as exc:
-        raise RuntimeError(f"GREF API returned HTTP {exc.code} ({action})") from None
-    except URLError as exc:
-        raise RuntimeError(f"Cannot connect to GREF INDEX over HTTPS: {exc.reason}") from None
-    try:
-        result = json.loads(content)
-    except json.JSONDecodeError:
-        raise RuntimeError("GREF API returned non-JSON response") from None
-    if not isinstance(result, dict) or result.get("ok") is not True:
-        raise RuntimeError("GREF API rejected request: " + str(result.get("error", "unknown error")))
-    return result
+        answer = json.loads(completed.stdout.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        raise RuntimeError("SSH/PHP did not return JSON") from None
+    if not isinstance(answer, dict) or answer.get("ok") is not True:
+        raise RuntimeError("GREF CLI rejected the operation")
+    return answer
 
 
 def check_connection():
-    if not os.environ.get("GREF_API_KEY"):
-        raise RuntimeError("Missing GitHub Actions secret GREF_API_KEY")
-    state = api_call("state")
-    if not isinstance(state.get("capabilities"), dict) or not state["capabilities"].get("requestId"):
-        raise RuntimeError("Old api.php on Beget: upload updated api.php before running commands")
-    print("GREF INDEX: HTTPS OK, API version supports safe retries.")
+    check = api_call("check")
+    if check.get("mode") != "check":
+        raise RuntimeError("Beget is missing the updated gref_cli.php")
+    print("GREF INDEX: SSH, PHP and MySQL connection OK.")
 
 
 def check_command(path: Path) -> tuple[str, dict]:
