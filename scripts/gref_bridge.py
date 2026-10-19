@@ -51,12 +51,7 @@ def api_call(action: str, payload=None) -> dict:
     ]
     data = None
     if payload is not None:
-        if action == "task":
-            task_fields = payload["task"]
-            command = {"action": action, **task_fields, "requestId": payload["requestId"]}
-        else:
-            command = {"action": action, **payload}
-        data = json.dumps(command, ensure_ascii=False).encode("utf-8")
+        data = json.dumps({"action": action, **payload}, ensure_ascii=False).encode("utf-8")
     completed = subprocess.run(
         request, input=data, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         timeout=55, check=False
