@@ -52,6 +52,7 @@ class NormativeReport(BaseModel):
     project_id: str
     project_name: str
     project_state: str
+    selected_document_id: str | None = None
     generated_at: datetime
     total: int
     requires_attention: int
@@ -61,15 +62,16 @@ class NormativeReport(BaseModel):
     items: list[NormativeReportItem]
 
 
-def build_normative_report(db: Session, project: Project) -> NormativeReport:
-    documents = db.scalars(
-        select(Document).where(Document.project_id == project.id).order_by(Document.created_at, Document.id)
-    ).all()
+def build_normative_report(db: Session, project: Project, document_id: str | None = None) -> NormativeReport:
+    query = select(Document).where(Document.project_id == project.id)
+    if document_id is not None:
+        query = query.where(Document.id == document_id)
+    documents = db.scalars(query.order_by(Document.created_at, Document.id)).all()
     doc_by_id = {doc.id: doc for doc in documents}
     doc_ids = list(doc_by_id)
     if not doc_ids:
         return NormativeReport(
-            project_id=project.id, project_name=project.name, project_state=project.state.value,
+            project_id=project.id, project_name=project.name, project_state=project.state.value, selected_document_id=document_id,
             generated_at=datetime.now(timezone.utc), total=0,
             requires_attention=0, informative=0, unverified=0, active=0, items=[],
         )
@@ -152,7 +154,7 @@ def build_normative_report(db: Session, project: Project) -> NormativeReport:
         ))
 
     return NormativeReport(
-        project_id=project.id, project_name=project.name, project_state=project.state.value,
+        project_id=project.id, project_name=project.name, project_state=project.state.value, selected_document_id=document_id,
         generated_at=datetime.now(timezone.utc), total=len(items),
         requires_attention=sum(item.section == "requires_attention" for item in items),
         informative=sum(item.section == "informative" for item in items),

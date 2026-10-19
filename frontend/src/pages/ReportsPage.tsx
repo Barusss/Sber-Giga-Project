@@ -1,6 +1,6 @@
 import {useEffect,useState} from 'react'
 import {useSearchParams} from 'react-router-dom'
-import {Finding,Project,request,json} from '../api/client'
+import {Document,Finding,Project,request,json} from '../api/client'
 
 type Quote={fragment_id:string;page:number;quote:string}
 type Review={id:string;review_status:'pending'|'accepted'|'rejected';severity:string;explanation:string;suggested_action:string|null}
@@ -14,6 +14,7 @@ type Standard={
 }
 type NormativeReport={
  project_id:string;project_name:string;project_state:string
+ selected_document_id:string|null
  generated_at:string;total:number;requires_attention:number;informative:number
  unverified:number;active:number;items:Standard[]
 }
@@ -39,9 +40,14 @@ const groups=[
 ] as const
 
 export function ReportsPage(){
- const [searchParams]=useSearchParams()
+ const [searchParams,setSearchParams]=useSearchParams()
  const [projects,setProjects]=useState<Project[]>([])
  const [project,setProject]=useState(searchParams.get('project_id')||'')
+ const [documentSelection,setDocumentSelection]=useState(searchParams.get('document_id')||'latest')
+ const [documents,setDocuments]=useState<Document[]>([])
+ const [activeDocumentId,setActiveDocumentId]=useState<string|null>(null)
+ const [loading,setLoading]=useState(false)
+ const [refreshKey,setRefreshKey]=useState(0)
  const [findings,setFindings]=useState<Finding[]>([])
  const [report,setReport]=useState<NormativeReport|null>(null)
  const [error,setError]=useState('')
@@ -52,29 +58,61 @@ export function ReportsPage(){
   request<Project[]>('/projects').then(setProjects).catch(e=>setError(String(e)))
  },[])
 
- async function reload(id:string){
-  if(!id)return
-  try{
-   setError('')
-   const [nextFindings,nextReport,nextProject]=await Promise.all([
-    request<Finding[]>(`/projects/${encodeURIComponent(id)}/findings`),
-    request<NormativeReport>(`/projects/${encodeURIComponent(id)}/normative-report`),
-    request<Project>(`/projects/${encodeURIComponent(id)}`)
-   ])
-   setFindings(nextFindings);setReport(nextReport);setState(nextProject.state)
-  }catch(e){setError(String(e))}
+ function changeProject(id:string){
+  setProject(id)
+  setDocumentSelection('latest')
+  setSearchParams(id?{project_id:id,document_id:'latest'}:{})
  }
+ function changeDocument(value:string){
+  setDocumentSelection(value)
+  if(project)setSearchParams({project_id:project,document_id:value})
+ }
+ function reload(){setRefreshKey(value=>value+1)}
+
  useEffect(()=>{
-  if(project){setReport(null);setFindings([]);reload(project)}
-  else{setReport(null);setFindings([])}
- },[project])
+  if(!project){
+   setReport(null);setFindings([]);setDocuments([]);setActiveDocumentId(null)
+   return
+  }
+  let cancelled=false
+  async function load(){
+   setLoading(true);setError('');setReport(null)
+   try{
+    const path=`/projects/${encodeURIComponent(project)}`
+    const [nextFindings,nextProject,nextDocuments]=await Promise.all([
+     request<Finding[]>(`${path}/findings`),
+     request<Project>(path),
+     request<Document[]>(`${path}/documents`),
+    ])
+    const sorted=[...nextDocuments].sort((a,b)=>
+     new Date(b.created_at).getTime()-new Date(a.created_at).getTime()||
+     b.id.localeCompare(a.id)
+    )
+    let selectedId:string|null=null
+    if(documentSelection==='latest')selectedId=sorted[0]?.id||null
+    else if(documentSelection!=='all'){
+     if(!sorted.some(item=>item.id===documentSelection))throw new Error('Документ не принадлежит выбранному проекту')
+     selectedId=documentSelection
+    }
+    const url=`${path}/normative-report${selectedId?`?document_id=${encodeURIComponent(selectedId)}`:''}`
+    const nextReport=await request<NormativeReport>(url)
+    if(cancelled)return
+    setDocuments(sorted);setFindings(nextFindings);setState(nextProject.state)
+    setActiveDocumentId(selectedId);setReport(nextReport)
+   }catch(e){
+    if(!cancelled){setError(String(e));setReport(null);setActiveDocumentId(null)}
+   }finally{if(!cancelled)setLoading(false)}
+  }
+  load()
+  return ()=>{cancelled=true}
+ },[project,documentSelection,refreshKey])
 
  async function review(item:Review,value:'accepted'|'rejected'){
   if(!project||busy)return
   setBusy(true)
   try{
    await request(`/findings/${item.id}/review`,json('PATCH',{review_status:value}))
-   await reload(project)
+   reload()
   }catch(e){setError(String(e))}
   finally{setBusy(false)}
  }
@@ -83,22 +121,34 @@ export function ReportsPage(){
   setBusy(true)
   try{
    await request(`/projects/${project}/approve`,{method:'POST'})
-   await reload(project)
+   reload()
   }catch(e){setError(String(e))}
   finally{setBusy(false)}
  }
- async function download(){
+ function saveJson(payload:unknown,filename:string){
+  const url=URL.createObjectURL(new Blob([JSON.stringify(payload,null,2)],{type:'application/json'}))
+  const a=document.createElement('a')
+  a.href=url;a.download=filename;a.click();URL.revokeObjectURL(url)
+ }
+ function downloadExpert(){
+  if(!report||loading)return
+  saveJson(report,`expert-normatives-${project}-${report.selected_document_id||'all'}.json`)
+ }
+ async function downloadTechnical(){
   if(!project)return
   try{
-   const data=await request(`/projects/${project}/report`)
-   const payload={normative_report:report,other_findings:data}
-   const url=URL.createObjectURL(new Blob([JSON.stringify(payload,null,2)],{type:'application/json'}))
-   const a=document.createElement('a');a.href=url;a.download=`expert-report-${project}.json`;a.click()
-   URL.revokeObjectURL(url)
+   const data=await request(`/projects/${encodeURIComponent(project)}/report`)
+   saveJson(data,`technical-findings-${project}-all.json`)
   }catch(e){setError(String(e))}
  }
-
- const otherFindings=findings.filter(f=>!(f.module==='normatives'&&f.type==='obsolete_normative'))
+ const selectionLabel=activeDocumentId?
+  `${documents.find(d=>d.id===activeDocumentId)?.filename||'Документ'} · ${activeDocumentId.slice(0,8)}…`:
+  'Весь проект'
+ 
+ const otherFindings=findings.filter(f=>
+  !(f.module==='normatives'&&f.type==='obsolete_normative')&&
+  (!activeDocumentId||f.evidence.some(e=>e.document_id===activeDocumentId))
+ )
  const pending=findings.some(f=>f.review_status==='pending')
  return <div className="expert-report">
   <header className="report-header">
@@ -107,27 +157,43 @@ export function ReportsPage(){
   </header>
   <section className="panel stack no-print">
    <label>Проект
-    <select value={project} onChange={e=>setProject(e.target.value)}>
+    <select value={project} onChange={e=>changeProject(e.target.value)}>
      <option value="">Выберите проект</option>
      {projects.map(item=><option key={item.id} value={item.id}>{item.name}</option>)}
     </select>
    </label>
-   {project&&<div className="horizontal">
-    <span>Статус проекта: <b>{state==='approved'?'Утверждён':'В работе'}</b></span>
-    <button className="secondary" onClick={()=>reload(project)}>Обновить отчёт</button>
-    <button className="secondary" onClick={download} disabled={!report}>Скачать JSON</button>
-    <button className="secondary" onClick={()=>window.print()} disabled={!report}>Печать / Сохранить PDF</button>
-    <button onClick={approve} disabled={busy||state==='approved'||pending||!report}>Утвердить отчёт</button>
-   </div>}
+   {project&&<>
+    <label>Отображаемые документы
+     <select value={documentSelection} onChange={e=>changeDocument(e.target.value)} disabled={loading}>
+      <option value="latest">Последняя загрузка</option>
+      <option value="all">Весь проект ({documents.length} документов)</option>
+      {documents.map(d=><option key={d.id} value={d.id}>
+       {d.filename} · {date(d.created_at)} · {d.id.slice(0,8)}…
+      </option>)}
+     </select>
+    </label>
+    <p className="muted">Выбранный документ определяет статистику, печатный отчёт и экспертный JSON. Все загрузки остаются в проекте.</p>
+    <div className="horizontal">
+     <span>Статус проекта: <b>{state==='approved'?'Утверждён':'В работе'}</b></span>
+     <button className="secondary" onClick={reload} disabled={loading}>Обновить отчёт</button>
+     <button className="secondary" onClick={downloadExpert} disabled={!report||loading}>Экспертный JSON (выбор)</button>
+     <button className="secondary" onClick={downloadTechnical} disabled={loading}>Технический JSON (весь проект)</button>
+     <button className="secondary" onClick={()=>window.print()} disabled={!report||loading}>Печать / Сохранить PDF</button>
+     <button onClick={approve} disabled={busy||loading||state==='approved'||pending||!report}>Утвердить проект</button>
+    </div>
+    {pending&&<p className="muted">Утверждение возможно только после рассмотрения всех замечаний проекта, даже если в отчёте выбран один документ.</p>}
+   </>}
   </section>
   {error&&<p className="error no-print">{error}</p>}
+  {loading&&<p className="muted no-print">Загружаем отчёт…</p>}
   {report&&<>
    <section className="report-cover panel">
     <p className="report-overline">Результаты проверки нормативных ссылок</p>
     <h2>{report.project_name}</h2>
+    <p><b>Область отчёта:</b> {selectionLabel}</p>
     <p className="muted">Сводка сформирована {date(report.generated_at)}. Даты конкретных проверок указаны у стандартов.</p>
     <div className="report-metrics">
-     <div><strong>{report.total}</strong><span>Упоминаний стандартов</span></div>
+     <div><strong>{report.total}</strong><span>Обозначений в выбранных документах</span></div>
      <div><strong>{report.requires_attention}</strong><span>Требуют внимания</span></div>
      <div><strong>{report.informative}</strong><span>Справочные замечания</span></div>
      <div><strong>{report.unverified}</strong><span>Не подтверждены</span></div>
