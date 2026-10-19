@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from app.core.db import get_db
 from app.core.models import Normative, Document, Project, ReviewState
 from app.normatives.extraction import ExtractionResult, extract_normative_facts
+from app.normatives.verification import VerificationReport, check_document_standards
 from app.core.schemas import NormativeCreate, NormativeOut
 
 router = APIRouter(prefix="/normatives", tags=["normatives"])
@@ -43,3 +44,14 @@ def extract_facts(document_id: str, db: Session = Depends(get_db)):
     if db.get(Project, document.project_id).state == ReviewState.approved:
         raise HTTPException(409, "Approved project cannot be modified")
     return extract_normative_facts(db, document)
+
+
+@extraction_router.post("/documents/{document_id}/check-normatives", response_model=VerificationReport)
+def check_normatives(document_id: str, db: Session = Depends(get_db)):
+    """Check extracted standards against current official Rosstandart cards."""
+    document = db.get(Document, document_id)
+    if document is None:
+        raise HTTPException(404, "Document not found")
+    if db.get(Project, document.project_id).state == ReviewState.approved:
+        raise HTTPException(409, "Approved project cannot be modified")
+    return check_document_standards(db, document)
