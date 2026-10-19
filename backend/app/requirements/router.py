@@ -26,6 +26,7 @@ from app.core.models import (
     TURequirement as DBTURequirement,
 )
 from app.requirements.agent import RequirementsAgent
+from app.requirements.extraction import Clause, extract_clauses, is_service_clause
 from app.requirements.schemas import (
     AnalyzeProjectRequirementsRequest,
     CheckRequirementsRequest,
@@ -162,34 +163,60 @@ def confirm_requirement(
     return verification
 
 
-def _extract_clauses_from_doc(
-    db: Session, doc: Document,
-) -> list[tuple[str, str, int, str | None]]:
-    """Extract (clause_number, text, page, fragment_id) from chunks or fragments."""
+def _extract_clauses_from_doc(db: Session, doc: Document) -> list[Clause]:
+    """Extract atomic clauses from fragments; chunks are only a legacy fallback."""
+    fragments = db.scalars(
+        select(Fragment)
+        .where(Fragment.document_id == doc.id)
+        .order_by(Fragment.page, Fragment.position)
+    ).all()
+    if fragments:
+        return extract_clauses(fragments)
+
     chunks = db.scalars(
         select(Chunk)
         .where(Chunk.document_id == doc.id)
         .order_by(Chunk.position)
         .options(selectinload(Chunk.sources))
     ).all()
-    if chunks:
-        result = []
-        for idx, chunk in enumerate(chunks, start=1):
-            fragment_id = chunk.sources[0].fragment_id if chunk.sources else None
-            clause_num = chunk.section_path or f"п. {idx}"
-            result.append((clause_num[:32], chunk.text, chunk.page_start, fragment_id))
-        return result
+    clauses: list[Clause] = []
+    for idx, chunk in enumerate(chunks, start=1):
+        fragment_id = chunk.sources[0].fragment_id if chunk.sources else None
+        clause_number = (chunk.section_path or f"п. {idx}")[:32]
+        clauses.append(
+            Clause(
+                clause_number=clause_number,
+                text=chunk.text,
+                page=chunk.page_start,
+                fragment_id=fragment_id,
+                fragment_ids=[fragment_id] if fragment_id else [],
+                section_path=chunk.section_path,
+                fragment_text=chunk.text,
+            )
+        )
+    return clauses
 
-    fragments = db.scalars(
-        select(Fragment)
-        .where(Fragment.document_id == doc.id)
-        .order_by(Fragment.page, Fragment.position)
-    ).all()
-    return [
-        ((fragment.section_path or f"п. {idx}")[:32], fragment.text, fragment.page, fragment.id)
-        for idx, fragment in enumerate(fragments, start=1)
-        if fragment.text and fragment.text.strip()
-    ]
+
+def _attach_provenance(
+    items: list[RequirementCheckItem],
+    tu_requirements: list[TURequirement],
+    znp_clauses: list[ZNPClause],
+) -> None:
+    """Copy fragment provenance from source clauses into check items."""
+    tu_by_id = {requirement.id: requirement for requirement in tu_requirements}
+    znp_by_id = {clause.id: clause for clause in znp_clauses}
+    for item in items:
+        tu_clause = tu_by_id.get(item.requirement.id)
+        if tu_clause is not None:
+            item.tu_fragment_id = tu_clause.fragment_id
+            item.tu_page = tu_clause.page
+            item.tu_fragment_text = tu_clause.fragment_text
+        if item.matched_clause is not None:
+            znp_clause = znp_by_id.get(item.matched_clause.id)
+            if znp_clause is not None:
+                item.znp_fragment_id = znp_clause.fragment_id
+                item.znp_page = znp_clause.page
+                item.znp_fragment_text = znp_clause.fragment_text
 
 
 @router.post("/analyze", response_model=CheckRequirementsResponse)
@@ -201,12 +228,18 @@ def analyze_requirements(
 
     Two scenarios are supported:
     - explicit lists of TU requirements and ZnP clauses (tests, benchmarks);
-    - a stored project with TU and ZnP documents (chunks are extracted from DB).
+    - a stored project with TU and ZnP documents (atomic clauses from fragments).
     """
     agent = RequirementsAgent()
 
     if isinstance(payload, CheckRequirementsRequest):
-        return agent.verify_all(payload.tu_requirements, payload.znp_clauses)
+        response = agent.verify_all(payload.tu_requirements, payload.znp_clauses)
+        _attach_provenance(
+            response.checked_requirements,
+            payload.tu_requirements,
+            payload.znp_clauses,
+        )
+        return response
 
     project_id = payload.project_id
     project = get_project(db, project_id, edit=True)
@@ -231,7 +264,11 @@ def analyze_requirements(
     if not tu_doc or not znp_doc:
         raise HTTPException(422, "Project must contain both TU (tu) and ZNP (znp) documents")
 
-    tu_raw = _extract_clauses_from_doc(db, tu_doc)
+    tu_raw = [
+        clause
+        for clause in _extract_clauses_from_doc(db, tu_doc)
+        if not is_service_clause(clause.text)
+    ]
     znp_raw = _extract_clauses_from_doc(db, znp_doc)
 
     # Re-running the analysis replaces previous automatic results only.
@@ -253,36 +290,47 @@ def analyze_requirements(
     db.flush()
 
     tu_schemas: list[TURequirement] = []
-    tu_meta: dict[str, tuple[int, str | None]] = {}
-    for clause_num, text_value, page, fragment_id in tu_raw:
-        category = classify_requirement_category(text_value)
+    for clause in tu_raw:
+        category = classify_requirement_category(clause.text)
         db_requirement = DBTURequirement(
             project_id=project_id,
             document_id=tu_doc.id,
-            clause_number=clause_num,
+            clause_number=clause.clause_number,
             category=DBRequirementCategory(category.value),
-            text=text_value,
+            text=clause.text,
+            fragment_id=clause.fragment_id,
+            page=clause.page,
         )
         db.add(db_requirement)
         db.flush()
         tu_schemas.append(
             TURequirement(
                 id=db_requirement.id,
-                clause_number=clause_num,
+                clause_number=clause.clause_number,
                 category=category,
-                text=text_value,
+                text=clause.text,
+                fragment_id=clause.fragment_id,
+                page=clause.page,
+                fragment_text=clause.fragment_text,
             )
         )
-        tu_meta[db_requirement.id] = (page, fragment_id)
 
     znp_schemas: list[ZNPClause] = []
-    znp_meta: dict[str, tuple[int, str | None]] = {}
-    for idx, (clause_num, text_value, page, fragment_id) in enumerate(znp_raw, start=1):
+    for idx, clause in enumerate(znp_raw, start=1):
         clause_id = f"znp-{idx}"
-        znp_schemas.append(ZNPClause(id=clause_id, clause_number=clause_num, text=text_value))
-        znp_meta[clause_id] = (page, fragment_id)
+        znp_schemas.append(
+            ZNPClause(
+                id=clause_id,
+                clause_number=clause.clause_number,
+                text=clause.text,
+                fragment_id=clause.fragment_id,
+                page=clause.page,
+                fragment_text=clause.fragment_text,
+            )
+        )
 
     response = agent.verify_all(tu_schemas, znp_schemas)
+    _attach_provenance(response.checked_requirements, tu_schemas, znp_schemas)
 
     for item in response.checked_requirements:
         db.add(
@@ -296,6 +344,8 @@ def analyze_requirements(
                     item.matched_clause.clause_number if item.matched_clause else None
                 ),
                 matched_znp_text=item.matched_clause.text if item.matched_clause else None,
+                matched_znp_fragment_id=item.znp_fragment_id,
+                matched_znp_page=item.znp_page,
                 tu_quote=item.tu_quote,
                 znp_quote=item.znp_quote,
                 reasoning=item.reasoning,
@@ -304,21 +354,19 @@ def analyze_requirements(
         )
 
         if item.status in (RequirementStatus.missing, RequirementStatus.needs_review):
-            tu_page, tu_fragment_id = tu_meta.get(item.requirement.id, (1, None))
             evidence_list = [
                 {
                     "document_id": tu_doc.id,
-                    "fragment_id": tu_fragment_id,
-                    "page": tu_page,
+                    "fragment_id": item.tu_fragment_id,
+                    "page": item.tu_page if item.tu_page is not None else 1,
                     "quote": item.tu_quote or item.requirement.text[:200],
                 }
             ]
             if item.matched_clause and item.znp_quote:
-                znp_page, znp_fragment_id = znp_meta.get(item.matched_clause.id, (1, None))
                 evidence_list.append({
                     "document_id": znp_doc.id,
-                    "fragment_id": znp_fragment_id,
-                    "page": znp_page,
+                    "fragment_id": item.znp_fragment_id,
+                    "page": item.znp_page if item.znp_page is not None else 1,
                     "quote": item.znp_quote,
                 })
 
@@ -365,6 +413,24 @@ def get_project_requirements(project_id: str, db: Session = Depends(get_db)):
         .order_by(RequirementVerification.created_at)
     ).all()
 
+    fragment_ids = {
+        requirement.fragment_id
+        for requirement in requirements.values()
+        if requirement.fragment_id
+    } | {
+        verification.matched_znp_fragment_id
+        for verification in verifications
+        if verification.matched_znp_fragment_id
+    }
+    fragment_texts: dict[str, str] = {}
+    if fragment_ids:
+        fragment_texts = {
+            fragment.id: fragment.text
+            for fragment in db.scalars(
+                select(Fragment).where(Fragment.id.in_(fragment_ids))
+            ).all()
+        }
+
     items: list[RequirementCheckItem] = []
     for verification in verifications:
         requirement = requirements.get(verification.requirement_id)
@@ -378,6 +444,13 @@ def get_project_requirements(project_id: str, db: Session = Depends(get_db)):
                 id=f"znp-{verification.id[:8]}",
                 clause_number=verification.matched_znp_clause_number or "—",
                 text=verification.matched_znp_text or "",
+                fragment_id=verification.matched_znp_fragment_id,
+                page=verification.matched_znp_page,
+                fragment_text=(
+                    fragment_texts.get(verification.matched_znp_fragment_id)
+                    if verification.matched_znp_fragment_id
+                    else None
+                ),
             )
             if verification.matched_znp_text
             else None
@@ -390,6 +463,13 @@ def get_project_requirements(project_id: str, db: Session = Depends(get_db)):
                     clause_number=requirement.clause_number,
                     category=RequirementCategory(requirement.category.value),
                     text=requirement.text,
+                    fragment_id=requirement.fragment_id,
+                    page=requirement.page,
+                    fragment_text=(
+                        fragment_texts.get(requirement.fragment_id)
+                        if requirement.fragment_id
+                        else None
+                    ),
                 ),
                 status=effective_status,
                 confidence_score=verification.confidence_score or 0.0,
@@ -402,6 +482,20 @@ def get_project_requirements(project_id: str, db: Session = Depends(get_db)):
                 human_override_status=(
                     RequirementStatus(verification.human_override_status.value)
                     if verification.human_override_status
+                    else None
+                ),
+                tu_fragment_id=requirement.fragment_id,
+                tu_page=requirement.page,
+                tu_fragment_text=(
+                    fragment_texts.get(requirement.fragment_id)
+                    if requirement.fragment_id
+                    else None
+                ),
+                znp_fragment_id=verification.matched_znp_fragment_id,
+                znp_page=verification.matched_znp_page,
+                znp_fragment_text=(
+                    fragment_texts.get(verification.matched_znp_fragment_id)
+                    if verification.matched_znp_fragment_id
                     else None
                 ),
             )

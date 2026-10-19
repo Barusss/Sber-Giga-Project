@@ -27,12 +27,18 @@ class TURequirement(BaseModel):
     clause_number: str
     category: RequirementCategory
     text: str
+    fragment_id: Optional[str] = None
+    page: Optional[int] = None
+    fragment_text: Optional[str] = None
 
 
 class ZNPClause(BaseModel):
     id: str
     clause_number: str
     text: str
+    fragment_id: Optional[str] = None
+    page: Optional[int] = None
+    fragment_text: Optional[str] = None
 
 
 class LLMVerificationDecision(BaseModel):
@@ -56,6 +62,14 @@ class RequirementCheckItem(BaseModel):
     is_confirmed_by_human: bool = False
     human_comment: Optional[str] = None
     human_override_status: Optional[RequirementStatus] = None
+    tu_fragment_id: Optional[str] = None
+    tu_page: Optional[int] = None
+    tu_fragment_text: Optional[str] = None
+    znp_fragment_id: Optional[str] = None
+    znp_page: Optional[int] = None
+    znp_fragment_text: Optional[str] = None
+    channels: List[str] = Field(default_factory=list)
+    method: Optional[str] = None
 
 
 class CheckRequirementsRequest(BaseModel):

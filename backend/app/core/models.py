@@ -209,6 +209,10 @@ class TURequirement(Base):
     clause_number: Mapped[str] = mapped_column(String(32))
     category: Mapped[RequirementCategory] = mapped_column(Enum(RequirementCategory))
     text: Mapped[str] = mapped_column(Text)
+    fragment_id: Mapped[str | None] = mapped_column(
+        ForeignKey("fragments.id"), index=True, nullable=True
+    )
+    page: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
@@ -221,6 +225,8 @@ class RequirementVerification(Base):
     confidence_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     matched_znp_clause_number: Mapped[str | None] = mapped_column(String(32), nullable=True)
     matched_znp_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    matched_znp_fragment_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    matched_znp_page: Mapped[int | None] = mapped_column(Integer, nullable=True)
     tu_quote: Mapped[str | None] = mapped_column(Text, nullable=True)
     znp_quote: Mapped[str | None] = mapped_column(Text, nullable=True)
     reasoning: Mapped[str | None] = mapped_column(Text, nullable=True)
