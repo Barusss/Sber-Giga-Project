@@ -58,9 +58,14 @@ def approve_project(project_id: str, db: Session = Depends(get_db)):
     return {"state": "approved"}
 
 @router.get("/projects/{project_id}/normative-report", response_model=NormativeReport)
-def normative_report(project_id: str, db: Session = Depends(get_db)):
+def normative_report(project_id: str, document_id: str | None = None,
+                     db: Session = Depends(get_db)):
     project = project_or_404(db, project_id)
-    return build_normative_report(db, project)
+    if document_id is not None:
+        document = db.get(Document, document_id)
+        if document is None or document.project_id != project_id:
+            raise HTTPException(404, "Document not found in this project")
+    return build_normative_report(db, project, document_id=document_id)
 
 
 @router.get("/projects/{project_id}/report")

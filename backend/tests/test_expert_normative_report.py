@@ -158,3 +158,60 @@ def test_empty_project_and_not_found(client):
     assert res.status_code == 200
     assert res.json()["total"] == 0
     assert res.json()["items"] == []
+
+
+def test_report_filters_one_document_without_mixing_other_uploads(client, monkeypatch):
+    project_id, first_id = prepare(client, monkeypatch)
+    monkeypatch.setattr("app.normatives.registry.RosstandartClient.lookup", responses)
+    checked = client.post(f"/api/v1/documents/{first_id}/check-normatives")
+    assert checked.status_code == 200, checked.text
+
+    duplicate = client.post(
+        f"/api/v1/projects/{project_id}/documents",
+        data={"kind": "other"},
+        files={"file": ("test.pdf", BytesIO(b"second copy"), "application/pdf")},
+    )
+    assert duplicate.status_code == 201, duplicate.text
+    second_id = duplicate.json()["id"]
+    frag = next(item for item in client.get(
+        f"/api/v1/documents/{second_id}/fragments").json() if item["page"] == 1)
+    fact = client.post(f"/api/v1/documents/{second_id}/facts", json={
+        "fact_type": "normative_reference",
+        "value": {"code": "ГОСТ 29322-92", "reference_kind": "normative"},
+        "evidence": [{"fragment_id": frag["id"], "quote": "ГОСТ 29322—92"}],
+    })
+    assert fact.status_code == 201, fact.text
+
+    endpoint = f"/api/v1/projects/{project_id}/normative-report"
+    combined = client.get(endpoint)
+    assert combined.status_code == 200
+    assert combined.json()["total"] == 5
+    assert combined.json()["selected_document_id"] is None
+
+    first = client.get(endpoint, params={"document_id": first_id})
+    assert first.status_code == 200, first.text
+    first_report = first.json()
+    assert first_report["selected_document_id"] == first_id
+    assert (first_report["total"], first_report["requires_attention"],
+            first_report["informative"], first_report["unverified"],
+            first_report["active"]) == (4, 1, 1, 1, 1)
+    assert {item["document_id"] for item in first_report["items"]} == {first_id}
+    assert next(x for x in first_report["items"] if x["code"] == "ГОСТ 29322-92")["finding"]
+
+    second = client.get(endpoint, params={"document_id": second_id})
+    assert second.status_code == 200, second.text
+    second_report = second.json()
+    assert second_report["selected_document_id"] == second_id
+    assert second_report["total"] == second_report["unverified"] == 1
+    assert second_report["requires_attention"] == 0
+    assert second_report["items"][0]["status"] == "unknown"
+    assert second_report["items"][0]["finding"] is None
+    assert second_report["items"][0]["source_url"] is None
+    assert second_report["items"][0]["reason"] == "not_yet_verified"
+    assert second_report["items"][0]["evidence"][0]["fragment_id"] == frag["id"]
+    assert client.get(endpoint, params={"document_id": "invalid"}).status_code == 404
+
+    another = client.post("/api/v1/projects", json={"name": "Another"}).json()
+    other_endpoint = f"/api/v1/projects/{another['id']}/normative-report"
+    assert client.get(other_endpoint, params={"document_id": first_id}).status_code == 404
+    assert client.get(other_endpoint).json()["total"] == 0
