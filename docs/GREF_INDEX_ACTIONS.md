@@ -5,7 +5,7 @@
 ## Подготовка Beget
 
 1. Загрузить `gref_cli.php` в **существующую** папку `private` сайта, рядом с `config.php`. Запрещать доступ к папке через `private/.htaccess` (`Require all denied`).
-2. Через SSH проверить: `php /ПОЛНЫЙ/ПУТЬ/private/gref_cli.php --check`. Должен вернуться JSON `{"ok":true,"mode":"check"}`.
+2. Через SSH проверить: `php8.2 /ПОЛНЫЙ/ПУТЬ/private/gref_cli.php --check`. Должен вернуться JSON `{"ok":true,"mode":"check"}`.
 3. Оставить `api.php` на месте для сайта. Перевыпустить ранее раскрытый API-ключ, если он ещё действителен.
 
 ## SSH-ключ и GitHub
