@@ -37,7 +37,7 @@ def ssh_options():
 
 def api_call(action: str, payload=None) -> dict:
     host, user, port, script, key, known_hosts = ssh_options()
-    remote = "php " + shlex.quote(script)
+    remote = "php8.2 " + shlex.quote(script)
     if payload is None:
         remote += " --check"
     request = [
