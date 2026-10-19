@@ -1,6 +1,7 @@
-"""Integration checks for the imported DPazY requirements storage layer.
+"""Integration checks for the persisted requirements storage layer.
 
-No fake AI comparisons: the 501 route remains explicit until implemented.
+AI comparison is implemented in `POST /requirements/analyze`; an empty request
+is still rejected by schema validation (HTTP 422).
 """
 from io import BytesIO
 
@@ -75,7 +76,7 @@ def test_manual_tu_storage_and_human_verdict(client, monkeypatch):
     assert second.json()["human_override_status"] == "missing"
     assert len(client.get(f"{base}/verifications").json()) == 1
     assert client.get(f"/api/v1/projects/{pid}/findings").json() == []
-    assert client.post("/api/v1/requirements/analyze").status_code == 501
+    assert client.post("/api/v1/requirements/analyze").status_code == 422
 
 
 def test_project_isolation_type_and_review_protection(client, monkeypatch):
@@ -117,4 +118,4 @@ def test_project_isolation_type_and_review_protection(client, monkeypatch):
 def test_core_legacy_services_still_visible(client):
     assert client.get("/api/v1/normatives").status_code == 200
     assert client.get("/api/v1/projects").status_code == 200
-    assert client.post("/api/v1/requirements/analyze").status_code == 501
+    assert client.post("/api/v1/requirements/analyze").status_code == 422

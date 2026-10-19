@@ -18,14 +18,14 @@
 - Проверяющий модуль добавляет свой `/normatives/analyze` после согласования входной схемы.
 
 ## Соответствие требований (участник 3)
-- `POST /requirements/analyze` зарезервирован, пока возвращает HTTP 501; **не запускает LLM и не создаёт фиктивные проверки**.
+- `POST /requirements/analyze` — сверка ТУ и ЗнП. Два режима: явные списки `{tu_requirements:[...], znp_clauses:[...]}` (тесты, бенчмарки) или документы проекта `{project_id, tu_document_id?, znp_document_id?}`. Агент выполняет поиск по пунктам, сверку числовых параметров и валидацию цитат; при недоступной LLM работает детерминированный локальный прогон. Результаты сохраняются в `tu_requirements`/`requirement_verifications`, замечания — в общие `findings`. Пустой запрос отклоняется схемой (HTTP 422).
+- `GET /requirements/projects/{project_id}` — сохранённые результаты сверки для страницы «ТУ ↔ ЗнП» (объединяет требования и проверки, учитывает `human_override_status`).
 - `POST /requirements/projects/{project_id}/tu-requirements` — вручную записать подготовленное требование ТУ: `{document_id, clause_number, category, text}`. Документ должен иметь `kind=tu` и принадлежать проекту; только для `draft`.
 - `GET /requirements/projects/{project_id}/tu-requirements?document_id=...` — список подготовленных требований, опционально фильтр документа.
 - `GET /requirements/projects/{project_id}/verifications` — сохранённые результаты проверки и ручных решений инженера. **Это не запуск сравнения.**
-- `POST /requirements/projects/{project_id}/confirm` — ручное решение инженера: `{requirement_id,status:"fulfilled|missing|needs_review",comment?}`. Сохраняет статус в `human_override_status`, не подменяет исходный `status`; если проверки ещё не было, создаёт запись `needs_review` с ручным решением и без искусственного score.
-- Модели `TURequirement`, `RequirementVerification` и структуры `TURequirement/ZNPClause/LLMVerificationDecision` перенесены из <https://github.com/Barusss/Sber-Giga-Project/pull/4> (DPazY), без самостоятельного создания ИИ-результатов.
-- Предлагаемый вход: `{project_id, tu_document_id, znp_document_id}`.
-- Семантические совпадения должны подтверждаться цитатами, а не только числом similarity.
+- `POST /requirements/projects/{project_id}/confirm` — ручное решение инженера: `{requirement_id,status:"fulfilled|missing|needs_review",comment?}`. Сохраняет статус в `human_override_status`, не подменяет исходный `status`; если проверки ещё не было, создаёт запись `needs_review` с ручным решением и без искусственного score. Решение инженера также закрывает (`rejected`) или подтверждает (`accepted`) связанное замечание модуля `requirements`.
+- Модели `TURequirement`, `RequirementVerification` и структуры `TURequirement/ZNPClause/LLMVerificationDecision` перенесены из <https://github.com/Barusss/Sber-Giga-Project/pull/4> (DPazY).
+- Семантические совпадения подтверждаются цитатами, а не только числом similarity; `missing` в fallback-режиме опирается на лексический порог, поэтому финальное решение всегда за инженером.
 
 ## Замечания и согласование (участник 1 и оба аналитических модуля)
 - `GET /projects/{id}/findings` — замечания.
@@ -51,7 +51,7 @@
 - Не хранить фактический текст только внутри LLM-промптов: ссылаться на `document_id`/`fragment_id`.
 - Внешние LLM API не вызываются из браузера; ключи не коммитить.
 - Не перезаписывать утверждённые результаты.
-- Анализ в MVP добавляется отдельными сервисами; до реализации вернуть 501, не создавать фиктивных находок.
+- Аналитические модули обязаны подтверждать выводы цитатами; при недоступности LLM используется детерминированный fallback без выдуманных находок.
 - До промышленного использования добавить аутентификацию, контроль доступа и фоновые задания.
 
 ## OCR, chunks и извлечённые факты (общий слой)

@@ -1,6 +1,8 @@
+from datetime import datetime
 from enum import Enum
 from typing import List, Optional
-from pydantic import BaseModel
+
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class RequirementStatus(str, Enum):
@@ -73,11 +75,15 @@ class ConfirmRequirementRequest(BaseModel):
     comment: Optional[str] = None
 
 
-# REST schemas for using DPazY's persisted models before semantic analysis exists.
-from datetime import datetime
-from pydantic import ConfigDict, Field
+class AnalyzeProjectRequirementsRequest(BaseModel):
+    """Сверка документов проекта: ТУ и ЗнП выбираются автоматически по kind."""
+
+    project_id: str
+    tu_document_id: Optional[str] = None
+    znp_document_id: Optional[str] = None
 
 
+# REST schemas for the persisted DPazY models (manual storage and human review).
 class TURequirementCreate(BaseModel):
     document_id: str
     clause_number: str = Field(min_length=1, max_length=32)
