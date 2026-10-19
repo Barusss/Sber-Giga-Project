@@ -204,3 +204,26 @@ def test_outage_does_not_use_cached_status_as_fresh(client, monkeypatch):
     assert response.json()["unknown"] == 3
     assert response.json()["findings_created"] == 0
     assert client.get(f"/api/v1/projects/{project_id}/findings").json() == []
+
+
+
+def test_cancelled_standard_without_replacement_has_specific_guidance(client, monkeypatch):
+    project_id, doc_id = make_document(client, monkeypatch)
+
+    def lookup(self, code, source_url=None):
+        if code == "ГОСТ 29322-92":
+            return RegistryResult(
+                code=code, status="obsolete", registry_status="Отменен",
+                replacement=None, title="Стандартные напряжения",
+                source_url=CARD_URL, checked_at=datetime.now(timezone.utc))
+        return RegistryResult(code=code, reason="unsupported_or_incomplete_designation")
+
+    monkeypatch.setattr("app.normatives.registry.RosstandartClient.lookup", lookup)
+    response = client.post(f"/api/v1/documents/{doc_id}/check-normatives")
+    assert response.status_code == 200, response.text
+    findings = client.get(f"/api/v1/projects/{project_id}/findings").json()
+    assert len(findings) == 1
+    guidance = findings[0]["suggested_action"]
+    assert "замена не указана" in guidance
+    assert "Определите действующий нормативный документ" in guidance
+    assert "применимость заменяющего стандарта" not in guidance

@@ -2,7 +2,7 @@ import {useEffect,useState} from 'react'
 import {useSearchParams} from 'react-router-dom'
 import {Document,Finding,Project,request,json} from '../api/client'
 
-type Quote={fragment_id:string;page:number;quote:string}
+type Quote={fragment_id:string;page:number;quote:string;context:string|null}
 type Review={id:string;review_status:'pending'|'accepted'|'rejected';severity:string;explanation:string;suggested_action:string|null}
 type Standard={
  document_id:string;document_name:string;code:string;reference_kind:string
@@ -39,6 +39,22 @@ const groups=[
  {key:'active',title:'Действующие стандарты',subtitle:'Статус подтверждён на дату последней успешной проверки.'},
 ] as const
 
+function QuoteExcerpt({source,quote}:{source:string;quote:string}){
+ const index=source.indexOf(quote)
+ if(index<0)return <>{source}</>
+ return <>{source.slice(0,index)}<mark className="report-quote-mark">{quote}</mark>{source.slice(index+quote.length)}</>
+}
+function EvidenceQuote({item}:{item:Quote}){
+ return <blockquote className="report-source-quote">
+  <QuoteExcerpt source={item.context||item.quote} quote={item.quote}/>
+  <small>Исходный PDF, стр. {item.page}{item.context?' · Контекст упоминания':' · Короткая цитата'}</small>
+ </blockquote>
+}
+function guidanceFor(item:Standard):string{
+ if(item.replacement)return `Проверьте применимость ${item.replacement} вместо ${item.code} и необходимость изменения ссылки. Решение принимает эксперт.`
+ return `Для ${item.code} в карточке Росстандарта замена не указана. Определите действующий нормативный документ для соответствующих требований и оцените необходимость изменения ссылки.`
+}
+
 export function ReportsPage(){
  const [searchParams,setSearchParams]=useSearchParams()
  const [projects,setProjects]=useState<Project[]>([])
@@ -53,6 +69,7 @@ export function ReportsPage(){
  const [error,setError]=useState('')
  const [busy,setBusy]=useState(false)
  const [state,setState]=useState('draft')
+ const [expandedQuotes,setExpandedQuotes]=useState<Record<string,boolean>>({})
 
  useEffect(()=>{
   request<Project[]>('/projects').then(setProjects).catch(e=>setError(String(e)))
@@ -203,12 +220,17 @@ export function ReportsPage(){
    {report.items.length===0&&<section className="panel">
     <p>Нормативные ссылки пока не извлечены. Сначала обработайте документ в разделе «ГОСТ и НТД».</p>
    </section>}
+   <nav className="report-jump-nav no-print" aria-label="Разделы отчёта">
+    {groups.map(group=><a key={group.key} href={`#report-group-${group.key}`}>
+     {group.title}<span>{report.items.filter(item=>item.section===group.key).length}</span>
+    </a>)}
+   </nav>
    {report.items.some(item=>item.reason==='not_yet_verified')&&<p className="report-warning">
     Для части документов нет сохранённой проверки. Перейдите в «ГОСТ и НТД» и повторно проверьте их ID: результаты предыдущей версии реестра не содержат даты проверки.
    </p>}
    {groups.map(group=>{
     const items=report.items.filter(item=>item.section===group.key)
-    return <section key={group.key} className="panel report-section">
+    return <section key={group.key} id={`report-group-${group.key}`} className="panel report-section">
      <div className="report-section-heading"><div><h2>{group.title}</h2><p className="muted">{group.subtitle}</p></div><span className="report-count">{items.length}</span></div>
      {items.length===0?<p className="muted">Нет записей в этой категории.</p>:items.map(item=>
       <article key={item.document_id+item.code} className="report-entry">
@@ -227,14 +249,26 @@ export function ReportsPage(){
        {item.status==='unknown'&&<p className="muted">{unknownLabel(item.reason)}</p>}
        {item.source_url&&<p><a href={item.source_url} target="_blank" rel="noopener noreferrer">Официальная карточка Росстандарта</a></p>}
        <div className="report-evidence">
-        <b>Цитаты из документа</b>
-        {item.evidence.length===0?<p className="muted">Нет подтверждённых цитат.</p>:item.evidence.map(e=>
-         <blockquote key={e.fragment_id+e.quote}>«{e.quote}» <small>PDF, стр. {e.page}</small></blockquote>
-        )}
+        <b>Упоминания в исходном документе · {item.evidence.length}</b>
+        {item.evidence.length===0?<p className="muted">Нет подтверждённых цитат.</p>:
+         <>
+          {item.evidence.slice(0,2).map(e=><EvidenceQuote key={e.fragment_id+e.quote} item={e}/>)}
+          {item.evidence.length>2&&<>
+           <div className={'report-evidence-extra'+(expandedQuotes[item.document_id+item.code]?' is-open':'')}>
+            {item.evidence.slice(2).map(e=><EvidenceQuote key={e.fragment_id+e.quote} item={e}/>)}
+           </div>
+           <button className="report-more-button no-print" type="button"
+            aria-expanded={Boolean(expandedQuotes[item.document_id+item.code])}
+            onClick={()=>setExpandedQuotes(previous=>({...previous,[item.document_id+item.code]:!previous[item.document_id+item.code]}))}>
+            {expandedQuotes[item.document_id+item.code]?'Скрыть дополнительные упоминания':
+             `Показать ещё ${item.evidence.length-2} упоминаний`}
+           </button>
+          </>}
+         </>}
        </div>
        {item.finding&&<div className="report-decision">
         <p><b>Решение эксперта:</b> {reviewLabel(item.finding.review_status)}</p>
-        {item.finding.suggested_action&&<p className="muted">{item.finding.suggested_action}</p>}
+        <p className="muted">{guidanceFor(item)}</p>
         {state!=='approved'&&<div className="horizontal no-print">
          <button disabled={busy} onClick={()=>review(item.finding!,'accepted')}>Подтвердить замечание</button>
          <button disabled={busy} className="secondary" onClick={()=>review(item.finding!,'rejected')}>Отклонить замечание</button>
