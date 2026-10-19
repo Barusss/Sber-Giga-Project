@@ -180,7 +180,7 @@ def test_report_registry_persistence_findings_and_idempotency(client, monkeypatc
     assert any(source == CARD_URL for _, source in calls)
     assert client.post("/api/v1/documents/unknown/check-normatives").status_code == 404
 
-    approved = client.post(f"/api/v1/findings/{findings[0]['id']}/review",
+    approved = client.patch(f"/api/v1/findings/{findings[0]['id']}/review",
                            json={"review_status": "accepted"})
     assert approved.status_code == 200
     assert client.post(f"/api/v1/projects/{project_id}/approve").status_code == 200
