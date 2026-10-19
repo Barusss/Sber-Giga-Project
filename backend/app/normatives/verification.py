@@ -1,10 +1,7 @@
 """Compare extracted normative references with live Rosstandart registry cards.
 
-Priority order:
-1. Local registry (Normative table) — if status is known, use it.
-2. Rosstandart official registry — fallback for unknown standards.
-
-Network problems never produce an 'active' or 'obsolete' claim.
+Only a verified Rosstandart response can establish active/obsolete status.
+Local registry records remain lookup hints, never fresh official evidence.
 """
 from datetime import datetime
 
@@ -60,7 +57,7 @@ def finding_key(finding: Finding, document_id: str, code: str) -> bool:
 def check_document_standards(
     db: Session, document: Document, registry: RosstandartClient | None = None
 ) -> VerificationReport:
-    """Проверка нормативных ссылок с приоритетом локального реестра."""
+    """Verify official statuses without treating saved statuses as freshly checked."""
     facts = db.scalars(
         select(Fact).where(
             Fact.document_id == document.id,
@@ -139,32 +136,28 @@ def check_document_standards(
         hint = local_source_url
         status: RegistryResult = registry.lookup(code, source_url=hint)
         
-        # Определяем финальный статус с приоритетом локального реестра
-        if local_status and status.status == "unknown":
-            # Локальный реестр знает статус, Росстандарт не подтвердил
-            final_status = local_status
-            source = "local"
-            final_replacement = local_replacement or status.replacement
-            final_title = local_title or status.title
-            final_source_url = local_source_url or status.source_url
-            reason = f"Статус из локального реестра (Росстандарт не подтвердил: {status.reason or 'недоступен'})"
-        elif status.status != "unknown":
-            # Росстандарт подтвердил — используем его данные
+        # Local data can hint which official card to query, but never counts as
+        # current official verification, even if previously confirmed.
+        confirmed = (
+            status.status in {"active", "obsolete"}
+            and bool(status.source_url)
+            and status.checked_at is not None
+        )
+        if confirmed:
             final_status = status.status
             source = "rosstandart"
             final_replacement = status.replacement
-            final_title = status.title
+            final_title = status.title or local_title
             final_source_url = status.source_url
             reason = status.reason
         else:
-            # Оба источника не знают
             final_status = "unknown"
-            source = "unknown"
-            final_replacement = local_replacement or status.replacement
+            source = "local" if local_status in {"active", "obsolete"} else "unknown"
+            final_replacement = None
             final_title = local_title or status.title
-            final_source_url = local_source_url or status.source_url
-            reason = status.reason or "Норматив не найден ни в локальном реестре, ни в Росстандарте"
-        
+            final_source_url = None
+            reason = status.reason or "official_verification_unavailable"
+
         checked.append(StandardCheck(
             code=code,
             reference_kind=role,
@@ -180,7 +173,6 @@ def check_document_standards(
         ))
         
         # Обновляем snapshot проверки
-        confirmed = status.status in {"active", "obsolete"} and bool(status.source_url)
         snapshot = snapshots.get(code)
         if snapshot is None:
             snapshot = NormativeVerification(document_id=document.id, code=code)

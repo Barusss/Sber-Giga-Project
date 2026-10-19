@@ -46,16 +46,15 @@ def normalize_for_comparison(code: str) -> str:
 def is_match(extracted: str, ground_truth_set: set) -> tuple[bool, str | None]:
     """
     Проверяет, соответствует ли извлеченный код какому-либо эталонному.
-    Считаем совпадением, если извлеченный код является началом эталонного 
-    (например, "ГОСТ1.0" совпадает с "ГОСТ1.0-92"), чтобы учесть особенность 
-    извлечения AI без указания года.
+    Считаем совпадением только полное нормализованное обозначение.
+    Совпадение по началу номера не доказывает совпадение редакции.
     """
     ext_norm = normalize_for_comparison(extracted)
     
     for gt in ground_truth_set:
         gt_norm = normalize_for_comparison(gt)
         # Проверка: полное совпадение ИЛИ извлеченное является началом эталонного (длина > 8 для избежания ложных срабатываний типа "ГОСТ")
-        if ext_norm == gt_norm or (gt_norm.startswith(ext_norm) and len(ext_norm) > 8):
+        if ext_norm == gt_norm:
             return True, gt
             
     return False, None
@@ -69,7 +68,7 @@ def calculate_metrics(ground_truth: set, extracted: list):
     print("--- Детальный разбор извлеченных ссылок ---")
     for ext in extracted:
         is_tp, matched_code = is_match(ext, ground_truth)
-        if is_tp:
+        if is_tp and matched_code not in matched_gt:
             tp += 1
             matched_gt.add(matched_code)
             print(f"✅ True Positive : '{ext}' -> совпал с эталоном '{matched_code}'")
@@ -104,10 +103,8 @@ def calculate_metrics(ground_truth: set, extracted: list):
     print(f"🔍 Recall (Полнота):                  {recall:.2%}")
     print(f"   (Какая доля реальных ссылок была найдена)")
     print("="*50)
-    print("💡 Совет для защиты: Низкий Recall объясняется тем, что LLM иногда")
-    print("   извлекает обозначения без года (например, 'ГОСТ 1.0' вместо 'ГОСТ 1.0-92').")
-    print("   Скрипт учитывает это как частичное совпадение. Для улучшения планируется")
-    print("   добавить пост-обработку регулярными выражениями.")
+    print("Частичные обозначения без года не считаются точным совпадением.")
+    print("EXTRACTED_RESULTS заданы вручную: это пример, не замер API.")
 
 if __name__ == "__main__":
     calculate_metrics(GROUND_TRUTH, EXTRACTED_RESULTS)

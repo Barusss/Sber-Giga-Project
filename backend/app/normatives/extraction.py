@@ -76,19 +76,19 @@ def normalize_code(value: str) -> str:
     return re.sub(r"\s*-\s*", "-", value)
 
 def enrich_candidate_code(quote: str, context: str) -> str:
-    """Пытается найти год стандарта в контексте, если он был потерян при извлечении."""
+    """Recover a year only when an explicit edition suffix follows the GOST quote."""
     normalized = normalize_code(quote)
-    
-    if re.search(r'\d{2,4}$', normalized):
+    base, year = edition_base(normalized)
+    if year is not None or not base.startswith("ГОСТ"):
         return normalized
-    
-    pattern = re.escape(quote) + r'[\s\-\–\—\-]*(\d{2,4})'
-    match = re.search(pattern, context)
-    
+    match = re.search(
+        re.escape(quote) + r"\s*[-–—]\s*(\d{2,4})(?!\d)",
+        context, re.IGNORECASE,
+    )
     if match:
         return normalize_code(f"{quote}-{match.group(1)}")
-    
     return normalized
+
 
 def edition_base(code: str) -> tuple[str, str | None]:
     match = GOST_EDITION_PATTERN.fullmatch(code)
@@ -160,7 +160,7 @@ def find_candidates(chunks: list[Chunk]) -> tuple[list[dict], dict[str, str]]:
             candidates.append({
                 "id": len(candidates), "fragment_id": fragment.id, "page": fragment.page,
                 "code": enrich_candidate_code(quote, fragment.text[start:end]),
-                "section": section, "context": fragment.text[start:end],
+                "quote": quote, "section": section, "context": fragment.text[start:end],
             })
             if len(candidates) > MAX_CANDIDATES:
                 raise HTTPException(413, f"More than {MAX_CANDIDATES} normative candidates; split the document")

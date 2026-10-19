@@ -4,7 +4,7 @@ export type Document = {id:string;project_id:string;kind:'tu'|'znp'|'other';file
 export type Fragment = {id:string;document_id:string;page:number;position:number;text:string}
 export type Evidence = {document_id:string;fragment_id?:string|null;page?:number|null;quote:string}
 export type Finding = {id:string;project_id:string;module:string;type:string;severity:string;explanation:string;suggested_action:string|null;evidence:Evidence[];review_status:'pending'|'accepted'|'rejected'}
-export type Normative = {id:string;code:string;title:string;status:'active'|'obsolete'|'unknown';replacement?:string|null;source_url?:string|null}
+export type Normative = {id:string;code:string;title:string;status:'active'|'obsolete'|'unknown';replacement?:string|null;source_url?:string|null;updated_at?:string|null}
 
 export async function request<T>(path:string, options:RequestInit={}):Promise<T> {
   const response = await fetch(`${API}${path}`,options)
@@ -13,6 +13,7 @@ export async function request<T>(path:string, options:RequestInit={}):Promise<T>
     try { const body = await response.json(); message=body.detail ?? message } catch { /* non-JSON error */ }
     throw new Error(typeof message==='string' ? message : JSON.stringify(message))
   }
+  if (response.status === 204) return undefined as T
   return response.json() as Promise<T>
 }
 export const json = (method:string, body:unknown):RequestInit=>({method,headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
