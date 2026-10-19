@@ -18,7 +18,12 @@
 - Проверяющий модуль добавляет свой `/normatives/analyze` после согласования входной схемы.
 
 ## Соответствие требований (участник 3)
-- `POST /requirements/analyze` зарезервирован, пока возвращает HTTP 501.
+- `POST /requirements/analyze` зарезервирован, пока возвращает HTTP 501; **не запускает LLM и не создаёт фиктивные проверки**.
+- `POST /requirements/projects/{project_id}/tu-requirements` — вручную записать подготовленное требование ТУ: `{document_id, clause_number, category, text}`. Документ должен иметь `kind=tu` и принадлежать проекту; только для `draft`.
+- `GET /requirements/projects/{project_id}/tu-requirements?document_id=...` — список подготовленных требований, опционально фильтр документа.
+- `GET /requirements/projects/{project_id}/verifications` — сохранённые результаты проверки и ручных решений инженера. **Это не запуск сравнения.**
+- `POST /requirements/projects/{project_id}/confirm` — ручное решение инженера: `{requirement_id,status:"fulfilled|missing|needs_review",comment?}`. Сохраняет статус в `human_override_status`, не подменяет исходный `status`; если проверки ещё не было, создаёт запись `needs_review` с ручным решением и без искусственного score.
+- Модели `TURequirement`, `RequirementVerification` и структуры `TURequirement/ZNPClause/LLMVerificationDecision` перенесены из <https://github.com/Barusss/Sber-Giga-Project/pull/4> (DPazY), без самостоятельного создания ИИ-результатов.
 - Предлагаемый вход: `{project_id, tu_document_id, znp_document_id}`.
 - Семантические совпадения должны подтверждаться цитатами, а не только числом similarity.
 
@@ -80,6 +85,10 @@
 Векторный канал доступен **только с PostgreSQL + pgvector**; в SQLite отдаётся HTTP 501. Оба вектора должны быть созданы **одной** embedding-моделью, ключи внешнего API хранить только на сервере. В API нет автоматического вычисления embeddings: ответственность 2/3 участников.
 
 **Совместимость миграций:** `0002_search_facts` создаёт новые таблицы и индексирует уже загруженные документы. При применении `alembic upgrade head` сохраняются старые `document_id`, `fragment_id` и ссылки на них. Страница DOCX до рендеринга неизвестна: число 1 является технической меткой, а не фактической страницей.
+
+## Миграция участника №3
+
+Следующая после `0003_normative_verifications` миграция — `0004_add_tu_requirements_and_verifications`. Исторический PR #4 участника DPazY использовал номер `0003`, уже занятый в `main`; не накатывайте оригинальную `0003` поверх новой цепочки. При `docker compose up -d --build api` выполнится `alembic upgrade head` без потери имеющихся нормативных фактов и замечаний.
 
 ## Общая LLM-интеграция
 
