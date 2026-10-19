@@ -1,0 +1,36 @@
+name: GREF INDEX API
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.gref/commands/*.json'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gref-index-commands
+  cancel-in-progress: false
+
+jobs:
+  beget:
+    if: github.actor == 'Barusss'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check HTTPS and API support
+        env:
+          GREF_API_KEY: ${{ secrets.GREF_API_KEY }}
+        run: python3 scripts/gref_bridge.py --check
+      - name: Apply newly added commands
+        if: github.event_name == 'push'
+        env:
+          GREF_API_KEY: ${{ secrets.GREF_API_KEY }}
+          BEFORE_SHA: ${{ github.event.before }}
+          AFTER_SHA: ${{ github.sha }}
+        run: python3 scripts/gref_bridge.py --apply-new
