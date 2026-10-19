@@ -1,0 +1,53 @@
+name: One-time stale branch cleanup
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/cleanup-stale-branches-once.yml'
+permissions:
+  contents: write
+jobs:
+  prune:
+    if: github.repository == 'Barusss/Sber-Giga-Project'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Confirm no open PRs and delete unchanged legacy branches
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          open_count="$(gh api "repos/$GITHUB_REPOSITORY/pulls?state=open&per_page=100" --jq 'length')"
+          if [ "$open_count" != "0" ]; then
+            echo "ABORT: Open PRs exist; will not delete branches."
+            exit 1
+          fi
+          count=0
+          while read -r branch expected_sha; do
+            [ -n "$branch" ] || continue
+            actual_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$branch" --jq '.object.sha')"
+            if [ "$actual_sha" != "$expected_sha" ]; then
+              echo "SKIPPED (branch moved): $branch"
+              continue
+            fi
+            gh api --method DELETE "repos/$GITHUB_REPOSITORY/git/refs/heads/$branch" >/dev/null
+            echo "DELETED: $branch"
+            count=$((count + 1))
+          done <<'BRANCHES'
+          automation/gref-bot 979f0b44214dfc3482f3911d431fccef958ae673
+          chore/gref-index-bridge 313aef9633bfb61b03e96b95377f0e82da6add56
+          feat/deepseek-config-and-client 13a252d376d4307fd404cd53178784fd5b014e14
+          feat/deepseek-normative-extraction db45d65a3e08c5f7f117e07ff9c62675db5b2c4f
+          feat/expert-normative-report 9dbcd057e48804f03c72ef3be27f81e85ab65671
+          feat/gref-connection 9f73551ee94003fca52920a05e2512e1988c1658
+          feat/integrate-dpazy-requirements-foundation 29b6f3d45812e949bf825bd38749bdc5cdc0a589
+          feat/normative-normalization-classification c363632e79140a00face2a4a0b869a1d8dfe3baa
+          feat/ocr-retrieval-and-facts 079eef345c0d90cee5c268fb8621b8f771a9473c
+          feat/project-foundation 0d9d6ab8df000bf45ab80d9f9bd1ba38f4890cc9
+          feat/readable-normative-report-cards 892a52c7c91e396f1ffee67d46fda89862eb8194
+          feat/report-document-filter-exports 30262ae6100bb7486404874745b64cfaab97b2fe
+          feat/rosstandart-status-verification 1649b41030b46b93a55b0acbfbe086529f189ed0
+          feature/tu-znp-matching d3fe5ae5265dbd4e2898d0f09acf35ef758babb4
+          fix/normatives-stepan-regressions 7dd8844aa7d82f06fbb768c4f471dfd189383199
+          BRANCHES
+          echo "Deleted stale branches: $count"
