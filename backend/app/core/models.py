@@ -139,6 +139,7 @@ class Normative(Base):
     status: Mapped[str] = mapped_column(String(32))
     replacement: Mapped[str | None] = mapped_column(String(128), nullable=True)
     source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 
 
 

@@ -75,6 +75,20 @@ def normalize_code(value: str) -> str:
     value = " ".join(value.upper().split())
     return re.sub(r"\s*-\s*", "-", value)
 
+def enrich_candidate_code(quote: str, context: str) -> str:
+    """Пытается найти год стандарта в контексте, если он был потерян при извлечении."""
+    normalized = normalize_code(quote)
+    
+    if re.search(r'\d{2,4}$', normalized):
+        return normalized
+    
+    pattern = re.escape(quote) + r'[\s\-\–\—\-]*(\d{2,4})'
+    match = re.search(pattern, context)
+    
+    if match:
+        return normalize_code(f"{quote}-{match.group(1)}")
+    
+    return normalized
 
 def edition_base(code: str) -> tuple[str, str | None]:
     match = GOST_EDITION_PATTERN.fullmatch(code)
@@ -145,7 +159,7 @@ def find_candidates(chunks: list[Chunk]) -> tuple[list[dict], dict[str, str]]:
             end = min(len(fragment.text), match.end() + 110)
             candidates.append({
                 "id": len(candidates), "fragment_id": fragment.id, "page": fragment.page,
-                "code": normalize_code(quote), "quote": quote,
+                "code": enrich_candidate_code(quote, fragment.text[start:end]),
                 "section": section, "context": fragment.text[start:end],
             })
             if len(candidates) > MAX_CANDIDATES:

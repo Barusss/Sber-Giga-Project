@@ -1,6 +1,9 @@
 """Compare extracted normative references with live Rosstandart registry cards.
 
-Persist confirmed status to the local registry and create reviewable findings.
+Priority order:
+1. Local registry (Normative table) — if status is known, use it.
+2. Rosstandart official registry — fallback for unknown standards.
+
 Network problems never produce an 'active' or 'obsolete' claim.
 """
 from datetime import datetime
@@ -31,6 +34,7 @@ class StandardCheck(BaseModel):
     checked_at: datetime | None
     pages: list[int]
     reason: str | None
+    source: str | None  # "local" | "rosstandart" | "unknown"
 
 
 class VerificationReport(BaseModel):
@@ -56,6 +60,7 @@ def finding_key(finding: Finding, document_id: str, code: str) -> bool:
 def check_document_standards(
     db: Session, document: Document, registry: RosstandartClient | None = None
 ) -> VerificationReport:
+    """Проверка нормативных ссылок с приоритетом локального реестра."""
     facts = db.scalars(
         select(Fact).where(
             Fact.document_id == document.id,
@@ -63,7 +68,8 @@ def check_document_standards(
             Fact.review_status != ReviewStatus.rejected,
         ).options(selectinload(Fact.evidence).selectinload(FactEvidence.fragment))
     ).all()
-    # Consolidate identical codes even if the document contains a manual fact.
+    
+    # Группируем факты по нормализованному коду
     grouped: dict[str, list[Fact]] = {}
     for fact in facts:
         if not isinstance(fact.value, dict):
@@ -71,17 +77,22 @@ def check_document_standards(
         code = fact.value.get("code")
         if isinstance(code, str) and code.strip():
             grouped.setdefault(normalize_code(code), []).append(fact)
+            
     if len(grouped) > MAX_STANDARDS:
         raise HTTPException(413, f"Maximum {MAX_STANDARDS} standards per verification request")
 
-    cache = {
+    # Кэш локального реестра
+    local_cache = {
         normalize_code(row.code): row for row in db.scalars(select(Normative)).all()
     }
+    
+    # Кэш предыдущих проверок
     snapshots = {
         row.code: row for row in db.scalars(
             select(NormativeVerification).where(NormativeVerification.document_id == document.id)
         ).all()
     }
+    
     existing_findings = db.scalars(
         select(Finding).where(
             Finding.project_id == document.project_id,
@@ -89,6 +100,7 @@ def check_document_standards(
             Finding.type == FINDING_TYPE,
         )
     ).all()
+    
     registry = registry or RosstandartClient()
     checked = []
     created = found = 0
@@ -98,6 +110,7 @@ def check_document_standards(
         role = "informative"
         if any(f.value.get("reference_kind") != "informative" for f in appearances):
             role = "normative"
+            
         evidence = []
         seen = set()
         for fact in appearances:
@@ -111,21 +124,62 @@ def check_document_standards(
                     "fragment_id": item.fragment_id,
                     "page": item.fragment.page,
                     "quote": item.quote,
-                    "normative_code": code,  # internal key; not exposed in FindingOut
+                    "normative_code": code,
                 })
         pages = sorted({entry["page"] for entry in evidence})
-        previous = cache.get(code)
-        hint = previous.source_url if previous else None
+        
+        # Проверяем локальный реестр
+        local_normative = local_cache.get(code)
+        local_status = local_normative.status if local_normative else None
+        local_replacement = local_normative.replacement if local_normative else None
+        local_title = local_normative.title if local_normative else None
+        local_source_url = local_normative.source_url if local_normative else None
+        
+        # Обращаемся к Росстандарту
+        hint = local_source_url
         status: RegistryResult = registry.lookup(code, source_url=hint)
-
+        
+        # Определяем финальный статус с приоритетом локального реестра
+        if local_status and status.status == "unknown":
+            # Локальный реестр знает статус, Росстандарт не подтвердил
+            final_status = local_status
+            source = "local"
+            final_replacement = local_replacement or status.replacement
+            final_title = local_title or status.title
+            final_source_url = local_source_url or status.source_url
+            reason = f"Статус из локального реестра (Росстандарт не подтвердил: {status.reason or 'недоступен'})"
+        elif status.status != "unknown":
+            # Росстандарт подтвердил — используем его данные
+            final_status = status.status
+            source = "rosstandart"
+            final_replacement = status.replacement
+            final_title = status.title
+            final_source_url = status.source_url
+            reason = status.reason
+        else:
+            # Оба источника не знают
+            final_status = "unknown"
+            source = "unknown"
+            final_replacement = local_replacement or status.replacement
+            final_title = local_title or status.title
+            final_source_url = local_source_url or status.source_url
+            reason = status.reason or "Норматив не найден ни в локальном реестре, ни в Росстандарте"
+        
         checked.append(StandardCheck(
-            code=code, reference_kind=role, status=status.status,
-            registry_status=status.registry_status, replacement=status.replacement,
-            title=status.title, source_url=status.source_url,
-            checked_at=status.checked_at, pages=pages, reason=status.reason,
+            code=code,
+            reference_kind=role,
+            status=final_status,
+            registry_status=status.registry_status,
+            replacement=final_replacement,
+            title=final_title,
+            source_url=final_source_url,
+            checked_at=status.checked_at,
+            pages=pages,
+            reason=reason,
+            source=source,
         ))
-        # Always persist the last attempt, including unknown results. Never display
-        # a previous successful lookup as if the most recent attempt succeeded.
+        
+        # Обновляем snapshot проверки
         confirmed = status.status in {"active", "obsolete"} and bool(status.source_url)
         snapshot = snapshots.get(code)
         if snapshot is None:
@@ -133,33 +187,35 @@ def check_document_standards(
             db.add(snapshot)
             snapshots[code] = snapshot
         snapshot.reference_kind = role
-        snapshot.status = status.status if confirmed else "unknown"
+        snapshot.status = final_status
         snapshot.registry_status = status.registry_status if confirmed else None
-        snapshot.title = status.title if confirmed else None
-        snapshot.replacement = status.replacement if confirmed else None
-        snapshot.source_url = status.source_url if confirmed else None
+        snapshot.title = final_title
+        snapshot.replacement = final_replacement
+        snapshot.source_url = final_source_url
         snapshot.checked_at = status.checked_at if confirmed else None
         snapshot.attempted_at = now()
-        snapshot.reason = status.reason if not confirmed else None
+        snapshot.reason = reason
 
-        if not confirmed:
-            continue
+        # Обновляем локальный реестр, если Росстандарт подтвердил
+        if confirmed:
+            if local_normative is None:
+                local_normative = Normative(
+                    code=code,
+                    title=final_title or code,
+                    status=status.status,
+                    replacement=status.replacement,
+                    source_url=status.source_url,
+                )
+                db.add(local_normative)
+                local_cache[code] = local_normative
+            else:
+                local_normative.title = final_title or local_normative.title
+                local_normative.status = status.status
+                local_normative.replacement = status.replacement
+                local_normative.source_url = status.source_url
 
-        # Local registry contains only the most recent verified snapshot.
-        if previous is None:
-            previous = Normative(
-                code=code, title=status.title or code, status=status.status,
-                replacement=status.replacement, source_url=status.source_url,
-            )
-            db.add(previous)
-            cache[code] = previous
-        else:
-            previous.title = status.title or previous.title
-            previous.status = status.status
-            previous.replacement = status.replacement
-            previous.source_url = status.source_url
-
-        if status.status != "obsolete" or not evidence:
+        # Создаём Finding только для устаревших нормативных ссылок
+        if final_status != "obsolete" or role != "normative" or not evidence:
             continue
 
         already = next(
@@ -170,26 +226,32 @@ def check_document_standards(
             found += 1
             continue
 
-        replacement = f" Замена по реестру: {status.replacement}." if status.replacement else ""
+        replacement_text = f" Замена по реестру: {final_replacement}." if final_replacement else ""
+        source_text = "Росстандарт" if source == "rosstandart" else "локальный реестр"
         explanation = (
-            f"Упоминание {code}: официальный статус Росстандарта «{status.registry_status}»."
-            f"{replacement} Источник: {status.source_url}"
+            f"Упоминание {code}: официальный статус ({source_text}) «{status.registry_status or final_status}»."
+            f"{replacement_text} Источник: {final_source_url or 'не указан'}"
         )
-        if status.replacement:
+        
+        if final_replacement:
             guidance = (
-                f"Проверьте применимость {status.replacement} вместо {code} "
+                f"Проверьте применимость {final_replacement} вместо {code} "
                 "и необходимость изменения ссылки в документе. Решение принимает эксперт."
             )
         else:
             guidance = (
-                f"Для {code} в карточке Росстандарта замена не указана. "
-                "Определите действующий нормативный документ для соответствующих требований "
-                "и оцените необходимость изменения ссылки. Решение принимает эксперт."
+                f"Для {code} замена не указана. "
+                "Определите действующий нормативный документ и оцените необходимость изменения ссылки. "
+                "Решение принимает эксперт."
             )
+            
         finding = Finding(
-            project_id=document.project_id, module="normatives",
-            type=FINDING_TYPE, severity=("warning" if role == "normative" else "info"),
-            explanation=explanation, suggested_action=guidance,
+            project_id=document.project_id,
+            module="normatives",
+            type=FINDING_TYPE,
+            severity="warning",
+            explanation=explanation,
+            suggested_action=guidance,
             evidence=evidence,
         )
         db.add(finding)
@@ -198,9 +260,12 @@ def check_document_standards(
 
     db.commit()
     return VerificationReport(
-        document_id=document.id, total=len(checked),
+        document_id=document.id,
+        total=len(checked),
         active=sum(item.status == "active" for item in checked),
         obsolete=sum(item.status == "obsolete" for item in checked),
         unknown=sum(item.status == "unknown" for item in checked),
-        findings_created=created, findings_already_existing=found, checked=checked,
+        findings_created=created,
+        findings_already_existing=found,
+        checked=checked,
     )

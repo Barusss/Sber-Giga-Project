@@ -71,8 +71,15 @@ class NormativeCreate(BaseModel):
     replacement: str | None = None
     source_url: str | None = None
 
+class NormativeUpdate(BaseModel):
+    title: str | None = None
+    status: Literal["active", "obsolete", "unknown"] | None = None
+    replacement: str | None = None
+    source_url: str | None = None
+
 class NormativeOut(NormativeCreate, Schema):
     id: str
+    updated_at: datetime | None = None
 
 # The format is shared by the document, normative and requirement modules.
 class ChunkSourceOut(BaseModel):
