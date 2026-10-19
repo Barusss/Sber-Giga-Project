@@ -94,6 +94,9 @@ def test_report_grouping_persistence_provenance_and_review(client, monkeypatch):
     assert normative["replacement"] == "ГОСТ 29322-2014"
     assert normative["evidence"][0]["quote"] == "ГОСТ 29322—92"
     assert normative["evidence"][0]["page"] == 1
+    assert normative["evidence"][0]["context"] is not None
+    assert "ГОСТ 29322—92" in normative["evidence"][0]["context"]
+    assert "использован в требованиях" in normative["evidence"][0]["context"]
     assert normative["document_id"] == doc_id
     assert normative["document_name"] == "test.pdf"
     assert normative["finding"]["id"]
@@ -215,3 +218,27 @@ def test_report_filters_one_document_without_mixing_other_uploads(client, monkey
     other_endpoint = f"/api/v1/projects/{another['id']}/normative-report"
     assert client.get(other_endpoint, params={"document_id": first_id}).status_code == 404
     assert client.get(other_endpoint).json()["total"] == 0
+
+
+
+def test_evidence_context_is_source_only_and_preserves_quote():
+    from app.reports.normative_report import evidence_context
+
+    source = "Техническая характеристика системы по ГОСТ 29322—92 предусматривает соответствующие параметры."
+    quote = "ГОСТ 29322—92"
+    excerpt = evidence_context(source, quote)
+    assert excerpt is not None
+    assert "Техническая характеристика" in excerpt
+    assert quote in excerpt
+    assert "предусматривает" in excerpt
+    assert evidence_context(source, "ГОСТ 99999—2099") is None
+    assert evidence_context("", quote) is None
+    assert evidence_context(source, "") is None
+
+    long_source = "Начало " + "оченьдлинный_контекст " * 35 + quote + " после стандарта " + "продолжение " * 35
+    bounded = evidence_context(long_source, quote)
+    assert bounded is not None
+    assert bounded.startswith("…")
+    assert bounded.endswith("…")
+    assert quote in bounded
+    assert len(bounded) <= 282

@@ -175,10 +175,17 @@ def check_document_standards(
             f"Упоминание {code}: официальный статус Росстандарта «{status.registry_status}»."
             f"{replacement} Источник: {status.source_url}"
         )
-        guidance = (
-            "Проверьте применимость заменяющего стандарта и необходимость исправления "
-            "ссылки в документе. Это замечание требует проверки специалистом."
-        )
+        if status.replacement:
+            guidance = (
+                f"Проверьте применимость {status.replacement} вместо {code} "
+                "и необходимость изменения ссылки в документе. Решение принимает эксперт."
+            )
+        else:
+            guidance = (
+                f"Для {code} в карточке Росстандарта замена не указана. "
+                "Определите действующий нормативный документ для соответствующих требований "
+                "и оцените необходимость изменения ссылки. Решение принимает эксперт."
+            )
         finding = Finding(
             project_id=document.project_id, module="normatives",
             type=FINDING_TYPE, severity=("warning" if role == "normative" else "info"),

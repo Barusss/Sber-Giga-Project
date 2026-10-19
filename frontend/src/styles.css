@@ -54,3 +54,46 @@
  a{color:#1a2533!important;text-decoration:underline}
  .report-footnote{font-size:9pt}
 }
+
+
+/* Comfortable desktop expert report and precise, accessible evidence. */
+main:has(.expert-report){max-width:1600px}
+.expert-report{font-size:15px;line-height:1.55}
+.expert-report .panel{padding:26px 30px}
+.expert-report .report-cover h2{font-size:26px}
+.expert-report .report-entry h3{font-size:19px;line-height:1.35}
+.expert-report .report-entry-heading p{font-size:14px;line-height:1.55}
+.expert-report .report-section-heading p{font-size:14px}
+.expert-report .report-details{font-size:13px;gap:10px 24px}
+.expert-report .report-evidence{font-size:14px}
+.expert-report .report-source-quote{font-size:14px;line-height:1.65;color:#253447;padding:13px 15px;margin:9px 0;overflow-wrap:anywhere}
+.expert-report .report-source-quote small{font-size:12px;color:#5e7288;margin-top:8px}
+.expert-report .report-quote-mark{background:#fff0be;border-radius:3px;padding:1px 3px;font-weight:700;color:#132538}
+.expert-report .report-decision{font-size:14px;padding:16px 18px}
+.expert-report .report-decision p{margin:8px 0}
+.expert-report .report-entry{padding:24px 0}
+.expert-report .report-replacement{font-size:14px;line-height:1.6}
+.report-evidence-extra{display:none}
+.report-evidence-extra.is-open{display:block}
+.expert-report .report-more-button{margin:7px 0 2px;background:#e6eff0;color:#176348;font-weight:650;padding:9px 13px}
+.report-jump-nav{display:flex;flex-wrap:wrap;gap:10px;margin:18px 0 0}
+.report-jump-nav a{display:inline-flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 13px;border-radius:10px;background:white;border:1px solid #dce5ec;color:#173d55;text-decoration:none;font-size:14px;font-weight:650}
+.report-jump-nav a:hover,.report-jump-nav a:focus-visible{background:#edf6f1;outline:2px solid #7aa895;outline-offset:2px}
+.report-jump-nav a span{min-width:23px;border-radius:7px;background:#eef2f6;padding:2px 7px;text-align:center;color:#354a5c}
+.expert-report .report-section{scroll-margin-top:22px}
+@media(max-width:760px){
+ .expert-report .panel{padding:19px 16px}
+ .expert-report .report-entry h3{font-size:17px}
+ .report-jump-nav a{font-size:13px;flex:1 1 auto}
+}
+@media print{
+ main:has(.expert-report){max-width:none}
+ .expert-report{font-size:10pt;line-height:1.4}
+ .expert-report .panel{padding:0}
+ .expert-report .report-entry{padding:10px 0}
+ .expert-report .report-source-quote{font-size:9.5pt;line-height:1.4;padding:6px 8px;background:white}
+ .expert-report .report-source-quote small{font-size:8pt}
+ .expert-report .report-quote-mark{background:transparent;border-bottom:1px solid #444;color:#000}
+ .report-evidence-extra{display:block!important}
+ .report-jump-nav,.report-more-button{display:none!important}
+}
