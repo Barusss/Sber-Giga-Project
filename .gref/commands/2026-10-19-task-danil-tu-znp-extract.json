@@ -1,0 +1,13 @@
+{
+  "type": "task",
+  "task": {
+    "operation": "save",
+    "title": "Автоматически извлекать требования из ТУ и пункты ЗнП",
+    "description": "На базе уже интегрированных моделей DPazY (PR #11, миграция 0004) выделять атомарные требования ТУ и соответствующие пункты ЗнП из fragments/chunks. Сохранять category, document_id, fragment_id, страницу и точную цитату; без дубликатов. Поддержать несколько страниц и тесты извлечения. Не переделывать существующее ручное API.",
+    "assignee": "mate2",
+    "deadline": "2026-10-29",
+    "priority": "high",
+    "status": "todo",
+    "githubUrl": "https://github.com/Barusss/Sber-Giga-Project/pull/11"
+  }
+}
