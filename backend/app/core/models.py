@@ -141,6 +141,34 @@ class Normative(Base):
     source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
+
+class NormativeVerification(Base):
+    """Last observed official status for a standard in a particular document.
+
+    An unknown lookup overwrites an older snapshot: stale official results
+    must never masquerade as a fresh verification.
+    """
+    __tablename__ = "normative_verifications"
+    __table_args__ = (
+        UniqueConstraint("document_id", "code", name="uq_normative_verifications_document_code"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    document_id: Mapped[str] = mapped_column(
+        ForeignKey("documents.id", ondelete="CASCADE"), index=True
+    )
+    code: Mapped[str] = mapped_column(String(128))
+    reference_kind: Mapped[str] = mapped_column(String(32))
+    status: Mapped[str] = mapped_column(String(32), default="unknown")
+    registry_status: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    title: Mapped[str | None] = mapped_column(Text, nullable=True)
+    replacement: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    attempted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
 class Finding(Base):
     __tablename__ = "findings"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)

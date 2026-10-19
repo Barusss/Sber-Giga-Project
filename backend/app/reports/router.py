@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from app.core.db import get_db
 from app.core.models import Finding, Project, ReviewState, ReviewStatus, Document
 from app.core.schemas import FindingCreate, FindingOut, FindingReview
+from app.reports.normative_report import NormativeReport, build_normative_report
 
 router = APIRouter(tags=["reports"])
 
@@ -55,6 +56,12 @@ def approve_project(project_id: str, db: Session = Depends(get_db)):
     project.state = ReviewState.approved
     db.commit()
     return {"state": "approved"}
+
+@router.get("/projects/{project_id}/normative-report", response_model=NormativeReport)
+def normative_report(project_id: str, db: Session = Depends(get_db)):
+    project = project_or_404(db, project_id)
+    return build_normative_report(db, project)
+
 
 @router.get("/projects/{project_id}/report")
 def project_report(project_id: str, db: Session = Depends(get_db)):
