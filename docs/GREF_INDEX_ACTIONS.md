@@ -22,7 +22,7 @@ Get-Content "$env:USERPROFILE\.ssh\gref_actions.pub"
 В репозитории: `Settings → Secrets and variables → Actions`.
 
 Создать Repository **secrets**:
-- `GREF_SSH_PRIVATE_KEY`: полный текст приватного ключа, только GitHub Secrets.
+- `GREF_SSH_PRIVATE_KEY_B64`: Base64-представление байтов приватного ключа (получить на Windows: `[Convert]::ToBase64String([IO.File]::ReadAllBytes("$env:USERPROFILE\.ssh\gref_actions")) | Set-Clipboard`). Вставить результат как одну строку в GitHub Secret; он по-прежнему секрет.
 - `GREF_SSH_KNOWN_HOSTS`: заранее **проверенная** запись host key (можно получить `ssh-keyscan -p 22 -t ed25519 HOST` и сверить отпечаток у хостера). Не отключать StrictHostKeyChecking.
 
 Создать Repository **variables**:
