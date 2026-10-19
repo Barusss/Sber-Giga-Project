@@ -206,8 +206,9 @@ def check_document_standards(
                 local_normative.replacement = status.replacement
                 local_normative.source_url = status.source_url
 
-        # Создаём Finding только для устаревших нормативных ссылок
-        if final_status != "obsolete" or role != "normative" or not evidence:
+        # Retain an auditable informational finding for obsolete bibliography
+        # references, but do not present it as a normative requirement.
+        if final_status != "obsolete" or not evidence:
             continue
 
         already = next(
@@ -225,7 +226,12 @@ def check_document_standards(
             f"{replacement_text} Источник: {final_source_url or 'не указан'}"
         )
         
-        if final_replacement:
+        if role == "informative":
+            guidance = (
+                "Ссылка носит справочный характер. Проверьте необходимость "
+                "её обновления; замена не обязательна автоматически."
+            )
+        elif final_replacement:
             guidance = (
                 f"Проверьте применимость {final_replacement} вместо {code} "
                 "и необходимость изменения ссылки в документе. Решение принимает эксперт."
@@ -241,7 +247,7 @@ def check_document_standards(
             project_id=document.project_id,
             module="normatives",
             type=FINDING_TYPE,
-            severity="warning",
+            severity="info" if role == "informative" else "warning",
             explanation=explanation,
             suggested_action=guidance,
             evidence=evidence,
