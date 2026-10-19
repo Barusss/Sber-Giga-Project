@@ -25,21 +25,28 @@ jobs:
           fetch-depth: 0
       - name: Install SSH credentials
         env:
-          SSH_PRIVATE_KEY: ${{ secrets.GREF_SSH_PRIVATE_KEY }}
+          SSH_PRIVATE_KEY_B64: ${{ secrets.GREF_SSH_PRIVATE_KEY_B64 }}
           SSH_KNOWN_HOSTS: ${{ secrets.GREF_SSH_KNOWN_HOSTS }}
         run: |
           set -euo pipefail
-          if [ -z "$SSH_PRIVATE_KEY" ] || [ -z "$SSH_KNOWN_HOSTS" ]; then
-            echo 'Missing GREF_SSH_PRIVATE_KEY or GREF_SSH_KNOWN_HOSTS' >&2
+          if [ -z "$SSH_PRIVATE_KEY_B64" ] || [ -z "$SSH_KNOWN_HOSTS" ]; then
+            echo 'Missing GREF_SSH_PRIVATE_KEY_B64 or GREF_SSH_KNOWN_HOSTS' >&2
             exit 1
           fi
           mkdir -p "$HOME/.ssh"
           chmod 700 "$HOME/.ssh"
           umask 077
-          printf '%s\n' "$SSH_PRIVATE_KEY" > "$HOME/.ssh/gref_actions"
-          printf '%s\n' "$SSH_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          if ! printf '%s' "$SSH_PRIVATE_KEY_B64" | base64 --decode > "$HOME/.ssh/gref_actions"; then
+            echo 'Invalid Base64 in GREF_SSH_PRIVATE_KEY_B64' >&2
+            exit 1
+          fi
+          sed -i 's/\r$//' "$HOME/.ssh/gref_actions"
+          printf '%s\n' "$SSH_KNOWN_HOSTS" | sed 's/\r$//' > "$HOME/.ssh/known_hosts"
           chmod 600 "$HOME/.ssh/gref_actions" "$HOME/.ssh/known_hosts"
-          ssh-keygen -y -f "$HOME/.ssh/gref_actions" >/dev/null
+          if ! ssh-keygen -y -P '' -f "$HOME/.ssh/gref_actions" >/dev/null 2>&1; then
+            echo 'Invalid SSH private key or key still has a passphrase' >&2
+            exit 1
+          fi
       - name: Check SSH and PHP
         env:
           GREF_SSH_HOST: ${{ vars.GREF_SSH_HOST }}
