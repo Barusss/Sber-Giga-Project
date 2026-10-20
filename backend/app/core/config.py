@@ -25,7 +25,7 @@ class Settings(BaseSettings):
 
     # Optional local semantic channel; without the model the analysis uses lexical search.
     embedding_enabled: bool = False
-    embedding_model: str = "intfloat/multilingual-e5-small"
+    embedding_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
     embedding_batch_size: int = 32
 
     model_config = SettingsConfigDict(

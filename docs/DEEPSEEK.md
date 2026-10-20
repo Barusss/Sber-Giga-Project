@@ -17,8 +17,10 @@
 | `DEEPSEEK_TIMEOUT_SECONDS` | Тайм-аут HTTP-запроса (60 секунд) |
 | `DEEPSEEK_MAX_TOKENS` | Ограничение вывода (3000 токенов) |
 | `EMBEDDING_ENABLED` | `false` по умолчанию; включает локальный semantic-канал ТУ/ЗнП |
-| `EMBEDDING_MODEL` | `intfloat/multilingual-e5-small` (384 измерения) |
+| `EMBEDDING_MODEL` | `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` (384 измерения, мультиязычная) |
 | `EMBEDDING_BATCH_SIZE` | Размер батча локальных embeddings (32) |
+
+`fastembed` не поддерживает `intfloat/multilingual-e5-small`, поэтому эта модель не подходит для semantic-канала. Если `.env` уже создан из старого шаблона, обновите `EMBEDDING_MODEL` вручную: `.env.example` не перезаписывает существующий `.env`.
 
 Клиент использует [Chat Completions API](https://api-docs.deepseek.com/api/create-chat-completion/) и JSON Output. Правильный параметр отключения рассуждений: `{"thinking":{"type":"disabled"}}`. Без `DEEPSEEK_API_KEY` приложение продолжает запускаться; ошибка возникает только при попытке вызвать DeepSeek.
 
