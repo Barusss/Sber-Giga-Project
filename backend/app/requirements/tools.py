@@ -20,6 +20,17 @@ def _cosine(left: list[float], right: list[float]) -> float:
 # ---------------------------------------------------------------------------
 # ИНСТРУМЕНТ 1: Поиск подходящих пунктов ЗнП (лексика + опциональная семантика)
 # ---------------------------------------------------------------------------
+_LEADING_CLAUSE_NUMBER_RE = re.compile(
+    r"^\s*(?:п\.?\s*|пункт\s*)?\d{1,2}(?:\.\d{1,2}){0,5}[.)]\s*",
+    re.IGNORECASE,
+)
+
+
+def _strip_clause_number(text: str) -> str:
+    """Убирает номер пункта, чтобы «4.2.» не давал ложное совпадение с другим 4.2."""
+    return _LEADING_CLAUSE_NUMBER_RE.sub("", text, count=1)
+
+
 def tool_search_znp_clauses(
     query: str,
     znp_clauses: list[ZNPClause],
@@ -29,7 +40,7 @@ def tool_search_znp_clauses(
     semantic_weight: float = 0.6,
 ) -> list[dict[str, Any]]:
     """Ищет релевантные пункты ЗнП; без embeddings работает как раньше."""
-    norm_query = query.lower().replace("ё", "е")
+    norm_query = _strip_clause_number(query).lower().replace("ё", "е")
     query_tokens = set(re.findall(r"[а-яa-z0-9]{2,}", norm_query))
     semantic_available = bool(
         query_embedding
@@ -43,7 +54,7 @@ def tool_search_znp_clauses(
 
     scored: list[dict[str, Any]] = []
     for idx, clause in enumerate(znp_clauses):
-        norm_clause = clause.text.lower().replace("ё", "е")
+        norm_clause = _strip_clause_number(clause.text).lower().replace("ё", "е")
         clause_tokens = set(re.findall(r"[а-яa-z0-9]{2,}", norm_clause))
         overlap = query_tokens & clause_tokens
 
@@ -138,7 +149,9 @@ def tool_verify_engineering_params(tu_text: str, znp_text: str) -> dict[str, Any
         (norm_num(m[0]), "кв" if m[1] else "в")
         for m in re.findall(volt_re, znp_text)
     }
-    if tu_volt and znp_volt and tu_volt != znp_volt:
+    if tu_volt and not znp_volt:
+        mismatches.append(f"В ЗнП не указано значение напряжения из ТУ ({tu_volt})")
+    elif tu_volt and znp_volt and tu_volt != znp_volt:
         mismatches.append(f"Несовпадение напряжения: ТУ={tu_volt}, ЗнП={znp_volt}")
 
     # 3. Категория надёжности
@@ -146,14 +159,18 @@ def tool_verify_engineering_params(tu_text: str, znp_text: str) -> dict[str, Any
     cat_map = {"1": "I", "2": "II", "3": "III", "i": "I", "ii": "II", "iii": "III"}
     tu_cat = {cat_map.get(c.lower(), c.upper()) for c in re.findall(cat_re, tu_text, re.IGNORECASE)}
     znp_cat = {cat_map.get(c.lower(), c.upper()) for c in re.findall(cat_re, znp_text, re.IGNORECASE)}
-    if tu_cat and znp_cat and tu_cat != znp_cat:
+    if tu_cat and not znp_cat:
+        mismatches.append(f"В ЗнП не указана категория надёжности из ТУ ({tu_cat})")
+    elif tu_cat and znp_cat and tu_cat != znp_cat:
         mismatches.append(f"Несовпадение категории надёжности: ТУ={tu_cat}, ЗнП={znp_cat}")
 
     # 4. Класс точности учёта
     acc_re = r"класс[ауеом]*\s+точност[иью]\s+(?:не\s+ниже\s+)?(\d+(?:[.,]\d+)?[sSсС]?)"
     tu_acc = {m.replace(",", ".").upper().replace("С", "S") for m in re.findall(acc_re, tu_text, re.IGNORECASE)}
     znp_acc = {m.replace(",", ".").upper().replace("С", "S") for m in re.findall(acc_re, znp_text, re.IGNORECASE)}
-    if tu_acc and znp_acc and tu_acc != znp_acc:
+    if tu_acc and not znp_acc:
+        mismatches.append(f"В ЗнП не указан класс точности из ТУ ({tu_acc})")
+    elif tu_acc and znp_acc and tu_acc != znp_acc:
         mismatches.append(f"Несовпадение класса точности: ТУ={tu_acc}, ЗнП={znp_acc}")
 
     return {

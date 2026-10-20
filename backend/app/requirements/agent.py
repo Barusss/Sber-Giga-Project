@@ -55,6 +55,9 @@ AGENT_SYSTEM_PROMPT = """Ты ИИ-агент инженерной экспер�
 
 MISSING_THRESHOLD = 0.25
 MATCH_THRESHOLD = 0.35
+# Semantic-only candidates are too noisy for automatic confirmation:
+# unrelated clauses can have a high cosine score without lexical overlap.
+MIN_LEXICAL_SCORE_FOR_FULFILLED = 0.2
 TOOL_NAMES = frozenset(
     {"search_znp", "get_neighbors", "verify_params", "validate_quotes"}
 )
@@ -485,7 +488,10 @@ class RequirementsAgent:
                 trace,
             )
 
-        if best["similarity_score"] >= MATCH_THRESHOLD:
+        if (
+            best["similarity_score"] >= MATCH_THRESHOLD
+            and best["lexical_score"] >= MIN_LEXICAL_SCORE_FOR_FULFILLED
+        ):
             return (
                 LLMVerificationDecision(
                     status=RequirementStatus.fulfilled,
@@ -500,6 +506,16 @@ class RequirementsAgent:
                 trace,
             )
 
+        semantic_only = (
+            best.get("semantic_score") is not None
+            and best["lexical_score"] < MIN_LEXICAL_SCORE_FOR_FULFILLED
+        )
+        reasoning = (
+            "Семантическое совпадение без достаточной лексической опоры, "
+            "требуется подтверждение инженером."
+            if semantic_only
+            else "Частичное совпадение, требуется подтверждение инженером."
+        )
         return (
             LLMVerificationDecision(
                 status=RequirementStatus.needs_review,
@@ -507,7 +523,7 @@ class RequirementsAgent:
                 matched_znp_clause_id=best["clause_id"],
                 tu_quote=req.text,
                 znp_quote=best["text"],
-                reasoning="Частичное семантическое совпадение, требуется подтверждение инженером.",
+                reasoning=reasoning,
                 method="deterministic",
                 channels=channels,
             ),

@@ -1,5 +1,6 @@
 """Embedding and agent-boundary tests for TU/ZnP matching."""
 import json
+import math
 from collections import deque
 
 import httpx
@@ -9,7 +10,10 @@ from app.ai.embeddings import EmbeddingService
 from app.core.config import Settings
 from app.requirements.agent import RequirementsAgent
 from app.requirements.schemas import RequirementCategory, TURequirement, ZNPClause
-from app.requirements.tools import tool_search_znp_clauses
+from app.requirements.tools import (
+    tool_search_znp_clauses,
+    tool_verify_engineering_params,
+)
 
 DIM = 384
 
@@ -33,7 +37,7 @@ def test_embedding_service_prefixes_and_caches():
     provider = FakeProvider()
     service = EmbeddingService(
         provider=provider,
-        model="intfloat/multilingual-e5-small",
+        model="fake-e5-384",
     )
     documents = service.embed_documents(["мощность 150 кВт", "счетчик"])
     query = service.embed_query("какая мощность?")
@@ -53,7 +57,7 @@ def test_embedding_service_prefixes_and_caches():
 def test_embedding_service_degrades_on_wrong_dimension():
     service = EmbeddingService(
         provider=lambda texts: [[0.0, 1.0, 2.0] for _ in texts],
-        model="intfloat/multilingual-e5-small",
+        model="fake-e5-384",
     )
     assert service.embed_documents(["текст"]) == []
     assert service.enabled is False
@@ -89,6 +93,62 @@ def test_hybrid_search_adds_semantic_channel_and_numbers_bonus():
     assert lexical[0]["clause_id"] == "b"
     assert lexical[0]["channels"] == ["lexical"]
     assert lexical[0]["semantic_score"] is None
+
+
+def test_search_does_not_match_only_by_leading_clause_number():
+    clauses = [
+        ZNPClause(
+            id="znp-1",
+            clause_number="4.2",
+            text="4.2. Выполнить заземление электроустановки.",
+        ),
+    ]
+
+    result = tool_search_znp_clauses(
+        "4.2. Выполнить огнезащиту кабельных линий в электротехнических помещениях.",
+        clauses,
+        top_k=1,
+    )
+
+    assert result[0]["lexical_score"] < 0.25
+    assert result[0]["similarity_score"] < 0.25
+
+
+def test_search_ignores_leading_clause_number_in_paraphrase():
+    clauses = [
+        ZNPClause(
+            id="znp-1",
+            clause_number="2.1",
+            text="2.1. Место подключения определить по меже, выделенной застройщику.",
+        ),
+    ]
+
+    result = tool_search_znp_clauses(
+        "2.1. Точку присоединения разместить на границе земельного участка заявителя.",
+        clauses,
+        top_k=1,
+    )
+
+    assert result[0]["lexical_score"] == 0.0
+
+
+def test_engineering_params_validator_reports_missing_znp_values():
+    result = tool_verify_engineering_params(
+        "Максимальная мощность 150 кВт, напряжение 10 кВ, "
+        "II категория надёжности, класс точности 0.5S.",
+        "Максимальная мощность 100 кВт.",
+    )
+    assert result["params_match"] is False
+    assert len(result["mismatches"]) == 4
+    messages = " ".join(result["mismatches"])
+    assert "мощности" in messages
+    assert "напряжения" in messages
+    assert "категория надёжности" in messages
+    assert "класс точности" in messages
+
+
+def _semantic_vector(score: float) -> list[float]:
+    return [score, math.sqrt(max(0.0, 1.0 - score * score))] + [0.0] * (DIM - 2)
 
 
 def _agent_with_replies(replies, embedder=None):
@@ -137,6 +197,90 @@ def _znp() -> ZNPClause:
     )
 
 
+def test_deterministic_fallback_does_not_fulfill_unrelated_semantic_candidate():
+    tu = TURequirement(
+        id="demo-tu-3",
+        clause_number="п. 4.1",
+        category=RequirementCategory.metering,
+        text=(
+            "На границе балансовой принадлежности установить трёхфазный "
+            "прибор учёта электрической энергии класса точности не ниже 0.5S."
+        ),
+    )
+    znp = [
+        ZNPClause(
+            id="demo-znp-1",
+            clause_number="Раздел 2.1",
+            text=(
+                "Присоединение проектируемой трансформаторной подстанции "
+                "выполнить от сети 10 кВ."
+            ),
+        ),
+        ZNPClause(
+            id="demo-znp-2",
+            clause_number="Раздел 3.2",
+            text=(
+                "Расчётная максимальная мощность энергопринимающих устройств "
+                "по заданию составляет 100 кВт по II категории надёжности."
+            ),
+        ),
+    ]
+
+    def provider(texts):
+        vectors = []
+        for text in texts:
+            if text == znp[1].text:
+                vectors.append(_semantic_vector(0.583))
+            elif text == znp[0].text:
+                vectors.append(_semantic_vector(0.364))
+            else:
+                vectors.append(_semantic_vector(1.0))
+        return vectors
+
+    agent = _agent_with_replies(
+        ["это не JSON"],
+        embedder=EmbeddingService(provider=provider, model="test-semantic"),
+    )
+    response = agent.verify_all([tu], znp)
+    item = response.checked_requirements[0]
+
+    assert item.method == "deterministic"
+    assert item.status.value == "needs_review"
+    assert item.matched_clause is not None
+    assert item.matched_clause.id == "demo-znp-2"
+    assert "класс точности" in item.reasoning
+    steps = response.trace_info["agent_runs"][0]["steps"]
+    param_step = next(step for step in steps if step["tool"] == "verify_params")
+    assert param_step["output"]["params_match"] is False
+
+
+def test_deterministic_fallback_requires_lexical_support_for_fulfilled():
+    tu = TURequirement(
+        id="tu-no-params",
+        clause_number="1.1",
+        category=RequirementCategory.other,
+        text="Обеспечить выполнение организационных мероприятий.",
+    )
+    znp = [
+        ZNPClause(
+            id="znp-unrelated",
+            clause_number="2.1",
+            text="Совершенно другой текст про трансформатор.",
+        )
+    ]
+    embedder = EmbeddingService(
+        provider=lambda texts: [_axis(0) for _ in texts],
+        model="test-semantic",
+    )
+    agent = _agent_with_replies(["это не JSON"], embedder=embedder)
+    response = agent.verify_all([tu], znp)
+    item = response.checked_requirements[0]
+
+    assert item.method == "deterministic"
+    assert item.status.value == "needs_review"
+    assert "лексической опоры" in item.reasoning
+
+
 def test_agent_llm_path_reports_method_and_channels():
     agent = _agent_with_replies([
         {
@@ -161,6 +305,37 @@ def test_agent_llm_path_reports_method_and_channels():
     assert item.method == "llm"
     assert item.channels == ["lexical"]
     assert response.trace_info["agent_runs"][0]["steps"][0]["channels"] == ["lexical"]
+
+
+def test_agent_llm_fulfilled_is_downgraded_when_znp_lacks_parameter():
+    tu = TURequirement(
+        id="tu-metering",
+        clause_number="4.1",
+        category=RequirementCategory.metering,
+        text="Установить прибор учёта класса точности 0.5S.",
+    )
+    znp = ZNPClause(
+        id="znp-power",
+        clause_number="3.2",
+        text="Максимальная мощность энергопринимающих устройств 100 кВт.",
+    )
+    agent = _agent_with_replies([
+        {
+            "action": "finish",
+            "status": "fulfilled",
+            "confidence_score": 0.95,
+            "matched_znp_clause_id": "znp-power",
+            "tu_quote": "класса точности 0.5S",
+            "znp_quote": "мощность энергопринимающих устройств 100 кВт",
+            "reasoning": "Модель ошибочно сочла требование выполненным.",
+        },
+    ])
+    response = agent.verify_all([tu], [znp])
+    item = response.checked_requirements[0]
+
+    assert item.status.value == "needs_review"
+    assert "Валидатор параметров" in item.reasoning
+    assert "класс точности" in item.reasoning
 
 
 def test_agent_invalid_json_falls_back_without_crashing():
@@ -208,7 +383,7 @@ def test_agent_replaces_invented_quote_with_source_text():
 def test_agent_uses_embedding_channel_and_reports_embedding_trace():
     embedder = EmbeddingService(
         provider=lambda texts: [_axis(0) for _ in texts],
-        model="intfloat/multilingual-e5-small",
+        model="fake-e5-384",
     )
     agent = _agent_with_replies(["это не JSON"], embedder=embedder)
     response = agent.verify_all([_tu()], [_znp()])
