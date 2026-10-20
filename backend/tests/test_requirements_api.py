@@ -5,7 +5,10 @@ is still rejected by schema validation (HTTP 422).
 """
 from io import BytesIO
 
+from app.core.models import Fragment
 from app.documents.parser import ExtractedBlock
+from app.requirements.extraction import Clause
+from app.requirements.router import _fragment_for_quote
 
 
 def prepare(client, monkeypatch):
@@ -226,3 +229,226 @@ def test_core_legacy_services_still_visible(client):
     assert client.get("/api/v1/normatives").status_code == 200
     assert client.get("/api/v1/projects").status_code == 200
     assert client.post("/api/v1/requirements/analyze").status_code == 422
+
+
+def _project_with_documents(client, monkeypatch, fake_blocks):
+    monkeypatch.setattr("app.documents.router.extract_blocks", fake_blocks)
+    project = client.post(
+        "/api/v1/projects", json={"name": "Проект повторного анализа"}
+    ).json()
+    documents = {}
+    for kind in ("tu", "znp"):
+        response = client.post(
+            f"/api/v1/projects/{project['id']}/documents",
+            data={"kind": kind},
+            files={"file": (f"{kind}.pdf", BytesIO(kind.encode()), "application/pdf")},
+        )
+        assert response.status_code == 201, response.text
+        documents[kind] = response.json()["id"]
+    return project["id"], documents
+
+
+def _requirements_blocks(data, suffix):
+    if data == b"tu":
+        return [
+            ExtractedBlock(1, 0, "1.1. Максимальная мощность 150 кВт."),
+            ExtractedBlock(2, 0, "1.2. Установить счетчик класса точности 0.5S."),
+        ]
+    return [ExtractedBlock(3, 0, "3.1. Предусмотреть максимальную мощность 150 кВт.")]
+
+
+def test_reanalysis_preserves_human_decisions_and_evidence_links(client, monkeypatch):
+    pid, _ = _project_with_documents(client, monkeypatch, _requirements_blocks)
+    base = f"/api/v1/requirements/projects/{pid}"
+    first = client.post("/api/v1/requirements/analyze", json={"project_id": pid})
+    assert first.status_code == 200, first.text
+    first_data = first.json()
+    first_items = {
+        item["requirement"]["clause_number"]: item
+        for item in first_data["checked_requirements"]
+    }
+    assert first_data["trace_info"]["analysis"] == {
+        "created": 2,
+        "updated": 0,
+        "preserved_human": 0,
+        "preserved_findings": 0,
+        "removed": 0,
+        "force": False,
+    }
+
+    missing = first_items["1.2"]
+    findings = client.get(f"/api/v1/projects/{pid}/findings").json()
+    finding = next(
+        item for item in findings
+        if item["type"] == "missing_requirement"
+    )
+    assert any(
+        entry.get("requirement_id") == missing["requirement"]["id"]
+        for entry in finding["evidence"]
+    )
+
+    confirmed = client.post(f"{base}/confirm", json={
+        "requirement_id": missing["requirement"]["id"],
+        "status": "fulfilled",
+        "comment": "Инженер подтвердил требование",
+    })
+    assert confirmed.status_code == 200, confirmed.text
+
+    second = client.post(
+        "/api/v1/requirements/analyze", json={"project_id": pid, "force": False}
+    ).json()
+    second_items = {
+        item["requirement"]["clause_number"]: item
+        for item in second["checked_requirements"]
+    }
+    assert second["trace_info"]["analysis"] == {
+        "created": 0,
+        "updated": 2,
+        "preserved_human": 1,
+        "preserved_findings": 1,
+        "removed": 0,
+        "force": False,
+    }
+    assert second_items["1.1"]["requirement"]["id"] == \
+        first_items["1.1"]["requirement"]["id"]
+    assert second_items["1.1"]["id"] == first_items["1.1"]["id"]
+    assert second_items["1.2"]["id"] == missing["id"]
+    assert second_items["1.2"]["status"] == "fulfilled"
+    assert second_items["1.2"]["is_confirmed_by_human"] is True
+    assert second_items["1.2"]["human_override_status"] == "fulfilled"
+
+    preserved_findings = client.get(f"/api/v1/projects/{pid}/findings").json()
+    preserved = next(
+        item for item in preserved_findings
+        if any(
+            entry.get("requirement_id") == missing["requirement"]["id"]
+            for entry in item["evidence"]
+        )
+    )
+    assert preserved["review_status"] == "rejected"
+
+    forced = client.post(
+        "/api/v1/requirements/analyze", json={"project_id": pid, "force": True}
+    ).json()
+    forced_items = {
+        item["requirement"]["clause_number"]: item
+        for item in forced["checked_requirements"]
+    }
+    assert forced["trace_info"]["analysis"] == {
+        "created": 0,
+        "updated": 2,
+        "preserved_human": 0,
+        "preserved_findings": 0,
+        "removed": 0,
+        "force": True,
+    }
+    assert forced_items["1.2"]["is_confirmed_by_human"] is False
+    assert forced_items["1.2"]["human_override_status"] is None
+    assert forced_items["1.2"]["status"] == "missing"
+    reset_findings = client.get(f"/api/v1/projects/{pid}/findings").json()
+    reset = next(
+        item for item in reset_findings
+        if any(
+            entry.get("requirement_id") == missing["requirement"]["id"]
+            for entry in item["evidence"]
+        )
+    )
+    assert reset["review_status"] == "pending"
+
+
+def test_confirm_updates_only_its_finding(client, monkeypatch):
+    def fake_blocks(data, suffix):
+        if data == b"tu":
+            return [
+                ExtractedBlock(1, 0, "1.1. Максимальная мощность 150 кВт."),
+                ExtractedBlock(2, 0, "1.2. Установить счетчик класса точности 0.5S."),
+                ExtractedBlock(3, 0, "1.3. Предусмотреть устройства РЗА."),
+            ]
+        return [ExtractedBlock(4, 0, "4.1. Максимальная мощность 150 кВт.")]
+
+    pid, _ = _project_with_documents(client, monkeypatch, fake_blocks)
+    analyzed = client.post(
+        "/api/v1/requirements/analyze", json={"project_id": pid}
+    ).json()
+    items = {
+        item["requirement"]["clause_number"]: item
+        for item in analyzed["checked_requirements"]
+    }
+    assert client.post(
+        f"/api/v1/requirements/projects/{pid}/confirm",
+        json={
+            "requirement_id": items["1.2"]["requirement"]["id"],
+            "status": "fulfilled",
+        },
+    ).status_code == 200
+
+    findings = client.get(f"/api/v1/projects/{pid}/findings").json()
+    by_requirement = {
+        entry["requirement_id"]: finding["review_status"]
+        for finding in findings
+        for entry in finding["evidence"]
+        if entry.get("requirement_id")
+    }
+    assert by_requirement[items["1.2"]["requirement"]["id"]] == "rejected"
+    assert by_requirement[items["1.3"]["requirement"]["id"]] == "pending"
+
+
+def test_quote_maps_to_fragment_that_contains_it():
+    first = Fragment(id="f1", document_id="d1", page=1, position=0, text="Начало пункта.")
+    second = Fragment(id="f2", document_id="d1", page=2, position=0, text="Продолжение с цитатой 150 кВт.")
+    clause = Clause(
+        clause_number="1.2",
+        text="Начало пункта.\nПродолжение с цитатой 150 кВт.",
+        page=1,
+        fragment_id="f1",
+        fragment_ids=["f1", "f2"],
+        section_path=None,
+        fragment_text="Начало пункта.",
+    )
+    fragments = {"f1": first, "f2": second}
+    assert _fragment_for_quote("150 кВт", clause, fragments).id == "f2"
+    assert _fragment_for_quote("цитаты нет", clause, fragments).id == "f1"
+    assert _fragment_for_quote("150 кВт", None, fragments) is None
+
+
+def test_reanalysis_keeps_confirmed_requirement_when_text_disappears(client, monkeypatch):
+    def fake_blocks(data, suffix):
+        if data == b"tu2":
+            return [ExtractedBlock(1, 0, "1.1. Максимальная мощность 150 кВт.")]
+        return _requirements_blocks(data, suffix)
+
+    pid, _ = _project_with_documents(client, monkeypatch, fake_blocks)
+    base = f"/api/v1/requirements/projects/{pid}"
+    first = client.post("/api/v1/requirements/analyze", json={"project_id": pid}).json()
+    removed_item = next(
+        item for item in first["checked_requirements"]
+        if item["requirement"]["clause_number"] == "1.2"
+    )
+    assert client.post(f"{base}/confirm", json={
+        "requirement_id": removed_item["requirement"]["id"],
+        "status": "missing",
+    }).status_code == 200
+
+    uploaded = client.post(
+        f"/api/v1/projects/{pid}/documents",
+        data={"kind": "tu"},
+        files={"file": ("tu2.pdf", BytesIO(b"tu2"), "application/pdf")},
+    )
+    assert uploaded.status_code == 201, uploaded.text
+
+    second = client.post("/api/v1/requirements/analyze", json={
+        "project_id": pid,
+        "tu_document_id": uploaded.json()["id"],
+    })
+    assert second.status_code == 200, second.text
+    assert second.json()["trace_info"]["analysis"]["removed"] == 1
+
+    stored = client.get(base).json()
+    stored_items = {
+        item["requirement"]["clause_number"]: item
+        for item in stored["checked_requirements"]
+    }
+    assert set(stored_items) == {"1.1", "1.2"}
+    assert stored_items["1.2"]["is_confirmed_by_human"] is True
+    assert stored_items["1.2"]["requirement"]["id"] == \
+        removed_item["requirement"]["id"]

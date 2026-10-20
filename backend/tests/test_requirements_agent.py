@@ -1,0 +1,217 @@
+"""Embedding and agent-boundary tests for TU/ZnP matching."""
+import json
+from collections import deque
+
+import httpx
+
+from app.ai.deepseek import DeepSeekClient
+from app.ai.embeddings import EmbeddingService
+from app.core.config import Settings
+from app.requirements.agent import RequirementsAgent
+from app.requirements.schemas import RequirementCategory, TURequirement, ZNPClause
+from app.requirements.tools import tool_search_znp_clauses
+
+DIM = 384
+
+
+def _axis(index: int) -> list[float]:
+    vector = [0.0] * DIM
+    vector[index] = 1.0
+    return vector
+
+
+class FakeProvider:
+    def __init__(self):
+        self.calls: list[list[str]] = []
+
+    def __call__(self, texts):
+        self.calls.append(list(texts))
+        return [_axis(0) for _ in texts]
+
+
+def test_embedding_service_prefixes_and_caches():
+    provider = FakeProvider()
+    service = EmbeddingService(
+        provider=provider,
+        model="intfloat/multilingual-e5-small",
+    )
+    documents = service.embed_documents(["мощность 150 кВт", "счетчик"])
+    query = service.embed_query("какая мощность?")
+
+    assert len(documents) == 2
+    assert len(documents[0]) == DIM
+    assert query == _axis(0)
+    assert provider.calls[0] == [
+        "passage: мощность 150 кВт",
+        "passage: счетчик",
+    ]
+    assert provider.calls[1] == ["query: какая мощность?"]
+    assert service.status()["enabled"] is True
+    assert service.status()["reason"] is None
+
+
+def test_embedding_service_degrades_on_wrong_dimension():
+    service = EmbeddingService(
+        provider=lambda texts: [[0.0, 1.0, 2.0] for _ in texts],
+        model="intfloat/multilingual-e5-small",
+    )
+    assert service.embed_documents(["текст"]) == []
+    assert service.enabled is False
+    assert "384" in service.reason
+    assert service.embed_query("другой") is None
+
+
+def test_embedding_service_disabled_without_package():
+    service = EmbeddingService(enabled=False)
+    assert service.embed_documents(["текст"]) == []
+    assert service.embed_query("текст") is None
+    assert service.status()["reason"] == "EMBEDDING_ENABLED=false"
+
+
+def test_hybrid_search_adds_semantic_channel_and_numbers_bonus():
+    clauses = [
+        ZNPClause(id="a", clause_number="1", text="совершенно посторонний текст"),
+        ZNPClause(id="b", clause_number="2", text="мощность 150 кВт"),
+    ]
+    results = tool_search_znp_clauses(
+        "присоединяемая мощность",
+        clauses,
+        top_k=2,
+        query_embedding=_axis(0),
+        clause_embeddings=[_axis(0), _axis(1)],
+    )
+    assert [item["clause_id"] for item in results] == ["a", "b"]
+    assert results[0]["channels"] == ["lexical", "semantic"]
+    assert results[0]["semantic_score"] == 1.0
+    assert results[1]["semantic_score"] == 0.0
+
+    lexical = tool_search_znp_clauses("150 кВт", clauses, top_k=2)
+    assert lexical[0]["clause_id"] == "b"
+    assert lexical[0]["channels"] == ["lexical"]
+    assert lexical[0]["semantic_score"] is None
+
+
+def _agent_with_replies(replies, embedder=None):
+    queue = deque(replies)
+
+    def handler(request):
+        reply = queue.popleft() if queue else replies[-1]
+        content = reply if isinstance(reply, str) else json.dumps(reply, ensure_ascii=False)
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"message": {"content": content}, "finish_reason": "stop"}
+                ]
+            },
+        )
+
+    config = Settings(
+        deepseek_api_key="test-key",
+        deepseek_base_url="https://deepseek.invalid",
+        embedding_enabled=False,
+    )
+    http_client = httpx.Client(transport=httpx.MockTransport(handler))
+    client = DeepSeekClient(config=config, http_client=http_client)
+    return RequirementsAgent(
+        ai_client=client,
+        max_steps=3,
+        embedder=embedder or EmbeddingService(enabled=False),
+    )
+
+
+def _tu() -> TURequirement:
+    return TURequirement(
+        id="tu-1",
+        clause_number="1.1",
+        category=RequirementCategory.power,
+        text="Максимальная мощность 150 кВт.",
+    )
+
+
+def _znp() -> ZNPClause:
+    return ZNPClause(
+        id="znp-1",
+        clause_number="3.1",
+        text="Предусмотреть максимальную мощность 150 кВт.",
+    )
+
+
+def test_agent_llm_path_reports_method_and_channels():
+    agent = _agent_with_replies([
+        {
+            "action": "call_tool",
+            "thought": "поиск",
+            "tool_name": "search_znp",
+            "tool_args": {"query": "максимальная мощность 150 кВт"},
+        },
+        {
+            "action": "finish",
+            "status": "fulfilled",
+            "confidence_score": 0.91,
+            "matched_znp_clause_id": "znp-1",
+            "tu_quote": "Максимальная мощность 150 кВт",
+            "znp_quote": "максимальную мощность 150 кВт",
+            "reasoning": "Параметры совпадают.",
+        },
+    ])
+    response = agent.verify_all([_tu()], [_znp()])
+    item = response.checked_requirements[0]
+    assert item.status.value == "fulfilled"
+    assert item.method == "llm"
+    assert item.channels == ["lexical"]
+    assert response.trace_info["agent_runs"][0]["steps"][0]["channels"] == ["lexical"]
+
+
+def test_agent_invalid_json_falls_back_without_crashing():
+    agent = _agent_with_replies(["это не JSON"])
+    response = agent.verify_all([_tu()], [_znp()])
+    item = response.checked_requirements[0]
+    assert item.method == "deterministic"
+    assert item.channels == ["lexical"]
+    assert item.status.value in {"fulfilled", "needs_review", "missing"}
+
+
+def test_agent_invalid_tool_args_falls_back_without_crashing():
+    agent = _agent_with_replies([
+        {
+            "action": "call_tool",
+            "tool_name": "search_znp",
+            "tool_args": "not-a-dict",
+        }
+    ])
+    response = agent.verify_all([_tu()], [_znp()])
+    item = response.checked_requirements[0]
+    assert item.method == "deterministic"
+    assert item.tu_quote == _tu().text
+
+
+def test_agent_replaces_invented_quote_with_source_text():
+    agent = _agent_with_replies([
+        {
+            "action": "finish",
+            "status": "fulfilled",
+            "confidence_score": 0.91,
+            "matched_znp_clause_id": "znp-1",
+            "tu_quote": "выдуманная цитата",
+            "znp_quote": "тоже выдумка",
+            "reasoning": "Параметры совпадают.",
+        },
+    ])
+    response = agent.verify_all([_tu()], [_znp()])
+    item = response.checked_requirements[0]
+    assert "выдуманная" not in item.tu_quote
+    assert item.tu_quote == _tu().text[:120]
+    assert "выдумка" not in item.znp_quote
+
+
+def test_agent_uses_embedding_channel_and_reports_embedding_trace():
+    embedder = EmbeddingService(
+        provider=lambda texts: [_axis(0) for _ in texts],
+        model="intfloat/multilingual-e5-small",
+    )
+    agent = _agent_with_replies(["это не JSON"], embedder=embedder)
+    response = agent.verify_all([_tu()], [_znp()])
+    item = response.checked_requirements[0]
+    assert item.channels == ["lexical", "semantic"]
+    assert response.trace_info["embedding"]["enabled"] is True

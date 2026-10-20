@@ -18,14 +18,14 @@
 - Проверяющий модуль добавляет свой `/normatives/analyze` после согласования входной схемы.
 
 ## Соответствие требований (участник 3)
-- `POST /requirements/analyze` — сверка ТУ и ЗнП. Два режима: явные списки `{tu_requirements:[...], znp_clauses:[...]}` (тесты, бенчмарки) или документы проекта `{project_id, tu_document_id?, znp_document_id?}`. Агент выполняет поиск по пунктам, сверку числовых параметров и валидацию цитат; при недоступной LLM работает детерминированный локальный прогон. Результаты сохраняются в `tu_requirements`/`requirement_verifications`, замечания — в общие `findings`. Пустой запрос отклоняется схемой (HTTP 422).
-- `GET /requirements/projects/{project_id}` — сохранённые результаты сверки для страницы «ТУ ↔ ЗнП» (объединяет требования и проверки, учитывает `human_override_status`).
+- `POST /requirements/analyze` — сверка ТУ и ЗнП. Два режима: явные списки `{tu_requirements:[...], znp_clauses:[...]}` (тесты, бенчмарки) или документы проекта `{project_id, tu_document_id?, znp_document_id?, force?}`. Агент выполняет поиск по пунктам, сверку числовых параметров и валидацию цитат; при недоступной LLM работает детерминированный локальный прогон. Результаты сохраняются в `tu_requirements`/`requirement_verifications`, замечания — в общие `findings`. Повторный запуск обновляет результаты по стабильному ключу `(document_id, clause_number, нормализованный текст)`, сохраняет решения инженера и accepted/rejected-замечания; `force=true` сбрасывает их и пересчитывает всё заново. В `trace_info.analysis` возвращаются счётчики `created/updated/preserved_human/preserved_findings/removed/force`. Пустой запрос отклоняется схемой (HTTP 422).
+- `GET /requirements/projects/{project_id}` — сохранённые результаты сверки для страницы «ТУ ↔ ЗнП» (объединяет требования и проверки, учитывает `human_override_status`). Каждый элемент содержит происхождение обеих сторон: `tu_fragment_id/tu_page/tu_fragment_text` и `znp_fragment_id/znp_page/znp_fragment_text`. `method` (`llm|deterministic`) и `channels` (`lexical|semantic`) возвращаются в ответе `/analyze`; после перезагрузки они не хранятся.
 - `POST /requirements/projects/{project_id}/tu-requirements` — вручную записать подготовленное требование ТУ: `{document_id, clause_number, category, text}`. Документ должен иметь `kind=tu` и принадлежать проекту; только для `draft`.
 - `GET /requirements/projects/{project_id}/tu-requirements?document_id=...` — список подготовленных требований, опционально фильтр документа.
 - `GET /requirements/projects/{project_id}/verifications` — сохранённые результаты проверки и ручных решений инженера. **Это не запуск сравнения.**
-- `POST /requirements/projects/{project_id}/confirm` — ручное решение инженера: `{requirement_id,status:"fulfilled|missing|needs_review",comment?}`. Сохраняет статус в `human_override_status`, не подменяет исходный `status`; если проверки ещё не было, создаёт запись `needs_review` с ручным решением и без искусственного score. Решение инженера также закрывает (`rejected`) или подтверждает (`accepted`) связанное замечание модуля `requirements`.
+- `POST /requirements/projects/{project_id}/confirm` — ручное решение инженера: `{requirement_id,status:"fulfilled|missing|needs_review",comment?}`. Сохраняет статус в `human_override_status`, не подменяет исходный `status`; если проверки ещё не было, создаёт запись `needs_review` с ручным решением и без искусственного score. Решение инженера также закрывает (`rejected`) или подтверждает (`accepted`) связанное замечание модуля `requirements`; связь берётся из `evidence[].requirement_id`, для старых записей — по префиксу `[<clause_number>]`.
 - Модели `TURequirement`, `RequirementVerification` и структуры `TURequirement/ZNPClause/LLMVerificationDecision` перенесены из <https://github.com/Barusss/Sber-Giga-Project/pull/4> (DPazY).
-- Семантические совпадения подтверждаются цитатами, а не только числом similarity; `missing` в fallback-режиме опирается на лексический порог, поэтому финальное решение всегда за инженером.
+- Семантические совпадения подтверждаются цитатами, а не только числом similarity. При `EMBEDDING_ENABLED=true` и установленном `fastembed` поиск гибридный (`semantic_weight * semantic + (1 - semantic_weight) * lexical`); без модели, при ошибке загрузки или на SQLite остаётся лексический канал, причина видна в `trace_info.embedding.reason`. `missing` в fallback-режиме срабатывает только при отсутствии кандидата выше порога `0.25`, поэтому финальное решение всегда за инженером.
 
 ## Замечания и согласование (участник 1 и оба аналитических модуля)
 - `GET /projects/{id}/findings` — замечания.
@@ -41,7 +41,7 @@
   "severity":"warning",
   "explanation":"Пункт ТУ не отражён в ЗнП",
   "suggested_action":"Дополнить задание",
-  "evidence":[{"document_id":"<uuid>","fragment_id":"<uuid>","page":2,"quote":"Требуется ..."}]
+  "evidence":[{"document_id":"<uuid>","fragment_id":"<uuid>","page":2,"quote":"Требуется ...","requirement_id":"<uuid>"}]
 }
 ```
 

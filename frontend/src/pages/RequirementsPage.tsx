@@ -17,12 +17,18 @@ type TURequirement = {
   clause_number: string
   category: RequirementCategory
   text: string
+  fragment_id?: string | null
+  page?: number | null
+  fragment_text?: string | null
 }
 
 type ZNPClause = {
   id: string
   clause_number: string
   text: string
+  fragment_id?: string | null
+  page?: number | null
+  fragment_text?: string | null
 }
 
 type RequirementCheckItem = {
@@ -37,6 +43,14 @@ type RequirementCheckItem = {
   is_confirmed_by_human: boolean
   human_comment?: string | null
   human_override_status?: RequirementStatus | null
+  tu_fragment_id?: string | null
+  tu_page?: number | null
+  tu_fragment_text?: string | null
+  znp_fragment_id?: string | null
+  znp_page?: number | null
+  znp_fragment_text?: string | null
+  channels?: string[]
+  method?: string | null
 }
 
 type RequirementVerification = {
@@ -60,6 +74,20 @@ type CheckRequirementsResponse = {
   }
   trace_info?: {
     execution_time_ms?: number
+    analysis?: {
+      created: number
+      updated: number
+      preserved_human: number
+      preserved_findings: number
+      removed: number
+      force: boolean
+    }
+    embedding?: {
+      enabled: boolean
+      model?: string
+      dim?: number
+      reason?: string | null
+    }
     agent_runs?: Array<{
       requirement_id: string
       clause_number: string
@@ -145,6 +173,72 @@ const DEMO_PAYLOAD = {
   ],
 }
 
+function HighlightedQuote({ text, quote }: { text: string; quote?: string | null }) {
+  const needle = (quote ?? '').trim()
+  if (!needle) return <>{text}</>
+  const index = text.toLocaleLowerCase().indexOf(needle.toLocaleLowerCase())
+  if (index < 0) return <>{text}</>
+  return (
+    <>
+      {text.slice(0, index)}
+      <mark style={{ background: '#fde68a', padding: 0 }}>
+        {text.slice(index, index + needle.length)}
+      </mark>
+      {text.slice(index + needle.length)}
+    </>
+  )
+}
+
+function SourceFragment({
+  title,
+  text,
+  quote,
+  page,
+  fragmentId,
+}: {
+  title: string
+  text?: string | null
+  quote?: string | null
+  page?: number | null
+  fragmentId?: string | null
+}) {
+  return (
+    <div
+      style={{
+        border: '1px solid #e2e8f0',
+        borderRadius: 10,
+        padding: 14,
+        background: '#fff',
+      }}
+    >
+      <div className="horizontal" style={{ justifyContent: 'space-between', gap: 8 }}>
+        <b style={{ fontSize: 13 }}>{title}</b>
+        <small className="muted">
+          {page ? `стр. ${page}` : 'страница не определена'}
+          {fragmentId ? ` · фрагмент ${fragmentId.slice(0, 8)}` : ''}
+        </small>
+      </div>
+      {text ? (
+        <p
+          style={{
+            margin: '8px 0 0',
+            whiteSpace: 'pre-wrap',
+            fontSize: 13,
+            maxHeight: 220,
+            overflow: 'auto',
+          }}
+        >
+          <HighlightedQuote text={text} quote={quote} />
+        </p>
+      ) : (
+        <p className="muted" style={{ margin: '8px 0 0', fontSize: 13 }}>
+          Исходный фрагмент не сохранён (старый результат или демо-набор).
+        </p>
+      )}
+    </div>
+  )
+}
+
 export function RequirementsPage() {
   const [projects, setProjects] = useState<Project[]>([])
   const [selectedProjectId, setSelectedProjectId] = useState('')
@@ -170,6 +264,7 @@ export function RequirementsPage() {
   const [searchQuery, setSearchQuery] = useState('')
   const [comments, setComments] = useState<Record<string, string>>({})
   const [isDemoMode, setIsDemoMode] = useState(false)
+  const [forceReanalyze, setForceReanalyze] = useState(false)
   const [busy, setBusy] = useState(false)
   const [taskProgress, setTaskProgress] = useState(0)
   const [error, setError] = useState('')
@@ -231,6 +326,8 @@ export function RequirementsPage() {
     })
     if (res.trace_info) {
       setTraceInfo(res.trace_info)
+    } else {
+      setTraceInfo(null)
     }
     const initialComments: Record<string, string> = {}
     for (const item of res.checked_requirements) {
@@ -256,7 +353,10 @@ export function RequirementsPage() {
     setError('')
     setIsDemoMode(false)
     try {
-      const payload: Record<string, string> = { project_id: selectedProjectId }
+      const payload: Record<string, unknown> = {
+        project_id: selectedProjectId,
+        force: forceReanalyze,
+      }
       if (tuDocId) payload.tu_document_id = tuDocId
       if (znpDocId) payload.znp_document_id = znpDocId
 
@@ -441,6 +541,21 @@ export function RequirementsPage() {
           <button className="secondary" onClick={runDemoAnalysis} disabled={busy}>
             Демо-проверка (на тестовом наборе)
           </button>
+
+          <label
+            className="horizontal"
+            style={{ gap: 8, width: 'auto', fontSize: 13 }}
+            title="Сбросить решения инженера и замечания, затем пересчитать всё заново"
+          >
+            <input
+              type="checkbox"
+              checked={forceReanalyze}
+              onChange={(e) => setForceReanalyze(e.target.checked)}
+              disabled={busy || isApproved}
+              style={{ width: 'auto', margin: 0 }}
+            />
+            Полный пересчёт (сбросить решения инженера)
+          </label>
         </div>
 
         {/* ПОЛОСА ПРОГРЕССА ВЫПОЛНЕНИЯ ЗАДАЧИ ИИ-АГЕНТОМ */}
@@ -494,6 +609,32 @@ export function RequirementsPage() {
               <small>Время анализа ИИ: {traceInfo.execution_time_ms} мс</small>
             )}
           </div>
+
+          {traceInfo?.analysis && (
+            <div
+              className="horizontal"
+              style={{ flexWrap: 'wrap', gap: 14, fontSize: 13 }}
+            >
+              <span>Создано: <b>{traceInfo.analysis.created}</b></span>
+              <span>Обновлено: <b>{traceInfo.analysis.updated}</b></span>
+              <span style={{ color: '#065f46' }}>
+                Сохранено решений инженера: <b>{traceInfo.analysis.preserved_human}</b>
+              </span>
+              <span style={{ color: '#92400e' }}>
+                Сохранено замечаний: <b>{traceInfo.analysis.preserved_findings}</b>
+              </span>
+              <span>Удалено устаревших: <b>{traceInfo.analysis.removed}</b></span>
+              {traceInfo.analysis.force && (
+                <span style={{ color: '#991b1b', fontWeight: 600 }}>Полный пересчёт</span>
+              )}
+            </div>
+          )}
+
+          {traceInfo?.embedding && !traceInfo.embedding.enabled && (
+            <small className="muted">
+              Семантический канал отключён: {traceInfo.embedding.reason ?? 'лексический режим'}
+            </small>
+          )}
 
           {/* ДВЕ ПОЛОСЫ ПРОГРЕССА: ВЕРИФИКАЦИЯ ИНЖЕНЕРОМ И СООТВЕТСТВИЕ ТРЕБОВАНИЙ */}
           <div
@@ -710,6 +851,25 @@ export function RequirementsPage() {
                 >
                   {meta.label}
                 </span>
+                {item.method && (
+                  <span
+                    title={
+                      item.channels?.length
+                        ? `Каналы поиска: ${item.channels.join(', ')}`
+                        : undefined
+                    }
+                    style={{
+                      fontSize: 12,
+                      padding: '4px 10px',
+                      borderRadius: 6,
+                      background: item.method === 'llm' ? '#eef2ff' : '#f1f5f9',
+                      color: item.method === 'llm' ? '#3730a3' : '#475569',
+                      fontWeight: 600,
+                    }}
+                  >
+                    {item.method === 'llm' ? 'ИИ-агент' : 'Детерминированный расчёт'}
+                  </span>
+                )}
               </div>
 
               <div className="horizontal">
@@ -769,6 +929,7 @@ export function RequirementsPage() {
                 <h3 style={{ marginTop: 0 }}>
                   Требование ТУ ({item.requirement.clause_number})
                 </h3>
+                {item.tu_page != null && <small className="muted">Страница {item.tu_page}</small>}
                 <p style={{ margin: '8px 0' }}>{item.requirement.text}</p>
                 {item.tu_quote && (
                   <blockquote>
@@ -790,6 +951,7 @@ export function RequirementsPage() {
                   Сопоставленный пункт ЗнП{' '}
                   {item.matched_clause ? `(${item.matched_clause.clause_number})` : ''}
                 </h3>
+                {item.znp_page != null && <small className="muted">Страница {item.znp_page}</small>}
                 {item.matched_clause ? (
                   <>
                     <p style={{ margin: '8px 0' }}>{item.matched_clause.text}</p>
@@ -806,6 +968,29 @@ export function RequirementsPage() {
                   </p>
                 )}
               </div>
+            </div>
+
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))',
+                gap: 16,
+              }}
+            >
+              <SourceFragment
+                title="Исходный фрагмент ТУ"
+                text={item.tu_fragment_text ?? item.requirement.fragment_text}
+                quote={item.tu_quote}
+                page={item.tu_page}
+                fragmentId={item.tu_fragment_id ?? item.requirement.fragment_id}
+              />
+              <SourceFragment
+                title="Исходный фрагмент ЗнП"
+                text={item.znp_fragment_text ?? item.matched_clause?.fragment_text}
+                quote={item.znp_quote}
+                page={item.znp_page}
+                fragmentId={item.znp_fragment_id ?? item.matched_clause?.fragment_id}
+              />
             </div>
 
             <div

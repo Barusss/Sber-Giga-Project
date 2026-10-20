@@ -5,6 +5,7 @@ from typing import Any
 from uuid import uuid4
 
 from app.ai.deepseek import DeepSeekClient, DeepSeekError
+from app.ai.embeddings import EmbeddingService
 from app.requirements.schemas import (
     CheckRequirementsResponse,
     LLMVerificationDecision,
@@ -52,13 +53,37 @@ AGENT_SYSTEM_PROMPT = """Ты ИИ-агент инженерной экспер�
 Правило эскалации: если параметры расходятся, формулировка неоднозначна или уверенность ниже 0.70 — ставь "needs_review".
 """
 
+MISSING_THRESHOLD = 0.25
+MATCH_THRESHOLD = 0.35
+TOOL_NAMES = frozenset(
+    {"search_znp", "get_neighbors", "verify_params", "validate_quotes"}
+)
+
+
+def _channels_from_output(output: Any) -> list[str]:
+    if not isinstance(output, list):
+        return []
+    channels = {
+        channel
+        for item in output
+        if isinstance(item, dict)
+        for channel in item.get("channels", [])
+    }
+    return sorted(channels)
+
 
 class RequirementsAgent:
     """Агент сверки требований ТУ и ЗнП с журналом трассировки."""
 
-    def __init__(self, ai_client: DeepSeekClient | None = None, max_steps: int = 4):
+    def __init__(
+        self,
+        ai_client: DeepSeekClient | None = None,
+        max_steps: int = 4,
+        embedder: EmbeddingService | None = None,
+    ):
         self.ai = ai_client or DeepSeekClient()
         self.max_steps = max_steps
+        self.embedder = embedder or EmbeddingService()
 
     def verify_all(
         self,
@@ -70,9 +95,18 @@ class RequirementsAgent:
         all_traces: list[dict[str, Any]] = []
 
         znp_by_id = {c.id: c for c in znp_clauses}
+        clause_embeddings = (
+            self.embedder.embed_documents([clause.text for clause in znp_clauses])
+            if znp_clauses
+            else []
+        )
+        if not clause_embeddings:
+            clause_embeddings = None
 
         for req in tu_requirements:
-            decision, req_trace = self._verify_single_requirement(req, znp_clauses, znp_by_id)
+            decision, req_trace = self._verify_single_requirement(
+                req, znp_clauses, znp_by_id, clause_embeddings,
+            )
             all_traces.append({
                 "requirement_id": req.id,
                 "clause_number": req.clause_number,
@@ -96,6 +130,8 @@ class RequirementsAgent:
                     znp_quote=decision.znp_quote,
                     reasoning=decision.reasoning,
                     is_confirmed_by_human=False,
+                    method=decision.method,
+                    channels=decision.channels,
                 )
             )
 
@@ -113,6 +149,7 @@ class RequirementsAgent:
             trace_info={
                 "execution_time_ms": elapsed_ms,
                 "agent_runs": all_traces,
+                "embedding": self.embedder.status(),
             },
         )
 
@@ -121,9 +158,15 @@ class RequirementsAgent:
         req: TURequirement,
         znp_clauses: list[ZNPClause],
         znp_by_id: dict[str, ZNPClause],
+        clause_embeddings: list[list[float]] | None = None,
     ) -> tuple[LLMVerificationDecision, list[dict[str, Any]]]:
         trace: list[dict[str, Any]] = []
         observations: list[dict[str, Any]] = []
+        query_embedding = (
+            self.embedder.embed_query(req.text) if clause_embeddings else None
+        )
+        if clause_embeddings is not None and not self.embedder.enabled:
+            clause_embeddings = None
 
         for step_num in range(1, self.max_steps + 1):
             user_context = {
@@ -151,15 +194,41 @@ class RequirementsAgent:
                     "tool": "llm_fallback",
                     "reason": str(exc),
                 })
-                return self._deterministic_agent_fallback(req, znp_clauses, trace)
+                return self._deterministic_agent_fallback(
+                    req, znp_clauses, trace, query_embedding, clause_embeddings,
+                )
 
             llm_duration = round((time.perf_counter() - step_start) * 1000, 2)
             action = llm_reply.get("action")
 
+            if action not in {"call_tool", "finish"}:
+                trace.append({
+                    "step": step_num,
+                    "tool": "invalid_response",
+                    "reason": f"Unsupported action: {action!r}",
+                })
+                return self._deterministic_agent_fallback(
+                    req, znp_clauses, trace, query_embedding, clause_embeddings,
+                )
+
             if action == "call_tool" and step_num < self.max_steps:
-                tool_name = str(llm_reply.get("tool_name", "search_znp"))
-                tool_args = llm_reply.get("tool_args") or {}
-                tool_out = self._execute_tool(tool_name, tool_args, req, znp_clauses, znp_by_id)
+                tool_name = str(llm_reply.get("tool_name") or "")
+                if tool_name not in TOOL_NAMES:
+                    trace.append({
+                        "step": step_num,
+                        "tool": "invalid_response",
+                        "reason": f"Unsupported tool: {tool_name!r}",
+                    })
+                    return self._deterministic_agent_fallback(
+                        req, znp_clauses, trace, query_embedding, clause_embeddings,
+                    )
+                tool_args = llm_reply.get("tool_args")
+                if not isinstance(tool_args, dict):
+                    tool_args = {}
+                tool_out = self._execute_tool(
+                    tool_name, tool_args, req, znp_clauses, znp_by_id,
+                    query_embedding, clause_embeddings,
+                )
 
                 step_record = {
                     "step": step_num,
@@ -167,6 +236,7 @@ class RequirementsAgent:
                     "tool": tool_name,
                     "args": tool_args,
                     "output": tool_out,
+                    "channels": _channels_from_output(tool_out),
                     "duration_ms": llm_duration,
                 }
                 trace.append(step_record)
@@ -174,12 +244,18 @@ class RequirementsAgent:
                 continue
 
             if action == "finish":
-                return self._finalize_llm_decision(llm_reply, req, znp_clauses, znp_by_id, trace, llm_duration)
+                return self._finalize_llm_decision(
+                    llm_reply, req, znp_clauses, znp_by_id, trace, llm_duration,
+                )
 
             if step_num == self.max_steps:
-                return self._deterministic_agent_fallback(req, znp_clauses, trace)
+                return self._deterministic_agent_fallback(
+                    req, znp_clauses, trace, query_embedding, clause_embeddings,
+                )
 
-        return self._deterministic_agent_fallback(req, znp_clauses, trace)
+        return self._deterministic_agent_fallback(
+            req, znp_clauses, trace, query_embedding, clause_embeddings,
+        )
 
     def _execute_tool(
         self,
@@ -188,10 +264,18 @@ class RequirementsAgent:
         req: TURequirement,
         znp_clauses: list[ZNPClause],
         znp_by_id: dict[str, ZNPClause],
+        query_embedding: list[float] | None = None,
+        clause_embeddings: list[list[float]] | None = None,
     ) -> Any:
         if tool_name == "search_znp":
             query = str(tool_args.get("query") or req.text)
-            return tool_search_znp_clauses(query, znp_clauses, top_k=3)
+            return tool_search_znp_clauses(
+                query,
+                znp_clauses,
+                top_k=3,
+                query_embedding=query_embedding,
+                clause_embeddings=clause_embeddings,
+            )
 
         if tool_name == "get_neighbors":
             cid = str(tool_args.get("clause_id") or "")
@@ -301,6 +385,15 @@ class RequirementsAgent:
             "duration_ms": llm_duration,
         })
 
+        channels = sorted(
+            {
+                channel
+                for step in trace
+                if step.get("tool") == "search_znp"
+                for channel in step.get("channels", [])
+            }
+        )
+
         return (
             LLMVerificationDecision(
                 status=status,
@@ -309,6 +402,8 @@ class RequirementsAgent:
                 tu_quote=tu_quote,
                 znp_quote=znp_quote,
                 reasoning=reasoning,
+                method="llm",
+                channels=channels or ["lexical"],
             ),
             trace,
         )
@@ -318,21 +413,45 @@ class RequirementsAgent:
         req: TURequirement,
         znp_clauses: list[ZNPClause],
         trace: list[dict[str, Any]],
+        query_embedding: list[float] | None = None,
+        clause_embeddings: list[list[float]] | None = None,
     ) -> tuple[LLMVerificationDecision, list[dict[str, Any]]]:
         """Полноценный инструментальный прогон (4 инструмента) при работе без внешнего API."""
         # 1. Поиск кандидатов
-        candidates = tool_search_znp_clauses(req.text, znp_clauses, top_k=3)
-        trace.append({"step": len(trace) + 1, "tool": "search_znp", "candidates_count": len(candidates)})
+        candidates = tool_search_znp_clauses(
+            req.text,
+            znp_clauses,
+            top_k=3,
+            query_embedding=query_embedding,
+            clause_embeddings=clause_embeddings,
+        )
+        channels = sorted(
+            {
+                channel
+                for candidate in candidates
+                for channel in candidate.get("channels", [])
+            }
+        ) or ["lexical"]
+        trace.append({
+            "step": len(trace) + 1,
+            "tool": "search_znp",
+            "candidates_count": len(candidates),
+            "channels": channels,
+        })
 
-        if not candidates or candidates[0]["similarity_score"] < 0.15:
+        if not candidates or candidates[0]["similarity_score"] < MISSING_THRESHOLD:
             return (
                 LLMVerificationDecision(
                     status=RequirementStatus.missing,
-                    similarity_score=0.85,
+                    similarity_score=(
+                        candidates[0]["similarity_score"] if candidates else 0.0
+                    ),
                     matched_znp_clause_id=None,
                     tu_quote=req.text,
                     znp_quote=None,
                     reasoning="В тексте ЗнП не найдено пунктов, соответствующих данному требованию ТУ.",
+                    method="deterministic",
+                    channels=channels,
                 ),
                 trace,
             )
@@ -355,24 +474,28 @@ class RequirementsAgent:
             return (
                 LLMVerificationDecision(
                     status=RequirementStatus.needs_review,
-                    similarity_score=0.65,
+                    similarity_score=best["similarity_score"],
                     matched_znp_clause_id=best["clause_id"],
                     tu_quote=req.text,
                     znp_quote=best["text"],
                     reasoning="Найдено расхождение параметров: " + "; ".join(param_res["mismatches"]),
+                    method="deterministic",
+                    channels=channels,
                 ),
                 trace,
             )
 
-        if best["similarity_score"] >= 0.35:
+        if best["similarity_score"] >= MATCH_THRESHOLD:
             return (
                 LLMVerificationDecision(
                     status=RequirementStatus.fulfilled,
-                    similarity_score=max(0.75, best["similarity_score"]),
+                    similarity_score=best["similarity_score"],
                     matched_znp_clause_id=best["clause_id"],
                     tu_quote=req.text,
                     znp_quote=best["text"],
                     reasoning=f"Требование отражено в пункте {best['clause_number']}, параметры совпадают.",
+                    method="deterministic",
+                    channels=channels,
                 ),
                 trace,
             )
@@ -380,11 +503,13 @@ class RequirementsAgent:
         return (
             LLMVerificationDecision(
                 status=RequirementStatus.needs_review,
-                similarity_score=0.55,
+                similarity_score=best["similarity_score"],
                 matched_znp_clause_id=best["clause_id"],
                 tu_quote=req.text,
                 znp_quote=best["text"],
                 reasoning="Частичное семантическое совпадение, требуется подтверждение инженером.",
+                method="deterministic",
+                channels=channels,
             ),
             trace,
         )

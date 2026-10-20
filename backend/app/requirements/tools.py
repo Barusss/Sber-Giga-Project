@@ -1,22 +1,42 @@
 """Инструменты ИИ-агента для сверки требований ТУ и пунктов ЗнП."""
+import math
 import re
 from typing import Any
 
 from app.requirements.schemas import RequirementCategory, ZNPClause
 
 
+def _cosine(left: list[float], right: list[float]) -> float:
+    if not left or len(left) != len(right):
+        return 0.0
+    dot = math.fsum(a * b for a, b in zip(left, right))
+    left_norm = math.sqrt(math.fsum(a * a for a in left))
+    right_norm = math.sqrt(math.fsum(b * b for b in right))
+    if not left_norm or not right_norm:
+        return 0.0
+    return dot / (left_norm * right_norm)
+
+
 # ---------------------------------------------------------------------------
-# ИНСТРУМЕНТ 1: Поиск подходящих пунктов ЗнП (лексическое + ключевое ранжирование)
+# ИНСТРУМЕНТ 1: Поиск подходящих пунктов ЗнП (лексика + опциональная семантика)
 # ---------------------------------------------------------------------------
 def tool_search_znp_clauses(
     query: str,
     znp_clauses: list[ZNPClause],
     top_k: int = 3,
+    query_embedding: list[float] | None = None,
+    clause_embeddings: list[list[float]] | None = None,
+    semantic_weight: float = 0.6,
 ) -> list[dict[str, Any]]:
-    """Ищет наиболее релевантные пункты ЗнП по тексту требования или поисковому запросу."""
+    """Ищет релевантные пункты ЗнП; без embeddings работает как раньше."""
     norm_query = query.lower().replace("ё", "е")
     query_tokens = set(re.findall(r"[а-яa-z0-9]{2,}", norm_query))
-    if not query_tokens:
+    semantic_available = bool(
+        query_embedding
+        and clause_embeddings is not None
+        and len(clause_embeddings) == len(znp_clauses)
+    )
+    if not query_tokens and not semantic_available:
         return []
 
     numbers_in_query = {m.replace(",", ".") for m in re.findall(r"\d+(?:[.,]\d+)?", norm_query)}
@@ -30,13 +50,28 @@ def tool_search_znp_clauses(
         numbers_in_clause = {m.replace(",", ".") for m in re.findall(r"\d+(?:[.,]\d+)?", norm_clause)}
         num_bonus = 0.25 if (numbers_in_query and (numbers_in_query & numbers_in_clause)) else 0.0
 
-        score = (len(overlap) / max(len(query_tokens), 1)) + num_bonus
+        lexical_score = min((len(overlap) / max(len(query_tokens), 1)) + num_bonus, 1.0)
+        semantic_score = None
+        if semantic_available:
+            semantic_score = max(0.0, min(1.0, _cosine(query_embedding, clause_embeddings[idx])))
+            score = (
+                semantic_weight * semantic_score
+                + (1.0 - semantic_weight) * lexical_score
+            )
+        else:
+            score = lexical_score
+
         scored.append({
             "clause_id": clause.id,
             "clause_number": clause.clause_number,
             "text": clause.text,
             "position_index": idx,
             "similarity_score": round(min(score, 1.0), 3),
+            "lexical_score": round(lexical_score, 3),
+            "semantic_score": (
+                round(semantic_score, 3) if semantic_score is not None else None
+            ),
+            "channels": ["lexical", "semantic"] if semantic_available else ["lexical"],
         })
 
     scored.sort(key=lambda item: item["similarity_score"], reverse=True)

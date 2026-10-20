@@ -48,6 +48,8 @@ class LLMVerificationDecision(BaseModel):
     tu_quote: Optional[str] = None
     znp_quote: Optional[str] = None
     reasoning: Optional[str] = None
+    method: Optional[str] = None
+    channels: List[str] = Field(default_factory=list)
 
 
 class RequirementCheckItem(BaseModel):
@@ -95,6 +97,7 @@ class AnalyzeProjectRequirementsRequest(BaseModel):
     project_id: str
     tu_document_id: Optional[str] = None
     znp_document_id: Optional[str] = None
+    force: bool = False
 
 
 # REST schemas for the persisted DPazY models (manual storage and human review).
