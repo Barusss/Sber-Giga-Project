@@ -16,6 +16,18 @@ docker compose up --build
 
 Первый запуск создаёт таблицы через Alembic. PostgreSQL и загруженные документы хранятся в Docker volumes. Учётные данные в `.env.example` — **только для локальной разработки**.
 
+## OCR для русскоязычных сканов
+
+Backend использует **Tesseract 5** с официальными предобученными LSTM-моделями **`tessdata_best`** для русского и английского языков (`rus+eng`). Docker-образ скачивает `rus.traineddata` и `eng.traineddata` из [tesseract-ocr/tessdata_best](https://github.com/tesseract-ocr/tessdata_best) **во время сборки**. Для первой сборки нужен доступ к GitHub; файлы моделей не хранятся в репозитории. Эти модели точнее стандартных быстрых моделей, но медленнее.
+
+OCR применяется только к PDF-страницам, на которых почти нет извлекаемого текста. Для Tesseract указаны `--oem 1 --psm 3` (нейросетевой LSTM и автоматическое определение структуры страницы). DOCX и текстовые PDF обрабатываются без OCR. Чтобы проверить установленные модели в контейнере:
+
+```bash
+docker compose exec api tesseract --list-langs
+```
+
+При запуске backend без Docker необходимо установить Tesseract 5 и самостоятельно положить модели `rus.traineddata` и `eng.traineddata` из `tessdata_best` в каталог `TESSDATA_PREFIX`. Результаты OCR, особенно обозначения ГОСТ, номера и технические параметры, следует сверять с оригиналом.
+
 ## DeepSeek (общий AI-клиент)
 
 Скопируйте `.env.example` в `.env` и укажите в нём `DEEPSEEK_API_KEY=ваш_ключ`. По умолчанию используется `DEEPSEEK_MODEL=deepseek-flash` с `DEEPSEEK_THINKING=disabled` для структурированных ответов. Ключ хранится **только на сервере** и не попадает во frontend.
