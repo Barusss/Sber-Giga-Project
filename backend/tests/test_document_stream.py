@@ -30,6 +30,8 @@ def test_streamed_upload_reports_real_stages_and_saves(client, monkeypatch, tmp_
     assert [event["stage"] for event in events] == [
         "received", "parsing", "parsed", "indexing", "complete"
     ]
+    assert len({event["trace_id"] for event in events}) == 1
+    assert len(events[0]["trace_id"]) == 12
     assert events[2]["pages"] == 2
     assert events[2]["fragments"] == 2
     document = events[-1]["document"]
