@@ -15,6 +15,12 @@ export function DebugPanel() {
   const visible = errorsOnly ? events.filter(event => event.status === 'error') : events
 
   useEffect(() => {
+    const show = () => setOpen(true)
+    window.addEventListener('open-diagnostics', show)
+    return () => window.removeEventListener('open-diagnostics', show)
+  }, [])
+
+  useEffect(() => {
     if (!open) return
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === 'Escape') setOpen(false)
