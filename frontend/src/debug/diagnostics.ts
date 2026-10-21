@@ -1,9 +1,15 @@
 export type DiagnosticStatus = 'running' | 'success' | 'error'
 
+export type DiagnosticStep = {
+  at: number
+  message: string
+}
+
 export type DiagnosticEntry = {
   id: number
   title: string
   detail: string
+  history: DiagnosticStep[]
   status: DiagnosticStatus
   startedAt: number
   updatedAt: number
@@ -18,9 +24,14 @@ function publish() {
   for (const listener of listeners) listener()
 }
 
-function change(id: number, changes: Partial<DiagnosticEntry>) {
+function change(id: number, status: DiagnosticStatus, message: string) {
+  const now = Date.now()
   entries = entries.map(entry => entry.id === id ? {
-    ...entry, ...changes, updatedAt: Date.now()
+    ...entry,
+    status,
+    detail: message,
+    updatedAt: now,
+    history: [...entry.history, {at: now, message}]
   } : entry)
   publish()
 }
@@ -28,13 +39,16 @@ function change(id: number, changes: Partial<DiagnosticEntry>) {
 export function beginDiagnostic(title: string, detail = '') {
   const id = ++sequence
   const now = Date.now()
-  entries = [{id, title, detail, status: 'running', startedAt: now, updatedAt: now}, ...entries].slice(0, MAX_ENTRIES)
+  entries = [{
+    id, title, detail, history: [{at: now, message: detail || 'Начало операции'}],
+    status: 'running', startedAt: now, updatedAt: now
+  }, ...entries].slice(0, MAX_ENTRIES)
   publish()
 
   return {
-    step: (message: string) => change(id, {detail: message}),
-    success: (message: string) => change(id, {status: 'success', detail: message}),
-    error: (message: string) => change(id, {status: 'error', detail: message}),
+    step: (message: string) => change(id, 'running', message),
+    success: (message: string) => change(id, 'success', message),
+    error: (message: string) => change(id, 'error', message),
   }
 }
 
