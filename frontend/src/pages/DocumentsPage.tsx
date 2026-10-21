@@ -5,6 +5,7 @@ import {beginDiagnostic} from '../debug/diagnostics'
 type UploadEvent = {
   stage: 'received' | 'parsing' | 'parsed' | 'indexing' | 'complete' | 'error'
   message: string
+  trace_id?: string
   pages?: number
   fragments?: number
   document?: Document
@@ -70,7 +71,7 @@ async function readUploadResponse(response: Response, onEvent: (event: UploadEve
     if (!line.trim()) return
     const event = JSON.parse(line) as UploadEvent
     onEvent(event)
-    if (event.stage === 'error') throw new Error(event.message)
+    if (event.stage === 'error') throw new Error(event.trace_id ? `${event.message} (код ${event.trace_id})` : event.message)
     if (event.stage === 'complete') {
       if (!event.document) throw new Error('Сервер не передал результат загрузки')
       document = event.document
@@ -205,7 +206,10 @@ export function DocumentsPage() {
 
       const saved = await readUploadResponse(response, event => {
         setUploadStep(event.message)
-        if (event.stage !== 'complete' && event.stage !== 'error') operation.step(event.message)
+        if (event.stage !== 'complete' && event.stage !== 'error') {
+          const detail = event.trace_id ? `${event.message} · ${event.trace_id}` : event.message
+          operation.step(detail)
+        }
       })
 
       operation.success('Документ сохранён и проиндексирован')
