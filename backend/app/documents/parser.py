@@ -43,7 +43,9 @@ def extract_blocks(data: bytes, extension: str) -> list[ExtractedBlock]:
                     from PIL import Image
                     pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
                     picture = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
-                    content = pytesseract.image_to_string(picture, lang="rus+eng").strip()
+                    content = pytesseract.image_to_string(
+                        picture, lang="rus+eng", config="--oem 1 --psm 3"
+                    ).strip()
                     native = [(content, None)] if content else []
                     method = "ocr"
                 else:
