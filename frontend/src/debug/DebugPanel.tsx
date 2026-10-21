@@ -31,9 +31,9 @@ export function DebugPanel() {
 
   async function copyLog() {
     const text = events.slice().reverse().map(event => {
-      const duration = event.updatedAt - event.startedAt
-      return `[${formatTime(event.startedAt)}] ${event.status} | ${event.title} | ${event.detail} | ${duration} мс`
-    }).join('\n')
+      const steps = event.history.map(step => `  [${formatTime(step.at)}] ${step.message}`).join('\n')
+      return `[${formatTime(event.startedAt)}] ${event.status} | ${event.title}\n${steps}`
+    }).join('\n\n')
     try {
       await navigator.clipboard.writeText(text)
       setCopyMessage('Журнал скопирован')
@@ -90,6 +90,17 @@ export function DebugPanel() {
                   </div>
                   <strong>{event.title}</strong>
                   <p>{event.detail}</p>
+                  {event.history.length > 1 && (
+                    <details className="diagnostics-history" open={event.status === 'error'}>
+                      <summary>Этапы операции ({event.history.length})</summary>
+                      <ol>{event.history.map((step, index) => (
+                        <li key={index}>
+                          <time>{formatTime(step.at)}</time>
+                          <span>{step.message}</span>
+                        </li>
+                      ))}</ol>
+                    </details>
+                  )}
                   <small>{event.status === 'running'
                     ? 'Процесс ещё не завершён'
                     : `Время: ${((event.updatedAt - event.startedAt) / 1000).toFixed(1)} с`}</small>
