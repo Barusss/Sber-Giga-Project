@@ -116,26 +116,31 @@ async def upload_document_stream(project_id: str, kind: DocumentKind = Form(...)
     """Opt-in progress stream for the UI. The regular upload contract is unchanged."""
     data, suffix = await _read_upload(project_id, file, db)
 
+    trace_id = uuid4().hex[:12]
+
+    def report(stage: str, message: str, **details) -> str:
+        return _upload_event(stage, message, trace_id=trace_id, **details)
+
     def process():
-        yield _upload_event("received", "Файл получен сервером")
-        yield _upload_event("parsing", "Извлечение текста и OCR сканированных страниц")
+        yield report("received", "Файл получен сервером")
+        yield report("parsing", "Извлечение текста и OCR сканированных страниц")
         try:
             blocks = extract_blocks(data, suffix)
         except Exception:
-            logger.exception("Document parsing failed during streamed upload")
-            yield _upload_event("error", "Не удалось распознать документ", step="parsing")
+            logger.exception("Document parsing failed, trace_id=%s", trace_id)
+            yield report("error", "Не удалось распознать документ", step="parsing")
             return
 
         pages = len({block.page for block in blocks})
-        yield _upload_event("parsed", f"Извлечено фрагментов: {len(blocks)}", pages=pages, fragments=len(blocks))
-        yield _upload_event("indexing", "Сохранение текста и построение поискового индекса")
+        yield report("parsed", f"Извлечено фрагментов: {len(blocks)}", pages=pages, fragments=len(blocks))
+        yield report("indexing", "Сохранение текста и построение поискового индекса")
         try:
             document = _save_document(project_id, kind, file, data, suffix, blocks, db)
         except Exception:
-            logger.exception("Document saving failed during streamed upload")
-            yield _upload_event("error", "Не удалось сохранить документ", step="indexing")
+            logger.exception("Document saving failed, trace_id=%s", trace_id)
+            yield report("error", "Не удалось сохранить документ", step="indexing")
             return
-        yield _upload_event("complete", "Документ успешно обработан",
+        yield report("complete", "Документ успешно обработан",
                             document=DocumentOut.model_validate(document).model_dump(mode="json"))
 
     return StreamingResponse(process(), media_type="application/x-ndjson",
