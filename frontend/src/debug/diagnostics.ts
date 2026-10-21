@@ -39,10 +39,11 @@ function change(id: number, status: DiagnosticStatus, message: string) {
 export function beginDiagnostic(title: string, detail = '') {
   const id = ++sequence
   const now = Date.now()
-  entries = [{
+  const entry: DiagnosticEntry = {
     id, title, detail, history: [{at: now, message: detail || 'Начало операции'}],
     status: 'running', startedAt: now, updatedAt: now
-  }, ...entries].slice(0, MAX_ENTRIES)
+  }
+  entries = [entry, ...entries].slice(0, MAX_ENTRIES)
   publish()
 
   return {
