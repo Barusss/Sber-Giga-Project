@@ -11,7 +11,10 @@ from app.core.config import Settings
 from app.requirements.agent import RequirementsAgent
 from app.requirements.schemas import RequirementCategory, TURequirement, ZNPClause
 from app.requirements.tools import (
+    tool_check_list_coverage,
+    tool_pick_best_evidence,
     tool_search_znp_clauses,
+    tool_validate_quotes,
     tool_verify_engineering_params,
 )
 
@@ -378,6 +381,13 @@ def test_agent_replaces_invented_quote_with_source_text():
     assert "выдуманная" not in item.tu_quote
     assert item.tu_quote == _tu().text[:120]
     assert "выдумка" not in item.znp_quote
+    assert item.status.value == "needs_review"
+    finish_step = next(
+        step for step in response.trace_info["agent_runs"][0]["steps"]
+        if step["tool"] == "finish_and_validate"
+    )
+    assert finish_step["evidence_check"]["quote_hallucinated"] is True
+    assert finish_step["evidence_check"]["quote_replaced"] is True
 
 
 def test_agent_uses_embedding_channel_and_reports_embedding_trace():
@@ -390,3 +400,214 @@ def test_agent_uses_embedding_channel_and_reports_embedding_trace():
     item = response.checked_requirements[0]
     assert item.channels == ["lexical", "semantic"]
     assert response.trace_info["embedding"]["enabled"] is True
+
+
+LAW_LIST_TU = (
+    "1.3.1. Предусмотреть выполнение требований:\n"
+    "- ГОСТ Р 12345-2020 по проектированию;\n"
+    "- СП 31.13330.2021 по проектированию;\n"
+    "- Федеральный закон № 123-ФЗ по проектированию."
+)
+
+
+def test_list_coverage_requires_every_law():
+    partial = tool_check_list_coverage(
+        LAW_LIST_TU,
+        "Предусмотреть выполнение требований ГОСТ Р 12345-2020 по проектированию.",
+    )
+    assert partial["is_list"] is True
+    assert partial["items_total"] == 3
+    assert partial["items_covered"] == 1
+    assert partial["covered"] is False
+    assert partial["coverage_ratio"] < 1
+    assert partial["uncovered_items"]
+    assert all(len(item) <= 160 for item in partial["uncovered_items"])
+
+    complete = tool_check_list_coverage(
+        LAW_LIST_TU,
+        "Предусмотреть ГОСТ Р 12345-2020, СП 31.13330.2021 "
+        "и Федеральный закон № 123-ФЗ.",
+    )
+    assert complete["is_list"] is True
+    assert complete["items_covered"] == complete["items_total"] == 3
+    assert complete["covered"] is True
+    assert complete["uncovered_items"] == []
+
+
+def test_list_coverage_detects_inline_numbered_items():
+    tu_text = (
+        "Выполнить: 1) разработать проектную документацию; "
+        "2) получить разрешение; 3) выполнить монтаж."
+    )
+    result = tool_check_list_coverage(tu_text, "Разработать проектную документацию.")
+    assert result["is_list"] is True
+    assert result["items_total"] == 3
+    assert result["covered"] is False
+
+
+def test_list_coverage_does_not_treat_ordinary_paragraph_as_list():
+    tu_text = (
+        "Присоединяемая мощность 726,9 кВт при номинальном напряжении "
+        "0,4 кВ; точку присоединения разместить на границе участка."
+    )
+    result = tool_check_list_coverage(
+        tu_text, "Мощность 726,9 кВт, напряжение 0,4 кВ."
+    )
+    assert result["is_list"] is False
+    assert result["covered"] is True
+    assert result["uncovered_items"] == []
+
+
+def test_pick_best_evidence_returns_short_exact_substring_from_glued_list():
+    lines = []
+    for number in range(99, 126):
+        tail = (
+            "предусмотреть выполнение работ по ГОСТ Р 12345-2020."
+            if number == 115
+            else "выполнить работы по проектированию."
+        )
+        lines.append(f"{number}. Мероприятие {number}: {tail}")
+    candidate = "\n".join(lines)
+
+    result = tool_pick_best_evidence(
+        "выполнить работы по ГОСТ Р 12345-2020", candidate
+    )
+
+    assert result["quote"] in candidate
+    assert result["quote"] != candidate
+    assert 20 <= len(result["quote"]) <= 600
+    assert result["is_atomic"] is True
+    assert "115" in result["quote"]
+
+
+def test_deterministic_fallback_marks_partially_covered_list_for_review():
+    tu = TURequirement(
+        id="tu-list",
+        clause_number="1.3.1",
+        category=RequirementCategory.other,
+        text=LAW_LIST_TU,
+    )
+    znp = [
+        ZNPClause(
+            id="znp-list",
+            clause_number="1.3.1",
+            text=(
+                "1.3.1. Предусмотреть выполнение требований "
+                "ГОСТ Р 12345-2020 по проектированию."
+            ),
+        )
+    ]
+    agent = _agent_with_replies(["это не JSON"])
+    response = agent.verify_all([tu], znp)
+    item = response.checked_requirements[0]
+
+    assert item.status.value == "needs_review"
+    assert "Перечень подтверждён не полностью" in item.reasoning
+    assert "1 из 3" in item.reasoning
+    steps = response.trace_info["agent_runs"][0]["steps"]
+    coverage_step = next(step for step in steps if step["tool"] == "check_list_coverage")
+    assert coverage_step["output"]["is_list"] is True
+    assert coverage_step["output"]["covered"] is False
+    assert any(step["tool"] == "pick_evidence" for step in steps)
+
+
+def test_deterministic_fallback_quote_is_short_substring_of_glued_list():
+    lines = []
+    for number in range(99, 126):
+        tail = (
+            "предусмотреть выполнение мероприятий по пункту 115."
+            if number == 115
+            else "выполнить работы по проектированию."
+        )
+        lines.append(f"{number}. Мероприятие {number}: {tail}")
+    candidate = "\n".join(lines)
+    tu = TURequirement(
+        id="tu-glued",
+        clause_number="2.5",
+        category=RequirementCategory.other,
+        text="2.5. Предусмотреть выполнение мероприятий по пункту 115.",
+    )
+    znp = [ZNPClause(id="znp-glued", clause_number="99-125", text=candidate)]
+
+    agent = _agent_with_replies(["это не JSON"])
+    response = agent.verify_all([tu], znp)
+    item = response.checked_requirements[0]
+
+    assert item.znp_quote
+    assert item.znp_quote in candidate
+    assert item.znp_quote != candidate
+    assert len(item.znp_quote) < len(candidate)
+    assert len(item.znp_quote) <= 600
+    steps = response.trace_info["agent_runs"][0]["steps"]
+    assert any(step["tool"] == "pick_evidence" for step in steps)
+
+
+def test_agent_llm_fulfilled_is_downgraded_when_list_is_partially_covered():
+    tu = TURequirement(
+        id="tu-list-llm",
+        clause_number="1.3.1",
+        category=RequirementCategory.other,
+        text=LAW_LIST_TU,
+    )
+    znp = ZNPClause(
+        id="znp-list-llm",
+        clause_number="1.3.1",
+        text=(
+            "1.3.1. Предусмотреть выполнение требований "
+            "ГОСТ Р 12345-2020 по проектированию."
+        ),
+    )
+    agent = _agent_with_replies([
+        {
+            "action": "finish",
+            "status": "fulfilled",
+            "confidence_score": 0.97,
+            "matched_znp_clause_id": "znp-list-llm",
+            "tu_quote": "ГОСТ Р 12345-2020",
+            "znp_quote": "выполнение требований ГОСТ Р 12345-2020",
+            "reasoning": "Модель считает требование выполненным.",
+        },
+    ])
+    response = agent.verify_all([tu], [znp])
+    item = response.checked_requirements[0]
+
+    assert item.status.value == "needs_review"
+    assert item.confidence_score <= 0.65
+    assert "Перечень подтверждён не полностью" in item.reasoning
+    assert "1 из 3" in item.reasoning
+    finish_step = next(
+        step for step in response.trace_info["agent_runs"][0]["steps"]
+        if step["tool"] == "finish_and_validate"
+    )
+    assert finish_step["coverage_check"]["is_list"] is True
+    assert finish_step["coverage_check"]["covered"] is False
+    assert finish_step["evidence_check"]["final_quote_atomic"] is True
+
+
+def test_validate_quotes_normalizes_typography_and_reports_atomicity():
+    tu_full = "Требуется мощность — 150 кВт."
+    znp_full = "Предусмотреть «мощность — 150 кВт»… не ниже."
+    result = tool_validate_quotes(
+        tu_full,
+        "мощность - 150 кВт",
+        znp_full,
+        'Предусмотреть "мощность - 150 кВт"... не ниже.',
+    )
+
+    assert result["tu_quote_valid"] is True
+    assert result["znp_quote_valid"] is True
+    assert result["znp_quote_present"] is True
+    assert result["znp_quote_atomic"] is True
+    assert result["tu_quote_chars"] > 0
+    assert result["znp_quote_chars"] > 0
+
+    empty = tool_validate_quotes(tu_full, "мощность - 150 кВт", znp_full, "  ")
+    assert empty["znp_quote_present"] is False
+    assert empty["znp_quote_atomic"] is False
+    assert empty["is_valid"] is False
+
+    glued = "\n".join(f"{number}. Пункт {number}." for number in range(99, 103))
+    long_quote = tool_validate_quotes(tu_full, "мощность - 150 кВт", glued, glued)
+    assert long_quote["znp_quote_valid"] is True
+    assert long_quote["znp_quote_atomic"] is False
+

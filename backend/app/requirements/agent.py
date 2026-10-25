@@ -15,7 +15,9 @@ from app.requirements.schemas import (
     ZNPClause,
 )
 from app.requirements.tools import (
+    tool_check_list_coverage,
     tool_get_neighbor_clauses,
+    tool_pick_best_evidence,
     tool_search_znp_clauses,
     tool_validate_quotes,
     tool_verify_engineering_params,
@@ -51,6 +53,8 @@ AGENT_SYSTEM_PROMPT = """Ты ИИ-агент инженерной экспер�
   "reasoning": "объяснение для инженера"
 }
 Правило эскалации: если параметры расходятся, формулировка неоднозначна или уверенность ниже 0.70 — ставь "needs_review".
+Правило перечней: если требование ТУ содержит перечень (маркированный список, пункты 1)/а), строки после вводного двоеточия или несколько сегментов через ";"), ставь "fulfilled" только когда в ЗнП подтверждены ВСЕ элементы перечня. Если хотя бы один элемент не подтверждён — "needs_review" и перечисли неподтверждённые элементы в reasoning.
+Правило цитаты: "znp_quote" должна быть короткой (не более 600 символов) точной подстрокой ОДНОГО пункта ЗнП, а не всем склеенным списком. Пустая или выдуманная цитата не подтверждает "fulfilled".
 """
 
 MISSING_THRESHOLD = 0.25
@@ -324,14 +328,50 @@ class RequirementsAgent:
         tu_quote = str(raw_tu_quote).strip() if isinstance(raw_tu_quote, str) and raw_tu_quote.strip() else req.text[:120]
 
         raw_znp_quote = llm_reply.get("znp_quote")
-        if matched_clause:
-            znp_quote = (
-                str(raw_znp_quote).strip()
-                if isinstance(raw_znp_quote, str) and raw_znp_quote.strip()
-                else matched_clause.text[:120]
-            )
-        else:
-            znp_quote = None
+        raw_znp_quote_text = (
+            str(raw_znp_quote).strip()
+            if isinstance(raw_znp_quote, str) and raw_znp_quote.strip()
+            else None
+        )
+        znp_quote = raw_znp_quote_text if matched_clause else None
+
+        initial_quote_check = tool_validate_quotes(
+            req.text,
+            tu_quote,
+            matched_clause.text if matched_clause else None,
+            znp_quote,
+        )
+        quote_check = initial_quote_check
+        if not quote_check["tu_quote_valid"]:
+            tu_quote = req.text[:120]
+
+        evidence_check = {
+            "quote_present": initial_quote_check["znp_quote_present"],
+            "quote_valid": initial_quote_check["znp_quote_valid"],
+            "quote_atomic": initial_quote_check["znp_quote_atomic"],
+            "quote_chars": initial_quote_check["znp_quote_chars"],
+            "quote_replaced": False,
+            "quote_hallucinated": bool(
+                matched_clause
+                and raw_znp_quote_text
+                and not initial_quote_check["znp_quote_valid"]
+            ),
+        }
+
+        if matched_clause and (
+            not quote_check["znp_quote_present"]
+            or not quote_check["znp_quote_valid"]
+            or not quote_check["znp_quote_atomic"]
+        ):
+            picked = tool_pick_best_evidence(req.text, matched_clause.text)
+            replacement = picked["quote"] or matched_clause.text[:120]
+            if replacement:
+                evidence_check["quote_replaced"] = replacement != znp_quote
+                znp_quote = replacement
+                evidence_check.update({
+                    "evidence_score": picked["score"],
+                    "evidence_index": picked["paragraph_index"],
+                })
 
         quote_check = tool_validate_quotes(
             req.text,
@@ -339,12 +379,17 @@ class RequirementsAgent:
             matched_clause.text if matched_clause else None,
             znp_quote,
         )
-        if not quote_check["tu_quote_valid"]:
-            tu_quote = req.text[:120]
-        if matched_clause and not quote_check["znp_quote_valid"]:
-            znp_quote = matched_clause.text[:120]
+        evidence_check.update({
+            "final_quote_valid": quote_check["znp_quote_valid"],
+            "final_quote_atomic": quote_check["znp_quote_atomic"],
+            "final_quote_chars": quote_check["znp_quote_chars"],
+        })
 
         param_check = tool_verify_engineering_params(
+            req.text,
+            matched_clause.text if matched_clause else "",
+        )
+        coverage_check = tool_check_list_coverage(
             req.text,
             matched_clause.text if matched_clause else "",
         )
@@ -371,9 +416,37 @@ class RequirementsAgent:
             reasoning += " [Не указан подтверждающий пункт ЗнП]"
             confidence = min(confidence, 0.60)
 
+        if status == RequirementStatus.fulfilled and evidence_check["quote_hallucinated"]:
+            status = RequirementStatus.needs_review
+            reasoning += " [Цитата ЗнП не найдена в пункте, заменена фактическим фрагментом]"
+            confidence = min(confidence, 0.65)
+
+        if status == RequirementStatus.fulfilled and (
+            not quote_check["znp_quote_present"]
+            or not quote_check["znp_quote_valid"]
+            or not quote_check["znp_quote_atomic"]
+        ):
+            status = RequirementStatus.needs_review
+            reasoning += " [Доказательство ЗнП не является точной атомарной цитатой]"
+            confidence = min(confidence, 0.60)
+
         if not param_check["params_match"] and status == RequirementStatus.fulfilled:
             status = RequirementStatus.needs_review
             reasoning += f" [Валидатор параметров: {'; '.join(param_check['mismatches'])}]"
+            confidence = min(confidence, 0.65)
+
+        if (
+            status == RequirementStatus.fulfilled
+            and coverage_check["is_list"]
+            and not coverage_check["covered"]
+        ):
+            status = RequirementStatus.needs_review
+            uncovered = "; ".join(coverage_check["uncovered_items"][:3])
+            reasoning += (
+                " [Перечень подтверждён не полностью: "
+                f"{coverage_check['items_covered']} из {coverage_check['items_total']}"
+                f"; не подтверждено: {uncovered}]"
+            )
             confidence = min(confidence, 0.65)
 
         if confidence < 0.70 and status == RequirementStatus.fulfilled:
@@ -383,7 +456,9 @@ class RequirementsAgent:
             "step": len(trace) + 1,
             "tool": "finish_and_validate",
             "quote_check": quote_check,
+            "evidence_check": evidence_check,
             "param_check": param_check,
+            "coverage_check": coverage_check,
             "final_status": status.value,
             "duration_ms": llm_duration,
         })
@@ -465,29 +540,75 @@ class RequirementsAgent:
             neighbors = tool_get_neighbor_clauses(best["clause_id"], znp_clauses, window=1)
             trace.append({"step": len(trace) + 1, "tool": "get_neighbors", "neighbors_loaded": len(neighbors)})
 
-        # 3. Валидация инженерных параметров
+        # 3. Проверка покрытия перечня и выбор атомарного доказательства
+        coverage_res = tool_check_list_coverage(req.text, best["text"])
+        trace.append({
+            "step": len(trace) + 1,
+            "tool": "check_list_coverage",
+            "output": coverage_res,
+        })
+        evidence_res = tool_pick_best_evidence(req.text, best["text"])
+        znp_quote = evidence_res["quote"] or best["text"][:120]
+        trace.append({
+            "step": len(trace) + 1,
+            "tool": "pick_evidence",
+            "output": {
+                "score": evidence_res["score"],
+                "paragraph_index": evidence_res["paragraph_index"],
+                "is_atomic": evidence_res["is_atomic"],
+                "quote_chars": len(znp_quote),
+            },
+        })
+
+        # 4. Валидация инженерных параметров
         param_res = tool_verify_engineering_params(req.text, best["text"])
         trace.append({"step": len(trace) + 1, "tool": "verify_params", "output": param_res})
 
-        # 4. Валидация цитат
-        quote_res = tool_validate_quotes(req.text, req.text, best["text"], best["text"])
+        # 5. Валидация цитат
+        quote_res = tool_validate_quotes(req.text, req.text, best["text"], znp_quote)
         trace.append({"step": len(trace) + 1, "tool": "validate_quotes", "output": quote_res})
 
+        quote_ok = (
+            quote_res["znp_quote_present"]
+            and quote_res["znp_quote_valid"]
+            and quote_res["znp_quote_atomic"]
+        )
+        issues: list[str] = []
         if not param_res["params_match"]:
+            issues.append(
+                "Найдено расхождение параметров: " + "; ".join(param_res["mismatches"])
+            )
+        if coverage_res["is_list"] and not coverage_res["covered"]:
+            uncovered = "; ".join(coverage_res["uncovered_items"][:3])
+            issues.append(
+                "Перечень подтверждён не полностью: "
+                f"{coverage_res['items_covered']} из {coverage_res['items_total']}"
+                f"; не подтверждено: {uncovered}"
+            )
+        if not quote_ok:
+            issues.append("Цитата ЗнП не является точным атомарным фрагментом пункта")
+
+        if issues:
             return (
                 LLMVerificationDecision(
                     status=RequirementStatus.needs_review,
                     similarity_score=best["similarity_score"],
                     matched_znp_clause_id=best["clause_id"],
                     tu_quote=req.text,
-                    znp_quote=best["text"],
-                    reasoning="Найдено расхождение параметров: " + "; ".join(param_res["mismatches"]),
+                    znp_quote=znp_quote,
+                    reasoning="; ".join(issues),
                     method="deterministic",
                     channels=channels,
                 ),
                 trace,
             )
 
+        coverage_note = ""
+        if coverage_res["is_list"]:
+            coverage_note = (
+                f" Перечень подтверждён полностью ({coverage_res['items_covered']} "
+                f"из {coverage_res['items_total']})."
+            )
         if (
             best["similarity_score"] >= MATCH_THRESHOLD
             and best["lexical_score"] >= MIN_LEXICAL_SCORE_FOR_FULFILLED
@@ -498,8 +619,11 @@ class RequirementsAgent:
                     similarity_score=best["similarity_score"],
                     matched_znp_clause_id=best["clause_id"],
                     tu_quote=req.text,
-                    znp_quote=best["text"],
-                    reasoning=f"Требование отражено в пункте {best['clause_number']}, параметры совпадают.",
+                    znp_quote=znp_quote,
+                    reasoning=(
+                        f"Требование отражено в пункте {best['clause_number']}, "
+                        f"параметры совпадают.{coverage_note}"
+                    ),
                     method="deterministic",
                     channels=channels,
                 ),
@@ -516,13 +640,15 @@ class RequirementsAgent:
             if semantic_only
             else "Частичное совпадение, требуется подтверждение инженером."
         )
+        if coverage_note:
+            reasoning += coverage_note
         return (
             LLMVerificationDecision(
                 status=RequirementStatus.needs_review,
                 similarity_score=best["similarity_score"],
                 matched_znp_clause_id=best["clause_id"],
                 tu_quote=req.text,
-                znp_quote=best["text"],
+                znp_quote=znp_quote,
                 reasoning=reasoning,
                 method="deterministic",
                 channels=channels,
