@@ -6,6 +6,9 @@ deterministic local pipeline when the LLM is not configured. Results are
 persisted as requirements/verifications/findings, and a human verdict remains
 the final decision.
 """
+import threading
+from datetime import timezone
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
@@ -220,6 +223,175 @@ def _requirement_key(document_id: str, clause_number: str, text: str) -> tuple[s
     return (document_id, clause_number, normalize_clause_text(text))
 
 
+# Analyses are serialized per project. PostgreSQL also locks the project row,
+# which protects deployments with several API workers.
+_ANALYSIS_LOCKS: dict[str, threading.Lock] = {}
+_ANALYSIS_LOCKS_GUARD = threading.Lock()
+
+
+def _analysis_lock(project_id: str) -> threading.Lock:
+    with _ANALYSIS_LOCKS_GUARD:
+        return _ANALYSIS_LOCKS.setdefault(project_id, threading.Lock())
+
+
+def _lock_project_for_analysis(db: Session, project_id: str) -> Project:
+    if db.get_bind().dialect.name == "postgresql":
+        project = db.scalar(
+            select(Project).where(Project.id == project_id).with_for_update()
+        )
+        if project is None:
+            raise HTTPException(404, "Project not found")
+        if project.state == ReviewState.approved:
+            raise HTTPException(409, "Approved project cannot be modified")
+        return project
+
+    # SQLite has no row-level locks; the in-process lock above is the guard.
+    project = db.get(Project, project_id)
+    if project is None:
+        raise HTTPException(404, "Project not found")
+    db.refresh(project)
+    if project.state == ReviewState.approved:
+        raise HTTPException(409, "Approved project cannot be modified")
+    return project
+
+
+def _timestamp(value) -> float:
+    if value is None:
+        return 0.0
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.timestamp()
+
+
+def _accepted_requirement_ids(
+    findings: list[Finding], requirements: list[DBTURequirement],
+) -> set[str]:
+    accepted: set[str] = set()
+    for finding in findings:
+        if finding.review_status != FindingReviewStatus.accepted:
+            continue
+        linked_id = _finding_requirement_id(finding)
+        if linked_id is not None:
+            accepted.add(linked_id)
+        else:
+            accepted.update(
+                requirement.id
+                for requirement in requirements
+                if _finding_matches(finding, requirement)
+            )
+    return accepted
+
+
+def _verification_rank(
+    verification: RequirementVerification, accepted_ids: set[str],
+):
+    """Human verdict first, then an accepted finding, then the freshest record."""
+    human = bool(
+        verification.is_confirmed_by_human
+        or verification.human_override_status is not None
+    )
+    accepted = verification.requirement_id in accepted_ids
+    return (
+        1 if human else 0,
+        1 if accepted else 0,
+        _timestamp(verification.updated_at or verification.created_at),
+        verification.id,
+    )
+
+
+def _best_verification(
+    verifications: list[RequirementVerification], accepted_ids: set[str],
+) -> RequirementVerification | None:
+    return max(
+        verifications,
+        key=lambda verification: _verification_rank(verification, accepted_ids),
+        default=None,
+    )
+
+
+def _deduplicate_requirements(
+    db: Session,
+    requirements: list[DBTURequirement],
+    verifications: list[RequirementVerification],
+    findings: list[Finding],
+) -> int:
+    """Merge exact stable-key duplicates without losing human/finding decisions.
+
+    The surviving requirement keeps one best verification (human verdicts win);
+    other verifications and duplicate requirements are removed, and finding
+    evidence is re-pointed to the survivor. Manual rows are preferred as the
+    survivor, so a manually prepared requirement is not discarded.
+    """
+    accepted_ids = _accepted_requirement_ids(findings, requirements)
+    by_requirement: dict[str, list[RequirementVerification]] = {}
+    for verification in verifications:
+        by_requirement.setdefault(verification.requirement_id, []).append(verification)
+
+    groups: dict[tuple[str, str, str], list[DBTURequirement]] = {}
+    for requirement in requirements:
+        groups.setdefault(
+            _requirement_key(
+                requirement.document_id, requirement.clause_number, requirement.text,
+            ),
+            [],
+        ).append(requirement)
+
+    removed = 0
+    for group in groups.values():
+        if len(group) < 2:
+            continue
+        group_ids = {requirement.id for requirement in group}
+        group_verifications = [
+            verification
+            for requirement in group
+            for verification in by_requirement.get(requirement.id, [])
+        ]
+        keeper = _best_verification(group_verifications, accepted_ids)
+
+        def survivor_rank(requirement: DBTURequirement):
+            best = _best_verification(
+                by_requirement.get(requirement.id, []), accepted_ids,
+            )
+            best_rank = (
+                _verification_rank(best, accepted_ids) if best else (0, 0, 0.0, "")
+            )
+            manual = 1 if requirement.fragment_id is None else 0
+            return (
+                manual,
+                best_rank[0],
+                best_rank[1],
+                -_timestamp(requirement.created_at),
+                requirement.id,
+            )
+
+        survivor = max(group, key=survivor_rank)
+        if keeper is not None:
+            keeper.requirement_id = survivor.id
+        for verification in group_verifications:
+            if verification is not keeper:
+                db.delete(verification)
+
+        for finding in findings:
+            evidence = []
+            changed = False
+            for entry in finding.evidence or []:
+                if (
+                    isinstance(entry, dict)
+                    and entry.get("requirement_id") in group_ids
+                ):
+                    entry = {**entry, "requirement_id": survivor.id}
+                    changed = True
+                evidence.append(entry)
+            if changed:
+                finding.evidence = evidence
+
+        for requirement in group:
+            if requirement is not survivor:
+                db.delete(requirement)
+                removed += 1
+    return removed
+
+
 def _attach_provenance(
     items: list[RequirementCheckItem],
     tu_requirements: list[TURequirement],
@@ -327,7 +499,18 @@ def analyze_requirements(
         return response
 
     project_id = payload.project_id
-    project = get_project(db, project_id, edit=True)
+
+    with _analysis_lock(project_id):
+        _lock_project_for_analysis(db, project_id)
+        return _analyze_project_requirements(payload, db, agent)
+
+
+def _analyze_project_requirements(
+    payload: AnalyzeProjectRequirementsRequest,
+    db: Session,
+    agent: RequirementsAgent,
+) -> CheckRequirementsResponse:
+    project_id = payload.project_id
 
     docs = db.scalars(select(Document).where(Document.project_id == project_id)).all()
     docs_by_id = {document.id: document for document in docs}
@@ -373,29 +556,54 @@ def analyze_requirements(
     existing_requirements = db.scalars(
         select(DBTURequirement).where(DBTURequirement.project_id == project_id)
     ).all()
-    existing_by_key = {
-        _requirement_key(
-            requirement.document_id, requirement.clause_number, requirement.text,
-        ): requirement
-        for requirement in existing_requirements
-    }
     existing_verifications = db.scalars(
         select(RequirementVerification)
         .where(RequirementVerification.project_id == project_id)
-        .order_by(
-            RequirementVerification.created_at.desc(),
-            RequirementVerification.id.desc(),
-        )
     ).all()
-    verification_by_requirement: dict[str, RequirementVerification] = {}
-    for verification in existing_verifications:
-        verification_by_requirement.setdefault(verification.requirement_id, verification)
     existing_findings = db.scalars(
         select(Finding).where(
             Finding.project_id == project_id,
             Finding.module == "requirements",
         )
     ).all()
+
+    # Legacy or parallel runs may have left exact duplicates. Merge them before
+    # matching so the next analysis does not keep both copies.
+    if _deduplicate_requirements(
+        db, existing_requirements, existing_verifications, existing_findings,
+    ):
+        db.flush()
+        existing_requirements = db.scalars(
+            select(DBTURequirement).where(DBTURequirement.project_id == project_id)
+        ).all()
+        existing_verifications = db.scalars(
+            select(RequirementVerification)
+            .where(RequirementVerification.project_id == project_id)
+        ).all()
+        existing_findings = db.scalars(
+            select(Finding).where(
+                Finding.project_id == project_id,
+                Finding.module == "requirements",
+            )
+        ).all()
+
+    existing_by_key = {
+        _requirement_key(
+            requirement.document_id, requirement.clause_number, requirement.text,
+        ): requirement
+        for requirement in existing_requirements
+    }
+    accepted_ids = _accepted_requirement_ids(existing_findings, existing_requirements)
+    verifications_by_requirement: dict[str, list[RequirementVerification]] = {}
+    for verification in existing_verifications:
+        verifications_by_requirement.setdefault(
+            verification.requirement_id, [],
+        ).append(verification)
+    verification_by_requirement: dict[str, RequirementVerification] = {}
+    for requirement_id, items in verifications_by_requirement.items():
+        best = _best_verification(items, accepted_ids)
+        if best is not None:
+            verification_by_requirement[requirement_id] = best
 
     analysis = {
         "created": 0,
@@ -665,21 +873,56 @@ def get_project_requirements(project_id: str, db: Session = Depends(get_db)):
     """Return persisted TU/ZnP comparison results for a project."""
     get_project(db, project_id)
 
-    requirements = {
-        requirement.id: requirement
-        for requirement in db.scalars(
-            select(DBTURequirement).where(DBTURequirement.project_id == project_id)
-        ).all()
-    }
+    requirements = db.scalars(
+        select(DBTURequirement)
+        .where(DBTURequirement.project_id == project_id)
+        .order_by(DBTURequirement.created_at, DBTURequirement.id)
+    ).all()
     verifications = db.scalars(
         select(RequirementVerification)
         .where(RequirementVerification.project_id == project_id)
         .order_by(RequirementVerification.created_at)
     ).all()
+    findings = db.scalars(
+        select(Finding).where(
+            Finding.project_id == project_id,
+            Finding.module == "requirements",
+        )
+    ).all()
+    accepted_ids = _accepted_requirement_ids(findings, requirements)
+
+    verifications_by_requirement: dict[str, list[RequirementVerification]] = {}
+    for verification in verifications:
+        verifications_by_requirement.setdefault(
+            verification.requirement_id, [],
+        ).append(verification)
+
+    # One card per stable requirement key. Human verdicts win, then an accepted
+    # finding, then the freshest verification.
+    cards: dict[
+        tuple[str, str, str], tuple[DBTURequirement, RequirementVerification]
+    ] = {}
+    for requirement in requirements:
+        own = verifications_by_requirement.get(requirement.id)
+        if not own:
+            continue
+        verification = _best_verification(own, accepted_ids)
+        if verification is None:
+            continue
+        key = _requirement_key(
+            requirement.document_id, requirement.clause_number, requirement.text,
+        )
+        current = cards.get(key)
+        if (
+            current is None
+            or _verification_rank(verification, accepted_ids)
+            > _verification_rank(current[1], accepted_ids)
+        ):
+            cards[key] = (requirement, verification)
 
     fragment_ids = {
         requirement.fragment_id
-        for requirement in requirements.values()
+        for requirement in requirements
         if requirement.fragment_id
     } | {
         verification.matched_znp_fragment_id
@@ -696,10 +939,7 @@ def get_project_requirements(project_id: str, db: Session = Depends(get_db)):
         }
 
     items: list[RequirementCheckItem] = []
-    for verification in verifications:
-        requirement = requirements.get(verification.requirement_id)
-        if not requirement:
-            continue
+    for requirement, verification in cards.values():
         effective_status = RequirementStatus(
             (verification.human_override_status or verification.status).value
         )

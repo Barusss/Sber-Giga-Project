@@ -3,10 +3,19 @@
 AI comparison is implemented in `POST /requirements/analyze`; an empty request
 is still rejected by schema validation (HTTP 422).
 """
+import threading
+import time
 from io import BytesIO
 
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+from app.core.db import Base, get_db
 from app.core.models import Fragment
 from app.documents.parser import ExtractedBlock
+from app.main import app
+from app.requirements.agent import RequirementsAgent
 from app.requirements.extraction import Clause
 from app.requirements.router import _fragment_for_quote
 
@@ -409,6 +418,174 @@ def test_quote_maps_to_fragment_that_contains_it():
     assert _fragment_for_quote("150 кВт", clause, fragments).id == "f2"
     assert _fragment_for_quote("цитаты нет", clause, fragments).id == "f1"
     assert _fragment_for_quote("150 кВт", None, fragments) is None
+
+
+def test_get_requirements_deduplicates_stable_key_and_prefers_human(client, monkeypatch):
+    pid, docs = prepare(client, monkeypatch)
+    base = f"/api/v1/requirements/projects/{pid}"
+    payload = {
+        "document_id": docs["tu"],
+        "clause_number": "4.1",
+        "category": "power",
+        "text": "Максимальная мощность 150 кВт",
+    }
+    first = client.post(f"{base}/tu-requirements", json=payload).json()
+    second = client.post(f"{base}/tu-requirements", json=payload).json()
+    assert first["id"] != second["id"]
+
+    assert client.post(f"{base}/confirm", json={
+        "requirement_id": first["id"],
+        "status": "missing",
+        "comment": "Старое решение",
+    }).status_code == 200
+    assert client.post(f"{base}/confirm", json={
+        "requirement_id": second["id"],
+        "status": "fulfilled",
+        "comment": "Более свежее решение",
+    }).status_code == 200
+
+    stored = client.get(base).json()
+    assert len(stored["checked_requirements"]) == 1
+    card = stored["checked_requirements"][0]
+    assert card["requirement"]["id"] == second["id"]
+    assert card["status"] == "fulfilled"
+    assert card["is_confirmed_by_human"] is True
+    assert card["human_comment"] == "Более свежее решение"
+    assert stored["stats"] == {
+        "fulfilled": 1, "missing": 0, "needs_review": 0, "total": 1,
+    }
+
+
+def test_reanalysis_merges_duplicates_and_preserves_human_decision(client, monkeypatch):
+    pid, docs = _project_with_documents(client, monkeypatch, _requirements_blocks)
+    base = f"/api/v1/requirements/projects/{pid}"
+    payload = {
+        "document_id": docs["tu"],
+        "clause_number": "1.1",
+        "category": "power",
+        "text": "1.1. Максимальная мощность 150 кВт.",
+    }
+    first = client.post(f"{base}/tu-requirements", json=payload).json()
+    duplicate = client.post(f"{base}/tu-requirements", json=payload).json()
+    assert first["id"] != duplicate["id"]
+    assert client.post(f"{base}/confirm", json={
+        "requirement_id": first["id"],
+        "status": "missing",
+        "comment": "Инженерное решение",
+    }).status_code == 200
+
+    analyzed = client.post("/api/v1/requirements/analyze", json={"project_id": pid})
+    assert analyzed.status_code == 200, analyzed.text
+    analysis = analyzed.json()["trace_info"]["analysis"]
+    assert analysis["created"] == 1
+    assert analysis["updated"] == 1
+    assert analysis["preserved_human"] == 1
+    assert analysis["removed"] == 0
+
+    stored_requirements = client.get(f"{base}/tu-requirements").json()
+    assert sorted(item["clause_number"] for item in stored_requirements) == ["1.1", "1.2"]
+
+    stored = client.get(base).json()
+    assert len(stored["checked_requirements"]) == 2
+    cards = {
+        item["requirement"]["clause_number"]: item
+        for item in stored["checked_requirements"]
+    }
+    assert set(cards) == {"1.1", "1.2"}
+    assert cards["1.1"]["requirement"]["id"] == first["id"]
+    assert cards["1.1"]["is_confirmed_by_human"] is True
+    assert cards["1.1"]["status"] == "missing"
+    assert cards["1.1"]["human_comment"] == "Инженерное решение"
+
+
+def test_repeated_analysis_does_not_increase_card_count(client, monkeypatch):
+    pid, _ = _project_with_documents(client, monkeypatch, _requirements_blocks)
+    first = client.post("/api/v1/requirements/analyze", json={"project_id": pid})
+    assert first.status_code == 200, first.text
+    before = client.get(f"/api/v1/requirements/projects/{pid}").json()
+    assert len(before["checked_requirements"]) == 2
+
+    second = client.post("/api/v1/requirements/analyze", json={"project_id": pid})
+    assert second.status_code == 200, second.text
+    assert second.json()["trace_info"]["analysis"]["created"] == 0
+    after = client.get(f"/api/v1/requirements/projects/{pid}").json()
+    assert len(after["checked_requirements"]) == 2
+    assert before["stats"] == after["stats"]
+    assert {
+        item["id"] for item in before["checked_requirements"]
+    } == {
+        item["id"] for item in after["checked_requirements"]
+    }
+
+
+def test_parallel_analysis_is_serialized(tmp_path, monkeypatch):
+    engine = create_engine(
+        f"sqlite+pysqlite:///{tmp_path.as_posix()}/parallel.sqlite3",
+        connect_args={"check_same_thread": False},
+    )
+    Base.metadata.create_all(bind=engine)
+    Session = sessionmaker(bind=engine, expire_on_commit=False)
+
+    def override():
+        with Session() as db:
+            yield db
+
+    app.dependency_overrides[get_db] = override
+    monkeypatch.setattr("app.documents.router.extract_blocks", _requirements_blocks)
+    original_verify = RequirementsAgent.verify_all
+
+    def slow_verify(self, tu_requirements, znp_clauses):
+        # The delay happens after existing rows were read and before the commit,
+        # so two overlapping requests would insert duplicates without the lock.
+        time.sleep(0.2)
+        return original_verify(self, tu_requirements, znp_clauses)
+
+    monkeypatch.setattr(RequirementsAgent, "verify_all", slow_verify)
+    try:
+        with TestClient(app) as parallel_client:
+            project = parallel_client.post(
+                "/api/v1/projects", json={"name": "Проект параллельного анализа"},
+            ).json()
+            for kind in ("tu", "znp"):
+                response = parallel_client.post(
+                    f"/api/v1/projects/{project['id']}/documents",
+                    data={"kind": kind},
+                    files={
+                        "file": (
+                            f"{kind}.pdf", BytesIO(kind.encode()), "application/pdf",
+                        )
+                    },
+                )
+                assert response.status_code == 201, response.text
+
+            barrier = threading.Barrier(2)
+            responses = []
+
+            def analyze():
+                barrier.wait()
+                responses.append(parallel_client.post(
+                    "/api/v1/requirements/analyze",
+                    json={"project_id": project["id"]},
+                ))
+
+            threads = [threading.Thread(target=analyze) for _ in range(2)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=30)
+
+            assert [response.status_code for response in responses] == [200, 200]
+            stored = parallel_client.get(
+                f"/api/v1/requirements/projects/{project['id']}",
+            ).json()
+            assert len(stored["checked_requirements"]) == 2
+            assert sorted(
+                item["requirement"]["clause_number"]
+                for item in stored["checked_requirements"]
+            ) == ["1.1", "1.2"]
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        engine.dispose()
 
 
 def test_reanalysis_keeps_confirmed_requirement_when_text_disappears(client, monkeypatch):
