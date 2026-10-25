@@ -145,6 +145,71 @@ def test_analyze_service_clauses_are_skipped(client, monkeypatch):
     assert clause_numbers == ["1.1"]
 
 
+def test_analyze_skips_headings_toc_and_service_sections(client, monkeypatch):
+    def fake_blocks(data, suffix):
+        if data == b"tu-doc":
+            return [
+                ExtractedBlock(1, 0, "ТЕХНИЧЕСКИЕ УСЛОВИЯ"),
+                ExtractedBlock(
+                    1, 1, "Содержание", block_type="heading",
+                    section_path="Содержание",
+                ),
+                ExtractedBlock(1, 2, "1. Общие положения ........ 3"),
+                ExtractedBlock(
+                    1, 3, "1. Общие положения", block_type="heading",
+                    section_path="1. Общие положения",
+                ),
+                ExtractedBlock(1, 4, "1.1. Максимальная мощность 150 кВт."),
+                ExtractedBlock(
+                    2, 0, "2. Характеристика", block_type="heading",
+                    section_path="2. Характеристика",
+                ),
+                ExtractedBlock(2, 1, "Установить счетчик класса точности 0.5S."),
+                ExtractedBlock(
+                    3, 0, "Приложение А. Перечень сокращений",
+                    block_type="heading",
+                    section_path="Приложение А. Перечень сокращений",
+                ),
+                ExtractedBlock(
+                    3, 1, "Сокращение | Расшифровка", block_type="table_row",
+                    section_path="Приложение А. Перечень сокращений",
+                ),
+            ]
+        return [ExtractedBlock(3, 0, "3.1. Максимальная мощность 150 кВт.")]
+
+    monkeypatch.setattr("app.documents.router.extract_blocks", fake_blocks)
+    project = client.post(
+        "/api/v1/projects", json={"name": "Проект без заголовков в требованиях"}
+    ).json()
+    for kind, content in [("tu", b"tu-doc"), ("znp", b"znp-doc")]:
+        response = client.post(
+            f"/api/v1/projects/{project['id']}/documents",
+            data={"kind": kind},
+            files={"file": (f"{kind}.pdf", BytesIO(content), "application/pdf")},
+        )
+        assert response.status_code == 201, response.text
+
+    data = client.post(
+        "/api/v1/requirements/analyze", json={"project_id": project["id"]}
+    ).json()
+    items = {
+        item["requirement"]["clause_number"]: item
+        for item in data["checked_requirements"]
+    }
+
+    assert set(items) == {"1.1", "2"}
+    assert items["1.1"]["status"] == "fulfilled"
+    assert items["2"]["status"] == "missing"
+    assert items["2"]["requirement"]["text"] == \
+        "Установить счетчик класса точности 0.5S."
+    assert data["stats"]["total"] == 2
+    assert all(
+        "Содержание" not in item["requirement"]["text"]
+        and "Приложение" not in item["requirement"]["text"]
+        for item in items.values()
+    )
+
+
 def test_manual_tu_storage_and_human_verdict(client, monkeypatch):
     pid, docs = prepare(client, monkeypatch)
     base = f"/api/v1/requirements/projects/{pid}"

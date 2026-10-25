@@ -31,8 +31,40 @@ SERVICE_PATTERNS = (
     r"^\s*срок\s+(?:действия|оказания)\b",
     r"^\s*приложени[ея]\b",
     r"^\s*примечани[ея]\b",
+    r"^\s*(?:утверждаю|согласовано)\b",
+    r"^\s*задание\s+на\s+проектирование\b",
+    r"^\s*технические\s+условия\b",
+    r"^\s*(?:содержание|оглавление)\s*$",
+    r"^\s*(?:перечень|список)\s+(?:сокращени|обозначени)\b",
+    r"^\s*перечень\s+нормативн\w*\s+документ\w*",
+    r"^\s*термины\s+и\s+определения\b",
+    r"^\s*условные\s+обозначения\b",
 )
 _SERVICE_RE = tuple(re.compile(pattern, re.IGNORECASE) for pattern in SERVICE_PATTERNS)
+
+# Table-of-contents rows and headings that never contain engineering requirements.
+_TOC_LINE_RE = re.compile(
+    r"(?:\.{3,}|…{2,}|·{3,}|_{3,}|-{3,})\s*\d{1,4}\s*$"
+)
+_TOC_TITLE_RE = re.compile(r"^\s*(?:содержание|оглавление)\s*[.:]?\s*$", re.IGNORECASE)
+_IGNORED_HEADING_PATTERNS = (
+    r"^\s*перечень\s+(?:сокращени|обозначени|нормативн|условных)",
+    r"^\s*(?:список|перечень)\s+(?:сокращени|обозначени)",
+    r"^\s*термины\s+и\s+определения\b",
+    r"^\s*условные\s+обозначения\b",
+)
+_IGNORED_HEADING_RE = tuple(
+    re.compile(pattern, re.IGNORECASE) for pattern in _IGNORED_HEADING_PATTERNS
+)
+_PREAMBLE_RE = re.compile(
+    r"\b(?:настоящ\w*|требовани\w*|распространя\w*|определя\w*|"
+    r"устанавлива\w*|предъявля\w*|должн\w*|необходим\w*)\b",
+    re.IGNORECASE,
+)
+_TITLE_PREAMBLE_RE = re.compile(
+    r"(?im)^\s*(?:утверждаю|согласовано|задание\s+на\s+проектирование|"
+    r"технические\s+условия|номер\s+ту|дата\s+выдачи)\b"
+)
 
 _NUMBER_START_RE = re.compile(
     r"^\s*(?:п\.?\s*|пункт\s*)?(\d{1,2}(?:\.\d{1,2}){0,5})[.)]?\s+",
@@ -45,6 +77,10 @@ _NUMBER_PREFIX_RE = re.compile(
 _SECTION_HEADING_RE = re.compile(
     r"^\s*((?:раздел|section)\s+(?:\d{1,3}|[ivxlcdm]+))(?=\s|$|[.:])",
     re.IGNORECASE,
+)
+_HEADING_NUMBER_RE = re.compile(r"^\s*(\d{1,3}(?:\.\d{1,3}){0,5})[.)]?\s*(.*)$")
+_HEADING_LABEL_PREFIX_RE = re.compile(
+    r"^\s*\d{1,3}(?:\.\d{1,3}){0,5}[.)]?\s+"
 )
 
 
@@ -86,6 +122,11 @@ def is_service_clause(text: str) -> bool:
     return any(pattern.match(first_line) for pattern in _SERVICE_RE)
 
 
+def is_toc_line(text: str) -> bool:
+    """Return True for a table-of-contents row with dot leaders and a page number."""
+    return bool(_TOC_LINE_RE.search(text.strip()))
+
+
 def normalize_clause_text(text: str) -> str:
     """Build a deduplication key independent of numbering and whitespace."""
     normalized = text.replace("ё", "е").replace("Ё", "Е").casefold()
@@ -96,8 +137,11 @@ def normalize_clause_text(text: str) -> str:
 def extract_clauses(fragments: Sequence[Fragment]) -> list[Clause]:
     """Group ordered fragments into atomic, deduplicated clauses.
 
-    New clauses start at numbered lines, headings and "Раздел N"/"SECTION N".
-    All other fragments continue the current clause, even across pages.
+    Numbered lines start clauses. Headings never become clauses by themselves:
+    a heading supplies its number and section path to the first unnumbered body
+    below it. Headings also close the previous clause, so a heading between two
+    points cannot glue the next text to the previous one. Table-of-contents and
+    service headings are skipped together with their unnumbered content.
     """
     ordered = sorted(
         (fragment for fragment in fragments if (fragment.text or "").strip()),
@@ -107,13 +151,73 @@ def extract_clauses(fragments: Sequence[Fragment]) -> list[Clause]:
     drafts: list[_Draft] = []
     preamble: _Draft | None = None
     current: _Draft | None = None
+    pending_heading: Fragment | None = None
+    toc_mode = False
+    skip_section = False
 
-    for fragment in ordered:
+    for index, fragment in enumerate(ordered):
         text = fragment.text.strip()
         if is_noise(text):
             continue
+        block_type = fragment.block_type or "paragraph"
 
-        clause_number = _start_clause_number(text, fragment.block_type)
+        if _TOC_TITLE_RE.match(text):
+            current = None
+            pending_heading = None
+            toc_mode = True
+            skip_section = False
+            continue
+
+        if is_toc_line(text):
+            current = None
+            pending_heading = None
+            continue
+
+        if toc_mode:
+            if (
+                _looks_like_toc_entry(text, block_type)
+                and not _next_is_body(ordered, index)
+            ):
+                current = None
+                if _is_ignored_heading(text):
+                    pending_heading = None
+                    skip_section = True
+                elif block_type == "heading" or _start_clause_number(text):
+                    pending_heading = fragment
+                continue
+            toc_mode = False
+            if _is_unlabelled_body_heading(fragment, ordered, index):
+                current = None
+                pending_heading = fragment
+                continue
+
+        if block_type == "heading":
+            current = None
+            if _is_ignored_heading(text):
+                pending_heading = None
+                skip_section = True
+            else:
+                pending_heading = fragment
+                skip_section = False
+            continue
+
+        if _is_ignored_heading(text) and _looks_like_heading(text):
+            current = None
+            pending_heading = None
+            skip_section = True
+            continue
+
+        clause_number = _start_clause_number(text)
+        if skip_section:
+            # A real subsection ends a service/TOC block; table rows and
+            # single-level appendix entries stay excluded.
+            if clause_number and "." in clause_number and block_type != "table_row":
+                skip_section = False
+            else:
+                current = None
+                pending_heading = None
+                continue
+
         if clause_number is not None:
             current = _Draft(
                 clause_number=clause_number,
@@ -121,7 +225,21 @@ def extract_clauses(fragments: Sequence[Fragment]) -> list[Clause]:
                 section_path=fragment.section_path,
             )
             drafts.append(current)
-        elif current is None:
+            pending_heading = None
+        elif pending_heading is not None:
+            current = _Draft(
+                clause_number=_heading_clause_number(pending_heading.text),
+                sections=[(fragment, text)],
+                section_path=(
+                    pending_heading.section_path
+                    or " ".join(pending_heading.text.split())
+                ),
+            )
+            drafts.append(current)
+            pending_heading = None
+        elif current is not None:
+            current.sections.append((fragment, text))
+        elif not drafts:
             if preamble is None:
                 preamble = _Draft(
                     clause_number="Преамбула",
@@ -130,10 +248,8 @@ def extract_clauses(fragments: Sequence[Fragment]) -> list[Clause]:
                 )
             else:
                 preamble.sections.append((fragment, text))
-        else:
-            current.sections.append((fragment, text))
 
-    if preamble is not None and len(preamble.text) >= MIN_PREAMBLE_CHARS:
+    if preamble is not None and _keep_preamble(preamble):
         drafts.insert(0, preamble)
 
     clauses: list[Clause] = []
@@ -163,7 +279,7 @@ def extract_clauses(fragments: Sequence[Fragment]) -> list[Clause]:
     return numbered
 
 
-def _start_clause_number(text: str, block_type: str) -> str | None:
+def _start_clause_number(text: str) -> str | None:
     section = _SECTION_HEADING_RE.match(text)
     if section:
         return section.group(1).strip()[:MAX_CLAUSE_NUMBER_CHARS]
@@ -171,11 +287,94 @@ def _start_clause_number(text: str, block_type: str) -> str | None:
     number = _NUMBER_START_RE.match(text)
     if number:
         return number.group(1)[:MAX_CLAUSE_NUMBER_CHARS]
-
-    if block_type == "heading":
-        label = " ".join(text.split())
-        return (label or "Заголовок")[:MAX_CLAUSE_NUMBER_CHARS]
     return None
+
+
+def _heading_clause_number(text: str) -> str:
+    """Use the heading's own number, or its label when it has no number."""
+    cleaned = " ".join(text.split())
+    section = _SECTION_HEADING_RE.match(cleaned)
+    if section:
+        return section.group(1).strip()[:MAX_CLAUSE_NUMBER_CHARS]
+    number = _HEADING_NUMBER_RE.match(cleaned)
+    if number:
+        return number.group(1)[:MAX_CLAUSE_NUMBER_CHARS]
+    return (cleaned or "Заголовок")[:MAX_CLAUSE_NUMBER_CHARS]
+
+
+def _heading_label(text: str) -> str:
+    """Strip a leading section number so service headings are recognised."""
+    cleaned = " ".join(text.split())
+    section = _SECTION_HEADING_RE.match(cleaned)
+    if section:
+        remainder = cleaned[section.end():].lstrip(" .:—-")
+        return remainder or cleaned
+    number = _HEADING_LABEL_PREFIX_RE.match(cleaned)
+    if number:
+        return cleaned[number.end():] or cleaned
+    return cleaned
+
+
+def _is_ignored_heading(text: str) -> bool:
+    label = _heading_label(text)
+    return any(pattern.match(label) for pattern in _IGNORED_HEADING_RE) or (
+        is_service_clause(label)
+    )
+
+
+def _looks_like_heading(text: str) -> bool:
+    stripped = " ".join(text.split())
+    return len(stripped) <= 160 and not stripped.endswith((".", "!", "?", ";"))
+
+
+def _looks_like_toc_entry(text: str, block_type: str) -> bool:
+    if block_type == "heading":
+        return True
+    stripped = text.strip()
+    if is_toc_line(stripped):
+        return True
+    if stripped.endswith((".", "!", "?", ";")):
+        return False
+    if _start_clause_number(stripped) is not None:
+        return True
+    return bool(re.match(r"^\s*(?:приложение|перечень|термины|условные)\b",
+                         stripped, re.IGNORECASE))
+
+
+def _next_is_body(fragments: Sequence[Fragment], index: int) -> bool:
+    """Look one step ahead: TOC entries are followed by entries, not by prose."""
+    for fragment in fragments[index + 1:]:
+        text = (fragment.text or "").strip()
+        if not text or is_noise(text) or is_toc_line(text) or _TOC_TITLE_RE.match(text):
+            continue
+        if _looks_like_toc_entry(text, fragment.block_type or "paragraph"):
+            return False
+        return len(text) >= 100 or text.endswith((".", "!", "?", ";"))
+    return False
+
+
+def _is_unlabelled_body_heading(
+    fragment: Fragment, fragments: Sequence[Fragment], index: int,
+) -> bool:
+    """A numbered TOC-like line followed by prose is a real subsection heading."""
+    if fragment.block_type == "heading":
+        return False
+    text = (fragment.text or "").strip()
+    return (
+        not text.endswith((".", "!", "?", ";"))
+        and _start_clause_number(text) is not None
+        and _next_is_body(fragments, index)
+    )
+
+
+def _keep_preamble(draft: _Draft) -> bool:
+    """Keep only a substantive preamble, not a title page or document metadata."""
+    text = draft.text
+    if len(text) < MIN_PREAMBLE_CHARS:
+        return False
+    if _TITLE_PREAMBLE_RE.search(text):
+        return False
+    return bool(_PREAMBLE_RE.search(text)) or is_service_clause(text)
 
 
 def _draft_to_clauses(draft: _Draft) -> list[Clause]:

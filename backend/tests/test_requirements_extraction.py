@@ -115,6 +115,101 @@ def test_short_preamble_is_dropped_and_long_preamble_kept():
     assert long[0].page == 1
 
 
+def test_title_page_is_not_a_requirement():
+    clauses = extract_clauses([
+        make_fragment(1, 0, "АО «Сетевая компания»"),
+        make_fragment(1, 1, "ТЕХНИЧЕСКИЕ УСЛОВИЯ"),
+        make_fragment(1, 2, "Номер ТУ: ТУ-2026/ГУ-236-УрГРЭС"),
+        make_fragment(1, 3, "Дата выдачи: «___» __________ 2026 г."),
+        make_fragment(1, 4, "1.1. Максимальная мощность 150 кВт."),
+    ])
+
+    assert [clause.clause_number for clause in clauses] == ["1.1"]
+
+
+def test_heading_without_body_does_not_create_requirement():
+    clauses = extract_clauses([
+        make_fragment(
+            1, 0, "1. Общие положения", block_type="heading",
+            section_path="1. Общие положения",
+        ),
+        make_fragment(
+            1, 1, "2.1. Схема выдачи мощности", block_type="heading",
+            section_path="2.1. Схема выдачи мощности",
+        ),
+        make_fragment(
+            1, 2, "Раздел 3", block_type="heading", section_path="Раздел 3",
+        ),
+    ])
+
+    assert clauses == []
+
+
+def test_heading_gives_number_and_context_to_unlabelled_body():
+    heading = make_fragment(
+        1, 0, "2. Характеристика генерирующей установки", block_type="heading",
+        section_path="2. Характеристика генерирующей установки",
+    )
+    body = make_fragment(1, 1, "Установленная электрическая мощность 236 МВт.")
+
+    clauses = extract_clauses([heading, body])
+
+    assert len(clauses) == 1
+    assert clauses[0].clause_number == "2"
+    assert clauses[0].text == body.text
+    assert clauses[0].section_path == heading.section_path
+    assert clauses[0].fragment_id == body.id
+
+    section = extract_clauses([
+        make_fragment(
+            1, 0, "Раздел 2. Схема выдачи мощности", block_type="heading",
+            section_path="Раздел 2. Схема выдачи мощности",
+        ),
+        body,
+    ])
+    assert [clause.clause_number for clause in section] == ["Раздел 2"]
+
+
+def test_heading_between_points_does_not_glue_next_text_to_previous():
+    first = make_fragment(1, 0, "1.1. Первое требование по мощности.")
+    heading = make_fragment(
+        1, 1, "2. Схема выдачи мощности", block_type="heading",
+        section_path="2. Схема выдачи мощности",
+    )
+    unlabelled = make_fragment(1, 2, "Выдача мощности предусматривается на напряжении 110 кВ.")
+    second = make_fragment(1, 3, "2.1. Второе требование по учету.")
+
+    clauses = extract_clauses([first, heading, unlabelled, second])
+
+    assert [clause.clause_number for clause in clauses] == ["1.1", "2", "2.1"]
+    assert clauses[0].text == first.text
+    assert clauses[1].text == unlabelled.text
+    assert clauses[2].text == second.text
+
+
+def test_toc_and_service_headings_are_not_clauses():
+    clauses = extract_clauses([
+        make_fragment(1, 0, "Содержание", block_type="heading",
+                      section_path="Содержание"),
+        make_fragment(1, 1, "1. Общие положения ........ 3"),
+        make_fragment(1, 2, "2. Схема выдачи мощности ……… 5"),
+        make_fragment(1, 3, "Приложение А. Перечень сокращений",
+                      block_type="heading", section_path="Приложение А. Перечень сокращений"),
+        make_fragment(1, 4, "Сокращение | Расшифровка", block_type="table_row",
+                      section_path="Приложение А. Перечень сокращений"),
+        make_fragment(1, 5, "Термины и определения", block_type="heading",
+                      section_path="Термины и определения"),
+        make_fragment(1, 6, "Утверждаю", block_type="heading",
+                      section_path="Утверждаю"),
+        make_fragment(1, 7, "Технические условия", block_type="heading",
+                      section_path="Технические условия"),
+        make_fragment(1, 8, "1. Общие положения", block_type="heading",
+                      section_path="1. Общие положения"),
+    ])
+
+    assert clauses == []
+
+
 def test_service_clauses_are_recognised_but_not_removed_by_extraction():
     assert is_service_clause("Основание: заявка на технологическое присоединение")
     assert is_service_clause("Срок действия технических условий — 2 года")
