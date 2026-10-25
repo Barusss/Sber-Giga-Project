@@ -480,7 +480,7 @@ def test_reanalysis_merges_duplicates_and_preserves_human_decision(client, monke
     assert analysis["created"] == 1
     assert analysis["updated"] == 1
     assert analysis["preserved_human"] == 1
-    assert analysis["removed"] == 0
+    assert analysis["removed"] == 1
 
     stored_requirements = client.get(f"{base}/tu-requirements").json()
     assert sorted(item["clause_number"] for item in stored_requirements) == ["1.1", "1.2"]

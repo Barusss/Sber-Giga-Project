@@ -569,9 +569,10 @@ def _analyze_project_requirements(
 
     # Legacy or parallel runs may have left exact duplicates. Merge them before
     # matching so the next analysis does not keep both copies.
-    if _deduplicate_requirements(
+    deduplicated = _deduplicate_requirements(
         db, existing_requirements, existing_verifications, existing_findings,
-    ):
+    )
+    if deduplicated:
         db.flush()
         existing_requirements = db.scalars(
             select(DBTURequirement).where(DBTURequirement.project_id == project_id)
@@ -610,7 +611,7 @@ def _analyze_project_requirements(
         "updated": 0,
         "preserved_human": 0,
         "preserved_findings": 0,
-        "removed": 0,
+        "removed": deduplicated,
         "force": payload.force,
     }
 
