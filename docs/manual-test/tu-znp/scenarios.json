@@ -211,7 +211,7 @@
         }
       ]
     },
-    "note": "С embeddings tu-connection должен стать needs_review (semantic-only). Остальные статусы не меняются."
+    "note": "С embeddings tu-connection переходит в needs_review (semantic-only). Без LLM semantic-канал консервативен: отсутствующий пункт тоже может стать needs_review; LLM-путь возвращает missing."
   },
   "04_combined_document": {
     "description": "Основной сценарий для загрузки tu.docx и znp.docx. Без embeddings ожидается 4 fulfilled, 1 needs_review и 2 missing.",
@@ -315,6 +315,6 @@
         }
       ]
     },
-    "note": "С embeddings tu-connection должен стать needs_review (semantic-only). Остальные статусы не меняются."
+    "note": "С embeddings tu-connection переходит в needs_review (semantic-only). Без LLM semantic-канал консервативен: отсутствующий пункт тоже может стать needs_review; LLM-путь возвращает missing."
   }
 }
