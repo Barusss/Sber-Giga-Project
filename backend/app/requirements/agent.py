@@ -421,6 +421,11 @@ class RequirementsAgent:
             reasoning += " [Цитата ЗнП не найдена в пункте, заменена фактическим фрагментом]"
             confidence = min(confidence, 0.65)
 
+        if status == RequirementStatus.fulfilled and not evidence_check["quote_present"]:
+            status = RequirementStatus.needs_review
+            reasoning += " [Модель не привела цитату ЗнП; фрагмент подобран автоматически]"
+            confidence = min(confidence, 0.65)
+
         if status == RequirementStatus.fulfilled and (
             not quote_check["znp_quote_present"]
             or not quote_check["znp_quote_valid"]

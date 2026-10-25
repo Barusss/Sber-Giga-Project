@@ -584,6 +584,32 @@ def test_agent_llm_fulfilled_is_downgraded_when_list_is_partially_covered():
     assert finish_step["evidence_check"]["final_quote_atomic"] is True
 
 
+def test_agent_llm_fulfilled_without_znp_quote_is_downgraded():
+    agent = _agent_with_replies([
+        {
+            "action": "finish",
+            "status": "fulfilled",
+            "confidence_score": 0.95,
+            "matched_znp_clause_id": "znp-1",
+            "tu_quote": "Максимальная мощность 150 кВт",
+            "znp_quote": None,
+            "reasoning": "Модель не привела доказательство.",
+        },
+    ])
+    response = agent.verify_all([_tu()], [_znp()])
+    item = response.checked_requirements[0]
+
+    assert item.status.value == "needs_review"
+    assert item.znp_quote
+    assert "цитату ЗнП" in item.reasoning
+    finish_step = next(
+        step for step in response.trace_info["agent_runs"][0]["steps"]
+        if step["tool"] == "finish_and_validate"
+    )
+    assert finish_step["evidence_check"]["quote_present"] is False
+    assert finish_step["evidence_check"]["quote_replaced"] is True
+
+
 def test_validate_quotes_normalizes_typography_and_reports_atomicity():
     tu_full = "Требуется мощность — 150 кВт."
     znp_full = "Предусмотреть «мощность — 150 кВт»… не ниже."
