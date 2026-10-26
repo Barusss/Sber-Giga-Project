@@ -158,7 +158,11 @@ export function DocumentsPage() {
   const ocrPages = pages.filter(page => page.hasOcr).length
 
   function selectProject(id: string) {
+    // Invalidate the previous document read before switching projects.
+    // Its finally-block must not leave the new project stuck in "reading".
     viewRequest.current += 1
+    setReading(false)
+    setDocs([])
     setProject(id)
     setSelected(null)
     setFragments([])
