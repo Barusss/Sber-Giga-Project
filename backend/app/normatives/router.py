@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select, or_, delete
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -6,7 +6,9 @@ from sqlalchemy.orm import Session
 from app.core.db import get_db
 from app.core.models import Normative, Document, Project, ReviewState, NormativeVerification, Finding
 from app.normatives.extraction import ExtractionResult, extract_normative_facts
-from app.normatives.verification import VerificationReport, check_document_standards
+from app.normatives.verification import (
+    DEFAULT_STANDARDS_BATCH, MAX_STANDARDS_BATCH, VerificationReport, check_document_standards,
+)
 from app.core.schemas import (
     NormativeCreate, 
     NormativeUpdate, 
@@ -128,11 +130,16 @@ def extract_facts(document_id: str, db: Session = Depends(get_db)):
 
 
 @extraction_router.post("/documents/{document_id}/check-normatives", response_model=VerificationReport)
-def check_normatives(document_id: str, db: Session = Depends(get_db)):
-    """Проверить извлеченные стандарты по официальному реестру Росстандарта."""
+def check_normatives(
+    document_id: str,
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=DEFAULT_STANDARDS_BATCH, ge=1, le=MAX_STANDARDS_BATCH),
+    db: Session = Depends(get_db),
+):
+    """Проверить одну порцию нормативов. next_offset указывает следующую порцию."""
     document = db.get(Document, document_id)
     if document is None:
         raise HTTPException(404, "Document not found")
     if db.get(Project, document.project_id).state == ReviewState.approved:
         raise HTTPException(409, "Approved project cannot be modified")
-    return check_document_standards(db, document)
+    return check_document_standards(db, document, offset=offset, limit=limit)
