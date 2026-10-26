@@ -29,6 +29,16 @@ def test_pdf_soft_hyphens_keep_the_edition():
     assert normalize_code(iec) == "IEC 61000-4-30:2008"
 
 
+def test_pdf_horizontal_bar_keeps_the_edition():
+    # Some embedded PDF fonts emit U+2015 HORIZONTAL BAR instead of a dash.
+    raw = "ГОСТ 30804.4.30\u20152013"
+    assert REFERENCE_PATTERN.search(raw).group(0) == raw
+    assert normalize_code(raw) == "ГОСТ 30804.4.30-2013"
+    assert enrich_candidate_code(
+        "ГОСТ 30804.4.30", "См. " + raw
+    ) == "ГОСТ 30804.4.30-2013"
+
+
 def test_nbsp_section_headings_are_recognized():
     from app.normatives.extraction import SECTION_PATTERN, section_after
 
