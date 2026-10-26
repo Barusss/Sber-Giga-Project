@@ -30,7 +30,7 @@ AGENT_SYSTEM_PROMPT = """Ты ИИ-агент инженерной экспер�
 Доступные инструменты:
 1. "search_znp": {"query": "строка поиска"} — поиск подходящих пунктов в ЗнП.
 2. "get_neighbors": {"clause_id": "id пункта"} — чтение соседних пунктов ЗнП для уточнения контекста.
-3. "verify_params": {"znp_clause_id": "id пункта"} — сверка числовых параметров (мощность, напряжение, категория, точность).
+3. "verify_params": {"znp_clause_id": "id пункта"} — сверка числовых параметров и нормативных кодов (мощность, напряжение, категория, точность, сравнения с единицами, ГОСТ/СП/СНиП/СТО/РД/ПУЭ/ФЗ/№ документа).
 4. "validate_quotes": {"tu_quote": "точная цитата из ТУ", "znp_clause_id": "id пункта", "znp_quote": "точная цитата из ЗнП"} — проверка подлинности цитат.
 
 Формат ответа — СТРОГО JSON одного из двух видов:
@@ -53,6 +53,7 @@ AGENT_SYSTEM_PROMPT = """Ты ИИ-агент инженерной экспер�
   "reasoning": "объяснение для инженера"
 }
 Правило эскалации: если параметры расходятся, формулировка неоднозначна или уверенность ниже 0.70 — ставь "needs_review".
+Правило параметров: числа, единицы измерения, направление сравнения (не более/не менее/не выше/не ниже/≤/≥) и нормативные коды (ГОСТ, ГОСТ Р, СП, СНиП, СТО, РД, СО, ПУЭ, ФЗ, № документа) должны совпадать с ТУ. Если значение, единица, направление или код расходятся, либо значимый параметр ТУ не подтверждён в ЗнП, ставь "needs_review", а не "fulfilled".
 Правило перечней: если требование ТУ содержит перечень (маркированный список, пункты 1)/а), строки после вводного двоеточия или несколько сегментов через ";"), ставь "fulfilled" только когда в ЗнП подтверждены ВСЕ элементы перечня. Если хотя бы один элемент не подтверждён — "needs_review" и перечисли неподтверждённые элементы в reasoning.
 Правило цитаты: "znp_quote" должна быть короткой (не более 600 символов) точной подстрокой ОДНОГО пункта ЗнП, а не всем склеенным списком. Пустая или выдуманная цитата не подтверждает "fulfilled".
 """
@@ -435,11 +436,6 @@ class RequirementsAgent:
             reasoning += " [Доказательство ЗнП не является точной атомарной цитатой]"
             confidence = min(confidence, 0.60)
 
-        if not param_check["params_match"] and status == RequirementStatus.fulfilled:
-            status = RequirementStatus.needs_review
-            reasoning += f" [Валидатор параметров: {'; '.join(param_check['mismatches'])}]"
-            confidence = min(confidence, 0.65)
-
         if (
             status == RequirementStatus.fulfilled
             and coverage_check["is_list"]
@@ -452,6 +448,11 @@ class RequirementsAgent:
                 f"{coverage_check['items_covered']} из {coverage_check['items_total']}"
                 f"; не подтверждено: {uncovered}]"
             )
+            confidence = min(confidence, 0.65)
+
+        if not param_check["params_match"] and status == RequirementStatus.fulfilled:
+            status = RequirementStatus.needs_review
+            reasoning += f" [Валидатор параметров: {'; '.join(param_check['mismatches'])}]"
             confidence = min(confidence, 0.65)
 
         if confidence < 0.70 and status == RequirementStatus.fulfilled:
@@ -580,9 +581,14 @@ class RequirementsAgent:
         )
         issues: list[str] = []
         if not param_res["params_match"]:
-            issues.append(
-                "Найдено расхождение параметров: " + "; ".join(param_res["mismatches"])
-            )
+            mismatch_types = set(param_res.get("mismatch_types") or [])
+            if mismatch_types == {"missing"}:
+                prefix = "В ЗнП не подтверждены параметры: "
+            elif mismatch_types == {"mismatch"}:
+                prefix = "Найдено расхождение параметров: "
+            else:
+                prefix = "Параметры расходятся или не подтверждены в ЗнП: "
+            issues.append(prefix + "; ".join(param_res["mismatches"]))
         if coverage_res["is_list"] and not coverage_res["covered"]:
             uncovered = "; ".join(coverage_res["uncovered_items"][:3])
             issues.append(

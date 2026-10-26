@@ -98,6 +98,65 @@ def test_hybrid_search_adds_semantic_channel_and_numbers_bonus():
     assert lexical[0]["semantic_score"] is None
 
 
+def test_search_rewards_supported_constraint_and_penalizes_conflict():
+    query = (
+        "Удельный расход топлива на выработку электроэнергии "
+        "не более 240 г у.т./(кВт·ч)."
+    )
+    clauses = [
+        ZNPClause(
+            id="right",
+            clause_number="1",
+            text=(
+                "Удельный расход топлива на выработку электроэнергии "
+                "не более 240 г у.т./(кВт·ч)."
+            ),
+        ),
+        ZNPClause(
+            id="wrong",
+            clause_number="2",
+            text=(
+                "Удельный расход топлива на выработку электроэнергии "
+                "не более 260 г у.т./(кВт·ч)."
+            ),
+        ),
+        ZNPClause(
+            id="noise",
+            clause_number="3",
+            text="3.1. ГОСТ Р 12345-2020, срок 01.01.2025.",
+        ),
+    ]
+
+    results = {
+        item["clause_id"]: item
+        for item in tool_search_znp_clauses(query, clauses, top_k=3)
+    }
+
+    assert results["right"]["constraint_support"] is True
+    assert results["right"]["constraint_conflict"] is False
+    assert results["wrong"]["constraint_support"] is False
+    assert results["wrong"]["constraint_conflict"] is True
+    assert results["wrong"]["constraint_bonus"] < 0
+    assert results["wrong"]["similarity_score"] < results["right"]["similarity_score"]
+
+
+def test_search_does_not_bonus_clause_numbers_codes_or_dates():
+    query = "4.2. ГОСТ Р 12345-2020, срок 01.01.2025."
+    clauses = [
+        ZNPClause(
+            id="codes-only",
+            clause_number="4.2",
+            text="4.2. ГОСТ Р 12345-2020, срок 01.01.2025.",
+        )
+    ]
+
+    result = tool_search_znp_clauses(query, clauses, top_k=1)[0]
+
+    assert result["constraint_support"] is False
+    assert result["constraint_conflict"] is False
+    assert result["constraint_bonus"] == 0.0
+
+
 def test_search_does_not_match_only_by_leading_clause_number():
     clauses = [
         ZNPClause(
@@ -148,6 +207,174 @@ def test_engineering_params_validator_reports_missing_znp_values():
     assert "напряжения" in messages
     assert "категория надёжности" in messages
     assert "класс точности" in messages
+
+
+def test_engineering_params_validator_compares_constraints_with_units():
+    tu = (
+        "Удельный расход топлива на выработку электроэнергии "
+        "не более 240 г у.т./(кВт·ч)."
+    )
+    mismatch = tool_verify_engineering_params(
+        tu,
+        "Удельный расход топлива на выработку электроэнергии "
+        "не более 260 г у.т./(кВт·ч).",
+    )
+    assert mismatch["params_match"] is False
+    assert mismatch["mismatch_types"] == ["mismatch"]
+    assert "240" in mismatch["mismatches"][0]
+    assert "260" in mismatch["mismatches"][0]
+    assert mismatch["extracted"]["tu"]["constraints"][0]["unit"] == "г у.т./(кВт·ч)"
+
+    match = tool_verify_engineering_params(tu, tu)
+    assert match["params_match"] is True
+    assert match["mismatches"] == []
+
+    symbol_mismatch = tool_verify_engineering_params(
+        "Удельный расход топлива не более 240 г у.т./(кВт·ч).".replace("не более", "≤"),
+        "Удельный расход топлива не более 260 г у.т./(кВт·ч).".replace("не более", "≤"),
+    )
+    assert symbol_mismatch["params_match"] is False
+    assert symbol_mismatch["mismatch_types"] == ["mismatch"]
+
+    missing = tool_verify_engineering_params(tu, "Мощность 240 кВт.")
+    assert missing["params_match"] is False
+    assert missing["mismatch_types"] == ["missing"]
+    assert "не найден параметр" in missing["mismatches"][0]
+
+
+def test_engineering_params_validator_extracts_accuracy_classes_from_list():
+    tu = (
+        "Класс точности измерительных трансформаторов: на стороне 110 кВ — "
+        "не ниже 0,5 (ТТ), 0,5 (ТН)."
+    )
+    znp = (
+        "Класс точности измерительных трансформаторов: на стороне 110 кВ — "
+        "0,6S (ТТ), 0,5 (ТН)."
+    )
+    result = tool_verify_engineering_params(tu, znp)
+    assert result["params_match"] is False
+    assert "класса точности" in " ".join(result["mismatches"])
+    assert result["extracted"]["tu"]["accuracy"] == ["0.5"]
+    assert set(result["extracted"]["znp"]["accuracy"]) == {"0.5", "0.6S"}
+
+
+def test_accuracy_extraction_ignores_units_dates_and_direction():
+    text = (
+        "Класс точности прибора 0,5. Напряжение 10,5 кВ, "
+        "мощность 726,9 кВт, дата 01.01.2025."
+    )
+    same = tool_verify_engineering_params(text, text)
+    assert same["params_match"] is True
+    assert same["extracted"]["tu"]["accuracy"] == ["0.5"]
+
+    direction = tool_verify_engineering_params(
+        "Предел допускаемой погрешности не более 5 %.",
+        "Предел допускаемой погрешности не менее 5 %.",
+    )
+    assert direction["params_match"] is False
+    assert direction["mismatch_types"] == ["mismatch"]
+
+
+def test_engineering_params_validator_requires_same_normative_codes():
+    mismatch = tool_verify_engineering_params(
+        "Проектирование выполнить по ГОСТ Р 12345-2020.",
+        "Проектирование выполнить по ГОСТ Р 54321-2021.",
+    )
+    assert mismatch["params_match"] is False
+    assert mismatch["mismatch_types"] == ["missing"]
+    assert "гост р 12345-2020" in mismatch["mismatches"][0]
+
+    match = tool_verify_engineering_params(
+        "5.1. Проектирование выполнить по ГОСТ Р 12345-2020.",
+        "6.2. Проектирование выполнить по ГОСТ Р 12345-2020; "
+        "срок 01.01.2025; пункт 4.2; примечание 3.",
+    )
+    assert match["params_match"] is True
+    assert match["extracted"]["znp"]["codes"] == ["гост р 12345-2020"]
+
+    spacing = tool_verify_engineering_params(
+        "Проектирование выполнить по ГОСТ Р 12345-2020.",
+        "Проектирование выполнить по ГОСТ Р12345-2020.",
+    )
+    assert spacing["params_match"] is True
+
+
+def test_engineering_params_validator_reads_docx_table_rows():
+    fuel = (
+        "11 | Удельный расход условного топлива на отпущенный кВт·ч | "
+        "г у.т./(кВт·ч) | ≤ 240"
+    )
+    result = tool_verify_engineering_params(
+        fuel,
+        fuel.replace("≤ 240", "≤ 260"),
+    )
+    assert result["params_match"] is False
+    assert result["mismatch_types"] == ["mismatch"]
+    assert result["extracted"]["tu"]["constraints"][0]["value"] == "240"
+    assert result["extracted"]["tu"]["constraints"][0]["unit"] == "г у.т./(кВт·ч)"
+
+    water = "13 | Расход воды на техническое водоснабжение | м³/ч | ≤ 7 200"
+    same = tool_verify_engineering_params(water, water.replace("7 200", "7200"))
+    assert same["params_match"] is True
+    assert same["extracted"]["tu"]["constraints"][0]["value"] == "7200"
+    assert same["extracted"]["tu"]["constraints"][0]["unit"] == "м³/ч"
+
+
+def test_normative_codes_ignore_dot_dash_and_range_spelling():
+    sto = tool_verify_engineering_params(
+        "1.15. Проект на средства ЭМС — по СТО 56947007-29.240.044.2010.",
+        "11.9. ЭМС — по СТО 56947007-29.240.044-2010.",
+    )
+    assert sto["params_match"] is True
+    assert sto["mismatches"] == []
+
+    gost = tool_verify_engineering_params(
+        "38 | ГОСТ 8.586. (1–5)-2005 | Измерение расхода.",
+        "10. ГОСТ 8.586.1-5-2005 «Измерение расхода».",
+    )
+    assert gost["params_match"] is True
+    assert gost["mismatches"] == []
+
+
+def test_normative_order_codes_keep_their_date():
+    match = tool_verify_engineering_params(
+        "Каналы связи — по приказу Минэнерго России от 13.02.2019 № 97.",
+        "12.5. Каналы связи — по приказу Минэнерго России от 13.02.2019 № 97.",
+    )
+    assert match["params_match"] is True
+
+    mismatch = tool_verify_engineering_params(
+        "Каналы связи — по приказу Минэнерго России от 13.02.2019 № 97.",
+        "12.5. Каналы связи — по приказу Минэнерго России от 14.02.2019 № 97.",
+    )
+    assert mismatch["params_match"] is False
+    assert mismatch["mismatch_types"] == ["missing"]
+
+
+def test_normative_codes_ignore_point_numbers_and_read_compressed_lists():
+    point_numbers = tool_verify_engineering_params(
+        "Строительство отпайки от опоры № 17 до ячейки № 12.",
+        "Строительство отпайки от опоры до ячейки.",
+    )
+    assert point_numbers["params_match"] is True
+    assert point_numbers["extracted"]["tu"]["codes"] == []
+
+    compressed = tool_verify_engineering_params(
+        "Требования приказа Ростехнадзора от 15.12.2020 № 529.",
+        "Требования приказов Ростехнадзора от 15.12.2020 № 529, 531, 533.",
+    )
+    assert compressed["params_match"] is True
+
+
+def test_engineering_params_validator_ignores_dates_and_clause_numbers():
+    result = tool_verify_engineering_params(
+        "Предел допускаемой погрешности не более 5 %.",
+        "5.2. Предел допускаемой погрешности не более 5 %; "
+        "срок 01.01.2025; ГОСТ Р 12345-2020; пункт 4.2.",
+    )
+    assert result["params_match"] is True
+    assert result["mismatches"] == []
+    assert result["extracted"]["tu"]["codes"] == []
 
 
 def _semantic_vector(score: float) -> list[float]:
@@ -339,6 +566,82 @@ def test_agent_llm_fulfilled_is_downgraded_when_znp_lacks_parameter():
     assert item.status.value == "needs_review"
     assert "Валидатор параметров" in item.reasoning
     assert "класс точности" in item.reasoning
+
+
+CONSTRAINT_TU_TEXT = (
+    "Удельный расход топлива на выработку электроэнергии "
+    "не более 240 г у.т./(кВт·ч)."
+)
+CONSTRAINT_ZNP_TEXT = (
+    "Удельный расход топлива на выработку электроэнергии "
+    "не более 260 г у.т./(кВт·ч)."
+)
+
+
+def test_agent_llm_fulfilled_is_downgraded_on_constraint_mismatch():
+    tu = TURequirement(
+        id="tu-fuel",
+        clause_number="11",
+        category=RequirementCategory.other,
+        text=CONSTRAINT_TU_TEXT,
+    )
+    znp = ZNPClause(
+        id="znp-fuel",
+        clause_number="5.1",
+        text=CONSTRAINT_ZNP_TEXT,
+    )
+    agent = _agent_with_replies([
+        {
+            "action": "finish",
+            "status": "fulfilled",
+            "confidence_score": 0.95,
+            "matched_znp_clause_id": "znp-fuel",
+            "tu_quote": "не более 240 г у.т./(кВт·ч)",
+            "znp_quote": "не более 260 г у.т./(кВт·ч)",
+            "reasoning": "Модель ошибочно сочла требование выполненным.",
+        },
+    ])
+    response = agent.verify_all([tu], [znp])
+    item = response.checked_requirements[0]
+
+    assert item.status.value == "needs_review"
+    assert "Валидатор параметров" in item.reasoning
+    assert "240" in item.reasoning
+    assert "260" in item.reasoning
+    finish_step = next(
+        step for step in response.trace_info["agent_runs"][0]["steps"]
+        if step["tool"] == "finish_and_validate"
+    )
+    assert finish_step["param_check"]["params_match"] is False
+    assert finish_step["param_check"]["mismatch_types"] == ["mismatch"]
+
+
+def test_deterministic_fallback_downgrades_constraint_mismatch():
+    tu = TURequirement(
+        id="tu-fuel-fallback",
+        clause_number="11",
+        category=RequirementCategory.other,
+        text=CONSTRAINT_TU_TEXT,
+    )
+    znp = [
+        ZNPClause(
+            id="znp-fuel-fallback",
+            clause_number="5.1",
+            text=CONSTRAINT_ZNP_TEXT,
+        )
+    ]
+    agent = _agent_with_replies(["это не JSON"])
+    response = agent.verify_all([tu], znp)
+    item = response.checked_requirements[0]
+
+    assert item.method == "deterministic"
+    assert item.status.value == "needs_review"
+    assert "Найдено расхождение параметров" in item.reasoning
+    assert "240" in item.reasoning
+    assert "260" in item.reasoning
+    steps = response.trace_info["agent_runs"][0]["steps"]
+    param_step = next(step for step in steps if step["tool"] == "verify_params")
+    assert param_step["output"]["params_match"] is False
 
 
 def test_agent_invalid_json_falls_back_without_crashing():
