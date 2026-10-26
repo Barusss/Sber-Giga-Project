@@ -5,7 +5,6 @@ Local registry records remain lookup hints, never fresh official evidence.
 """
 from datetime import datetime
 
-from fastapi import HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
@@ -16,7 +15,8 @@ from app.core.models import (
 from app.normatives.extraction import normalize_code
 from app.normatives.registry import RegistryResult, RosstandartClient
 
-MAX_STANDARDS = 50
+DEFAULT_STANDARDS_BATCH = 5
+MAX_STANDARDS_BATCH = 10
 FINDING_TYPE = "obsolete_normative"
 
 
@@ -43,6 +43,9 @@ class VerificationReport(BaseModel):
     findings_created: int
     findings_already_existing: int
     checked: list[StandardCheck]
+    document_total: int
+    offset: int
+    next_offset: int | None
 
 
 def finding_key(finding: Finding, document_id: str, code: str) -> bool:
@@ -55,9 +58,17 @@ def finding_key(finding: Finding, document_id: str, code: str) -> bool:
 
 
 def check_document_standards(
-    db: Session, document: Document, registry: RosstandartClient | None = None
+    db: Session, document: Document, registry: RosstandartClient | None = None,
+    offset: int = 0, limit: int = DEFAULT_STANDARDS_BATCH,
 ) -> VerificationReport:
-    """Verify official statuses without treating saved statuses as freshly checked."""
+    """Verify a bounded batch of stable, sorted unique codes.
+
+    The client follows next_offset, preserving each committed batch. Even
+    when the source document references hundreds of codes, no individual
+    request performs an unbounded number of external registry lookups.
+    """
+    if offset < 0 or not 1 <= limit <= MAX_STANDARDS_BATCH:
+        raise ValueError("Invalid normative verification batch")
     facts = db.scalars(
         select(Fact).where(
             Fact.document_id == document.id,
@@ -75,8 +86,11 @@ def check_document_standards(
         if isinstance(code, str) and code.strip():
             grouped.setdefault(normalize_code(code), []).append(fact)
             
-    if len(grouped) > MAX_STANDARDS:
-        raise HTTPException(413, f"Maximum {MAX_STANDARDS} standards per verification request")
+    document_total = len(grouped)
+    selected_codes = sorted(grouped)[offset:offset + limit]
+    next_offset = offset + len(selected_codes)
+    if next_offset >= document_total:
+        next_offset = None
 
     # Кэш локального реестра
     local_cache = {
@@ -102,7 +116,7 @@ def check_document_standards(
     checked = []
     created = found = 0
 
-    for code in sorted(grouped):
+    for code in selected_codes:
         appearances = grouped[code]
         role = "informative"
         if any(f.value.get("reference_kind") != "informative" for f in appearances):
@@ -266,4 +280,7 @@ def check_document_standards(
         findings_created=created,
         findings_already_existing=found,
         checked=checked,
+        document_total=document_total,
+        offset=offset,
+        next_offset=next_offset,
     )
