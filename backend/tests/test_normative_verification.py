@@ -155,6 +155,9 @@ def test_report_registry_persistence_findings_and_idempotency(client, monkeypatc
     assert reference["source_url"] == CARD_URL
     assert reference["replacement"] == "ГОСТ 29322-2014"
     assert reference["pages"] == [4]
+    assert reference["source"] == "rosstandart"
+    assert reference["registry_status"] == "Заменен"
+    assert reference["checked_at"] is not None
     uncertain = next(x for x in report["checked"] if x["code"].startswith("IEC"))
     assert uncertain["status"] == "unknown"
     assert uncertain["checked_at"] is None
@@ -166,18 +169,29 @@ def test_report_registry_persistence_findings_and_idempotency(client, monkeypatc
     assert findings[0]["evidence"][0]["quote"] == "ГОСТ 29322—92"
     assert findings[0]["evidence"][0]["page"] == 4
     assert CARD_URL in findings[0]["explanation"]
+    assert "официальный статус (Росстандарт)" in findings[0]["explanation"]
 
     registry = client.get("/api/v1/normatives").json()
     assert {item["code"] for item in registry} == {
         "ГОСТ 29322-92", "ГОСТ 30804.4.30-2013"}
     assert next(x for x in registry if x["code"] == "ГОСТ 29322-92")["replacement"] == "ГОСТ 29322-2014"
 
+    calls.clear()
     again = client.post(url)
     assert again.status_code == 200, again.text
+    # local-first: confirmed cards need no network call; unknown IEC still does.
+    assert [code for code, _ in calls] == ["IEC 61000-4-30:2008"]
     assert again.json()["findings_created"] == 0
     assert again.json()["findings_already_existing"] == 1
+    again_reference = next(
+        x for x in again.json()["checked"] if x["code"] == "ГОСТ 29322-92"
+    )
+    assert again_reference["source"] == "local"
+    assert again_reference["reason"] == "local_registry_hit"
+    assert again_reference["status"] == "obsolete"
+    # SQLite drops tzinfo; the stored confirmation instant must not change.
+    assert again_reference["checked_at"].startswith(reference["checked_at"][:19])
     assert len(client.get(f"/api/v1/projects/{project_id}/findings").json()) == 1
-    assert any(source == CARD_URL for _, source in calls)
     assert client.post("/api/v1/documents/unknown/check-normatives").status_code == 404
 
     approved = client.patch(f"/api/v1/findings/{findings[0]['id']}/review",
@@ -187,7 +201,7 @@ def test_report_registry_persistence_findings_and_idempotency(client, monkeypatc
     assert client.post(url).status_code == 409
 
 
-def test_outage_does_not_use_cached_status_as_fresh(client, monkeypatch):
+def test_local_registry_is_used_during_outage(client, monkeypatch):
     project_id, document_id = make_document(client, monkeypatch)
     manual = client.post("/api/v1/normatives", json={
         "code": "ГОСТ 29322-92", "title": "Старое название",
@@ -196,14 +210,89 @@ def test_outage_does_not_use_cached_status_as_fresh(client, monkeypatch):
     })
     assert manual.status_code == 201
 
+    calls = []
+
     def unknown(self, code, source_url=None):
+        calls.append(code)
         return RegistryResult(code=code, reason="official_verification_unavailable")
+
     monkeypatch.setattr("app.normatives.registry.RosstandartClient.lookup", unknown)
-    response = client.post(f"/api/v1/documents/{document_id}/check-normatives")
+    url = f"/api/v1/documents/{document_id}/check-normatives"
+    response = client.post(url)
     assert response.status_code == 200, response.text
-    assert response.json()["unknown"] == 3
-    assert response.json()["findings_created"] == 0
-    assert client.get(f"/api/v1/projects/{project_id}/findings").json() == []
+    report = response.json()
+    assert (report["total"], report["active"], report["obsolete"], report["unknown"]) == (3, 0, 1, 2)
+    assert "ГОСТ 29322-92" not in calls  # cached card is used without a request
+
+    cached = next(x for x in report["checked"] if x["code"] == "ГОСТ 29322-92")
+    assert cached["status"] == "obsolete"
+    assert cached["source"] == "local"
+    assert cached["reason"] == "local_registry_hit"
+    assert cached["source_url"] == CARD_URL
+    assert cached["checked_at"] is None  # manual entry has no confirmation date
+
+    assert report["findings_created"] == 1
+    findings = client.get(f"/api/v1/projects/{project_id}/findings").json()
+    assert len(findings) == 1
+    assert "статус по локальному реестру" in findings[0]["explanation"]
+    assert "Дата подтверждения не указана" in findings[0]["explanation"]
+
+    # A forced refresh still asks the official site, but keeps the archived
+    # status when the site is unavailable.
+    calls.clear()
+    refreshed = client.post(f"{url}?refresh=true")
+    assert refreshed.status_code == 200, refreshed.text
+    assert "ГОСТ 29322-92" in calls
+    item = next(
+        x for x in refreshed.json()["checked"] if x["code"] == "ГОСТ 29322-92"
+    )
+    assert item["status"] == "obsolete"
+    assert item["source"] == "local"
+    assert item["reason"] == "refresh_failed_local_fallback"
+    assert item["checked_at"] is None
+    assert refreshed.json()["findings_already_existing"] == 1
+
+
+def test_forced_refresh_updates_local_registry(client, monkeypatch):
+    project_id, document_id = make_document(client, monkeypatch)
+    manual = client.post("/api/v1/normatives", json={
+        "code": "ГОСТ 29322-92", "title": "Старое название",
+        "status": "active", "replacement": None, "source_url": CARD_URL,
+    })
+    assert manual.status_code == 201
+
+    calls = []
+
+    def lookup(self, code, source_url=None):
+        calls.append((code, source_url))
+        if code == "ГОСТ 29322-92":
+            return RegistryResult(
+                code=code, status="obsolete", registry_status="Заменен",
+                title="Стандартные напряжения", replacement="ГОСТ 29322-2014",
+                source_url=CARD_URL, checked_at=datetime.now(timezone.utc),
+            )
+        return RegistryResult(code=code, reason="unsupported_or_incomplete_designation")
+
+    monkeypatch.setattr("app.normatives.registry.RosstandartClient.lookup", lookup)
+    response = client.post(
+        f"/api/v1/documents/{document_id}/check-normatives?refresh=true"
+    )
+    assert response.status_code == 200, response.text
+    item = next(
+        x for x in response.json()["checked"] if x["code"] == "ГОСТ 29322-92"
+    )
+    assert item["status"] == "obsolete"
+    assert item["source"] == "rosstandart"
+    assert item["registry_status"] == "Заменен"
+    assert item["checked_at"] is not None
+    assert ("ГОСТ 29322-92", CARD_URL) in calls
+
+    registry = client.get("/api/v1/normatives", params={"search": "29322"}).json()
+    updated = next(x for x in registry if x["code"] == "ГОСТ 29322-92")
+    assert updated["status"] == "obsolete"
+    assert updated["registry_status"] == "Заменен"
+    assert updated["checked_at"] is not None
+    assert updated["source_url"] == CARD_URL
 
 
 

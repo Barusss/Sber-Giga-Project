@@ -137,17 +137,20 @@ class Normative(Base):
     code: Mapped[str] = mapped_column(String(128), unique=True, index=True)
     title: Mapped[str] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(32))
+    registry_status: Mapped[str | None] = mapped_column(String(128), nullable=True)
     replacement: Mapped[str | None] = mapped_column(String(128), nullable=True)
     source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 
 
 
 class NormativeVerification(Base):
-    """Last observed official status for a standard in a particular document.
+    """Last observed status for a standard in a particular document.
 
-    An unknown lookup overwrites an older snapshot: stale official results
-    must never masquerade as a fresh verification.
+    The snapshot records whether the value came from the local registry or a
+    live Rosstandart lookup. Unknown is used only when neither source can
+    provide a usable status.
     """
     __tablename__ = "normative_verifications"
     __table_args__ = (
@@ -168,6 +171,7 @@ class NormativeVerification(Base):
     checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     attempted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
 
 class Finding(Base):
