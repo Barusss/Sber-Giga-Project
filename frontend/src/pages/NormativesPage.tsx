@@ -158,6 +158,9 @@ export function NormativesPage() {
     setIsExtracting(true)
     setError('')
     setReport(null)
+    setCheckProgress(null)
+    // Re-extraction may change the set of codes, so old offsets cannot resume.
+    checkResume.current = null
     try {
       await request(`/documents/${selectedDocId}/extract-facts`, json('POST', {}))
       alert('Ссылки извлечены! Теперь можно проверить актуальность.')
