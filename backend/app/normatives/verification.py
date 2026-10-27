@@ -141,8 +141,6 @@ def check_document_standards(
         
         # Проверяем локальный реестр
         local_normative = local_cache.get(code)
-        local_status = local_normative.status if local_normative else None
-        local_replacement = local_normative.replacement if local_normative else None
         local_title = local_normative.title if local_normative else None
         local_source_url = local_normative.source_url if local_normative else None
         
@@ -166,7 +164,7 @@ def check_document_standards(
             reason = status.reason
         else:
             final_status = "unknown"
-            source = "local" if local_status in {"active", "obsolete"} else "unknown"
+            source = "unknown"  # A saved manual/old status is not current official evidence.
             final_replacement = None
             final_title = local_title or status.title
             final_source_url = None
@@ -176,11 +174,11 @@ def check_document_standards(
             code=code,
             reference_kind=role,
             status=final_status,
-            registry_status=status.registry_status,
+            registry_status=status.registry_status if confirmed else None,
             replacement=final_replacement,
             title=final_title,
             source_url=final_source_url,
-            checked_at=status.checked_at,
+            checked_at=status.checked_at if confirmed else None,
             pages=pages,
             reason=reason,
             source=source,
@@ -201,6 +199,7 @@ def check_document_standards(
         snapshot.checked_at = status.checked_at if confirmed else None
         snapshot.attempted_at = now()
         snapshot.reason = reason
+        snapshot.source = source
 
         # Обновляем локальный реестр, если Росстандарт подтвердил
         if confirmed:
@@ -209,16 +208,20 @@ def check_document_standards(
                     code=code,
                     title=final_title or code,
                     status=status.status,
+                    registry_status=status.registry_status,
                     replacement=status.replacement,
                     source_url=status.source_url,
+                    checked_at=status.checked_at,
                 )
                 db.add(local_normative)
                 local_cache[code] = local_normative
             else:
                 local_normative.title = final_title or local_normative.title
                 local_normative.status = status.status
+                local_normative.registry_status = status.registry_status
                 local_normative.replacement = status.replacement
                 local_normative.source_url = status.source_url
+                local_normative.checked_at = status.checked_at
 
         # Retain an auditable informational finding for obsolete bibliography
         # references, but do not present it as a normative requirement.
@@ -234,9 +237,8 @@ def check_document_standards(
             continue
 
         replacement_text = f" Замена по реестру: {final_replacement}." if final_replacement else ""
-        source_text = "Росстандарт" if source == "rosstandart" else "локальный реестр"
         explanation = (
-            f"Упоминание {code}: официальный статус ({source_text}) «{status.registry_status or final_status}»."
+            f"Упоминание {code}: официальный статус (Росстандарт) «{status.registry_status or final_status}»."
             f"{replacement_text} Источник: {final_source_url or 'не указан'}"
         )
         
