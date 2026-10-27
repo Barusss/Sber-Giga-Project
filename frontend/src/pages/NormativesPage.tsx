@@ -450,7 +450,7 @@ export function NormativesPage() {
         </form>
       </section>
       
-      {error && <p className="error" role="alert">{error}</p>
+      {error && <p className="error" role="alert">{error}</p>}
       
       {/* ТАБЛИЦА РЕЕСТРА */}
       <section className="panel">
