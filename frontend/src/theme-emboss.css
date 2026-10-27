@@ -9,7 +9,8 @@
   --surface-strong: #c8c2b0;
   --border: #b8b1a0;
   --text: #4a4538;
-  --muted: #6e6857;
+  --muted-token: #6e6857; /* Original visual token: reference swatch. */
+  --muted: #555043; /* Adjusted for WCAG AA on the darkest beige surface. */
   --primary: #7a5a3a;
   --accent: #a8763f;
   --on-primary: #fff;
@@ -418,6 +419,18 @@ nav.documents-page-nav {
 .diagnostics-event.error .diagnostics-status { color: #8a3128; }
 .diagnostics-footer,.diagnostics-history { background: #cfc5b5; border-color: var(--border); color: #64594a; }
 .diagnostics-history summary,.diagnostics-history li,.diagnostics-history li time { color: #5b4a36; }
+
+/* Ensure small helper text remains legible on the darkest tinted surface. */
+.sidebar-overline,.sidebar-group,.eyebrow,.page-index,.report-overline,.documents-eyebrow,
+.sidebar-footer,.sidebar-note-caption,.app-nav a .nav-number,
+.sidebar-note p,.sidebar-note-title,
+.stat-card>small,.stat-card>span,
+.documents-file small,.documents-reader-note,
+.documents-page-nav p,.documents-page-nav button,
+.report-metrics span,.report-details,.report-entry-heading p,
+.diagnostics-event small,.diagnostics-event time,.diagnostics-status {
+  color: #514838;
+}
 
 /* Responsive modular grid */
 @media (max-width: 1200px) {
