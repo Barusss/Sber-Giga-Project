@@ -117,6 +117,11 @@ hr { border: 0; border-top: 1px solid var(--border); }
 }
 .brand-emblem span { color: var(--accent); padding: 0 3px; font-weight: 400; font-size: 17px; }
 .brand-copy { display: grid; gap: 5px; min-width: 0; }
+/* The legacy application has a generic .brand span rule. Override it for
+   both parts of the new wordmark so contrast and serif hierarchy survive. */
+.app-sidebar .brand .brand-emblem { font-size: 22px; font-weight: 700; opacity: 1; }
+.app-sidebar .brand .brand-emblem span { font-size: 17px; font-weight: 400; opacity: 1; }
+.app-sidebar .brand .brand-copy { font-size: inherit; font-weight: 400; opacity: 1; }
 .brand-copy strong { font-size: 24px; font-weight: 700; letter-spacing: -.035em; line-height: 1; color: #453826; }
 .brand-copy small { font-size: 11px; letter-spacing: .03em; line-height: 1.4; color: var(--muted); }
 .sidebar-rule { height: 1px; margin: 2px 3px 27px; background: #b2aa97; box-shadow: 0 1px rgba(255,255,250,.7); }
