@@ -323,21 +323,32 @@ export function NormativesPage() {
         )}
 
         {checkProgress && (
-          <p role="status" aria-live="polite" className="muted">
-            {isChecking ? 'Проверяем нормативы' : 'Проверка'}: {checkProgress.checked} из {checkProgress.total}.
-            {checkProgress.checked < checkProgress.total ? ' Результат ниже частичный.' : ' Все нормативы обработаны.'}
-          </p>
+          <div className="normative-progress" role="status" aria-live="polite">
+            <div className="normative-progress-top">
+              <span>{isChecking ? 'Проверка Росстандарта' :
+                checkProgress.checked === checkProgress.total ? 'Все нормативы обработаны' : 'Частичный результат'}</span>
+              <strong>{checkProgress.checked} из {checkProgress.total}</strong>
+            </div>
+            <div className="normative-progress-bar" role="progressbar"
+              aria-label="Проверенные нормативы" aria-valuemin={0}
+              aria-valuemax={checkProgress.total} aria-valuenow={checkProgress.checked}>
+              <span style={{width: (checkProgress.total ?
+                (checkProgress.checked / checkProgress.total) * 100 : 100) + '%'}}/>
+            </div>
+            {!isChecking && checkProgress.checked < checkProgress.total &&
+              <p className="normative-note">Проверенная часть сохранена, оставшиеся нормативы можно обработать позже.</p>}
+          </div>
         )}
 
         {report && (
           <div>
-            <p>
-              <strong>Результат:</strong> Проверено: {report.total}. 
-              Действующих: {report.active}, не действующих: {report.obsolete}, 
-              не подтверждено: {report.unknown}. Новых замечаний: {report.findings_created}.
-            </p>
-            
-            <div style={{ overflowX: 'auto' }}>
+            <div className="normative-metrics" aria-label="Сводка проверки">
+              <div className="stat-card"><span>ПРОВЕРЕНО</span><strong>{report.total}</strong></div>
+              <div className="stat-card"><span>ДЕЙСТВУЕТ</span><strong>{report.active}</strong></div>
+              <div className="stat-card"><span>НЕ ДЕЙСТВУЕТ</span><strong>{report.obsolete}</strong></div>
+              <div className="stat-card"><span>НЕ ПОДТВЕРЖДЕНО</span><strong>{report.unknown}</strong></div>
+            </div>
+            <div className="normative-table-wrap">
               <table>
                 <thead>
                   <tr>
@@ -351,25 +362,20 @@ export function NormativesPage() {
                 </thead>
                 <tbody>
                   {report.checked.map(item => (
-                    <tr 
-                      key={item.code} 
-                      style={{ 
-                        backgroundColor: item.status === 'obsolete' ? '#fff3cd' 
-                          : item.status === 'unknown' ? '#f8d7da' 
-                          : 'transparent' 
-                      }}
-                    >
+                    <tr key={item.code} className={'normative-row-' + item.status}>
                       <td><strong>{item.code}</strong></td>
                       <td>{item.reference_kind === 'informative' ? 'Справочная' : 'Нормативная'}</td>
-                      <td>{item.registry_status || statusLabel(item.status)}</td>
+                      <td><span className={'normative-status ' + item.status}>
+                        {item.registry_status || statusLabel(item.status)}</span></td>
                       <td>{item.replacement || '—'}</td>
                       <td>{item.pages.join(', ') || '—'}</td>
                       <td>
-                        {item.source_url ? (
-                          <a href={item.source_url} target="_blank" rel="noopener noreferrer">
-                            Карточка
-                          </a>
-                        ) : 'Не найдено'}
+                        {item.source === 'rosstandart' && item.source_url ? (
+                          <><a href={item.source_url} target="_blank" rel="noopener noreferrer">
+                            Карточка Росстандарта</a>
+                            <small style={{display: 'block'}}>{item.checked_at ?
+                              new Date(item.checked_at).toLocaleDateString('ru-RU') : 'Дата не указана'}</small></>
+                        ) : 'Не подтверждено'}
                       </td>
                     </tr>
                   ))}
@@ -377,8 +383,9 @@ export function NormativesPage() {
               </table>
             </div>
             
-            <p className="muted" style={{ marginTop: '10px' }}>
-              Замечания о заменённых стандартах автоматически сохранены в разделе "Отчёты" этого проекта.
+            <p className="normative-note">
+              Новых замечаний: {report.findings_created}. Замечания с цитатами доступны
+              в экспертном отчёте. Локальный статус без ответа Росстандарта не является подтверждением.
             </p>
           </div>
         )}
