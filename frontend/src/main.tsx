@@ -8,6 +8,7 @@ import {RequirementsPage} from './pages/RequirementsPage'
 import {ReportsPage} from './pages/ReportsPage'
 import {DebugPanel} from './debug/DebugPanel'
 import './styles.css'
+import './theme-emboss.css'
 
 const sections = [
   {href: '/', number: '01', title: 'Проекты', category: 'Подготовка'},
@@ -34,15 +35,15 @@ function App() {
       <div className="sidebar-rule" />
       <div className="sidebar-overline">РАБОЧЕЕ ПРОСТРАНСТВО <span> / 01</span></div>
       <nav className="app-nav" aria-label="Разделы приложения">
-        {sections.map((item, index) => <>
-          {(index === 2 || index === 4) && <span key={'group-' + item.number} className="sidebar-group">{item.category}</span>}
-          <NavLink key={item.href} to={item.href} end={item.href === '/'}
+        {sections.map((item, index) => <React.Fragment key={item.href}>
+          {(index === 2 || index === 4) && <span className="sidebar-group">{item.category}</span>}
+          <NavLink to={item.href} end={item.href === '/'}
             className={({isActive}) => 'nav-link' + (isActive ? ' active' : '')}>
             <span className="nav-number">{item.number}</span>
             <span className="nav-title">{item.title}</span>
             <span className="nav-arrow" aria-hidden="true">↗</span>
           </NavLink>
-        </>)}
+        </React.Fragment>)}
       </nav>
 
       <div className="sidebar-bottom">
