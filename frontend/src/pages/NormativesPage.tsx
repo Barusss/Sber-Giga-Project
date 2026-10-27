@@ -46,7 +46,7 @@ export function NormativesPage() {
   const [editId, setEditId] = useState<string | null>(null)
   const [code, setCode] = useState('')
   const [title, setTitle] = useState('')
-  const [status, setStatus] = useState<'active' | 'obsolete' | 'unknown'>('active')
+  const [status, setStatus] = useState<'active' | 'obsolete' | 'unknown'>('unknown')
   const [replacement, setReplacement] = useState('')
   const [sourceUrl, setSourceUrl] = useState('')
   const [error, setError] = useState('')
@@ -126,6 +126,7 @@ export function NormativesPage() {
       setTitle('')
       setReplacement('')
       setSourceUrl('')
+      setStatus('unknown')
       loadNormatives()
     } catch (e: any) {
       setError(e.message || 'Ошибка сохранения')
@@ -139,7 +140,7 @@ export function NormativesPage() {
     setStatus(item.status)
     setReplacement(item.replacement || '')
     setSourceUrl(item.source_url || '')
-    window.scrollTo({ top: 0, behavior: 'smooth' })
+    document.getElementById('normative-editor')?.scrollIntoView({behavior: 'smooth', block: 'start'})
   }
 
   async function handleDelete(id: string, normCode: string) {
@@ -392,10 +393,11 @@ export function NormativesPage() {
       </section>
 
       {/* СЕКЦИЯ УПРАВЛЕНИЯ РЕЕСТРОМ */}
-      <section className="panel stack">
+      <section className="panel stack" id="normative-editor">
+        <div className="eyebrow">02 / ЛОКАЛЬНЫЙ СПРАВОЧНИК</div>
         <h2>{editId ? '✏️ Редактирование норматива' : '➕ Добавить норматив вручную'}</h2>
         
-        <form onSubmit={handleSubmit} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+        <form onSubmit={handleSubmit} className="normative-edit-form">
           <input 
             value={code} 
             onChange={e => setCode(e.target.value)} 
@@ -423,9 +425,9 @@ export function NormativesPage() {
             value={sourceUrl} 
             onChange={e => setSourceUrl(e.target.value)} 
             placeholder="Ссылка на источник (необязательно)" 
-            style={{ gridColumn: 'span 2' }} 
+            className="full-width" 
           />
-          <div style={{ gridColumn: 'span 2', display: 'flex', gap: '10px' }}>
+          <div className="normative-actions full-width">
             <button type="submit">
               {editId ? 'Сохранить изменения' : 'Добавить'}
             </button>
@@ -439,7 +441,7 @@ export function NormativesPage() {
                   setReplacement('')
                   setSourceUrl('')
                 }} 
-                style={{ backgroundColor: '#6c757d' }}
+                className="secondary"
               >
                 Отмена
               </button>
@@ -452,19 +454,19 @@ export function NormativesPage() {
       
       {/* ТАБЛИЦА РЕЕСТРА */}
       <section className="panel">
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+        <div className="normative-registry-head">
           <h2 style={{ margin: 0 }}>Локальный реестр</h2>
-          <div style={{ display: 'flex', gap: '10px' }}>
+          <div className="normative-registry-search">
             <input 
               value={search} 
               onChange={e => setSearch(e.target.value)} 
               placeholder="Поиск по коду или названию..." 
-              style={{ width: '250px' }} 
+               
             />
             <select 
               value={statusFilter} 
               onChange={e => setStatusFilter(e.target.value)} 
-              style={{ width: '150px' }}
+              
             >
               <option value="">Все статусы</option>
               <option value="active">Действует</option>
@@ -481,7 +483,7 @@ export function NormativesPage() {
               <th>Название</th>
               <th>Статус</th>
               <th>Замена</th>
-              <th>Обновлен</th>
+              <th>Официальное подтверждение</th>
               <th>Действия</th>
             </tr>
           </thead>
@@ -490,23 +492,24 @@ export function NormativesPage() {
               <tr key={i.id}>
                 <td>{i.code}</td>
                 <td>{i.title}</td>
-                <td>{statusLabel(i.status)}</td>
+                <td><span className={'normative-status ' + i.status}>{statusLabel(i.status)}</span></td>
                 <td>{i.replacement ?? '—'}</td>
                 <td>
-                  <small>
-                    {i.updated_at ? new Date(i.updated_at).toLocaleDateString('ru-RU') : '—'}
-                  </small>
+                  {i.checked_at && i.registry_status
+                    ? <><strong>{i.registry_status}</strong><small style={{display:'block'}}>
+                        Росстандарт · {new Date(i.checked_at).toLocaleDateString('ru-RU')}</small></>
+                    : <span className="muted">Только справочная запись</span>}
                 </td>
                 <td>
                   <button 
                     onClick={() => startEdit(i)} 
-                    style={{ padding: '4px 8px', fontSize: '0.8rem', marginRight: '5px' }}
+                    className="secondary"
                   >
                     Изменить
                   </button>
                   <button 
                     onClick={() => handleDelete(i.id, i.code)} 
-                    style={{ padding: '4px 8px', fontSize: '0.8rem', backgroundColor: '#dc3545' }}
+                    className="delete-action"
                   >
                     Удалить
                   </button>
