@@ -8,7 +8,7 @@ type Standard={
  document_id:string;document_name:string;code:string;reference_kind:string
  status:string;registry_status:string|null;title:string|null
  replacement:string|null;source_url:string|null;checked_at:string|null
- attempted_at:string|null;reason:string|null
+ attempted_at:string|null;reason:string|null;source:string|null
  section:'requires_attention'|'informative'|'unverified'|'active'
  evidence:Quote[];finding:Review|null
 }
@@ -243,6 +243,7 @@ export function ReportsPage(){
         <span><b>Страницы PDF:</b> {Array.from(new Set(item.evidence.map(e=>e.page))).sort((a,b)=>a-b).join(', ')||'—'}</span>
         <span><b>Тип упоминания:</b> {item.reference_kind==='informative'?'Справочное':'Нормативное'}</span>
         <span><b>Дата проверки:</b> {date(item.checked_at)}</span>
+        <span><b>Источник статуса:</b> {item.source==='rosstandart'&&item.checked_at?'Росстандарт':'Не подтверждён официально'}</span>
         {item.attempted_at&&!item.checked_at&&<span><b>Последняя попытка:</b> {date(item.attempted_at)}</span>}
        </div>
        {item.replacement&&<p className="report-replacement"><b>Указанный заменяющий стандарт:</b> {item.replacement}</p>}
