@@ -398,54 +398,39 @@ export function NormativesPage() {
         <h2>{editId ? '✏️ Редактирование норматива' : '➕ Добавить норматив вручную'}</h2>
         
         <form onSubmit={handleSubmit} className="normative-edit-form">
-          <input 
-            value={code} 
-            onChange={e => setCode(e.target.value)} 
-            placeholder="Обозначение (напр. ГОСТ 32144-2013)" 
-            required 
-            disabled={!!editId} 
-          />
-          <input 
-            value={title} 
-            onChange={e => setTitle(e.target.value)} 
-            placeholder="Название" 
-            required 
-          />
-          <select value={status} onChange={e => setStatus(e.target.value as any)}>
-            <option value="active">Действует</option>
-            <option value="obsolete">Устарел</option>
-            <option value="unknown">Неизвестно</option>
-          </select>
-          <input 
-            value={replacement} 
-            onChange={e => setReplacement(e.target.value)} 
-            placeholder="Замена (код, необязательно)" 
-          />
-          <input 
-            value={sourceUrl} 
-            onChange={e => setSourceUrl(e.target.value)} 
-            placeholder="Ссылка на источник (необязательно)" 
-            className="full-width" 
-          />
+          <label>Обозначение
+            <input value={code} onChange={e => setCode(e.target.value)}
+              placeholder="Например, ГОСТ 32144-2013" required disabled={!!editId}/>
+          </label>
+          <label>Наименование
+            <input value={title} onChange={e => setTitle(e.target.value)}
+              placeholder="Название документа" required/>
+          </label>
+          <label>Локальный статус
+            <select value={status} onChange={e => setStatus(e.target.value as Normative['status'])}>
+              <option value="unknown">Не подтверждено</option>
+              <option value="active">Действует (справочно)</option>
+              <option value="obsolete">Не действует (справочно)</option>
+            </select>
+          </label>
+          <label>Заменяющий норматив
+            <input value={replacement} onChange={e => setReplacement(e.target.value)}
+              placeholder="Необязательно"/>
+          </label>
+          <label className="full-width">Ссылка на карточку
+            <input value={sourceUrl} onChange={e => setSourceUrl(e.target.value)}
+              type="url" placeholder="https://protect.gost.ru/…"/>
+          </label>
           <div className="normative-actions full-width">
-            <button type="submit">
-              {editId ? 'Сохранить изменения' : 'Добавить'}
-            </button>
-            {editId && (
-              <button 
-                type="button" 
-                onClick={() => { 
-                  setEditId(null)
-                  setCode('')
-                  setTitle('')
-                  setReplacement('')
-                  setSourceUrl('')
-                }} 
-                className="secondary"
-              >
-                Отмена
-              </button>
-            )}
+            <button type="submit">{editId ? 'Сохранить изменения' : 'Добавить'}</button>
+            {editId && <button type="button" className="secondary" onClick={() => {
+              setEditId(null)
+              setCode('')
+              setTitle('')
+              setStatus('unknown')
+              setReplacement('')
+              setSourceUrl('')
+            }}>Отмена</button>}
           </div>
         </form>
       </section>
