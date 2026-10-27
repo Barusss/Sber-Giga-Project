@@ -326,3 +326,68 @@ def test_large_document_verifies_all_standards_in_bounded_batches(client, monkey
     assert expert["total"] == 53
     assert expert["requires_attention"] == 1
     assert expert["unverified"] == 52
+
+
+
+def test_official_provenance_does_not_trust_manual_registry_during_outage(client, monkeypatch):
+    """PR #21 provenance is retained, without treating a manual status as verified."""
+    project_id, document_id = make_document(client, monkeypatch)
+    created = client.post("/api/v1/normatives", json={
+        "code": "ГОСТ 29322-92", "title": "Введён вручную",
+        "status": "obsolete", "replacement": "ГОСТ 29322-2014",
+        "source_url": CARD_URL,
+    })
+    assert created.status_code == 201, created.text
+    normative_id = created.json()["id"]
+
+    def unavailable(self, code, source_url=None):
+        return RegistryResult(code=code, reason="official_verification_unavailable")
+
+    monkeypatch.setattr("app.normatives.registry.RosstandartClient.lookup", unavailable)
+    url = f"/api/v1/documents/{document_id}/check-normatives"
+    response = client.post(url)
+    assert response.status_code == 200, response.text
+    unknown = next(item for item in response.json()["checked"] if item["code"] == "ГОСТ 29322-92")
+    assert unknown["status"] == "unknown"
+    assert unknown["source"] == "unknown"
+    assert unknown["checked_at"] is None
+    assert unknown["source_url"] is None
+    assert client.get(f"/api/v1/projects/{project_id}/findings").json() == []
+
+    def official(self, code, source_url=None):
+        if code == "ГОСТ 29322-92":
+            return RegistryResult(
+                code=code, status="obsolete", registry_status="Заменен",
+                title="Стандартные напряжения", replacement="ГОСТ 29322-2014",
+                source_url=CARD_URL, checked_at=datetime.now(timezone.utc),
+            )
+        return RegistryResult(code=code, reason="official_verification_unavailable")
+
+    monkeypatch.setattr("app.normatives.registry.RosstandartClient.lookup", official)
+    verified = client.post(url)
+    assert verified.status_code == 200, verified.text
+    result = next(item for item in verified.json()["checked"] if item["code"] == "ГОСТ 29322-92")
+    assert result["source"] == "rosstandart"
+    assert result["status"] == "obsolete"
+    assert result["checked_at"]
+
+    cached = client.get("/api/v1/normatives", params={"search": "29322"}).json()
+    local = next(item for item in cached if item["id"] == normative_id)
+    assert local["registry_status"] == "Заменен"
+    assert local["checked_at"]
+    report = client.get(f"/api/v1/projects/{project_id}/normative-report").json()
+    row = next(item for item in report["items"] if item["code"] == "ГОСТ 29322-92")
+    assert row["source"] == "rosstandart"
+
+    edited = client.patch(f"/api/v1/normatives/{normative_id}", json={"status": "active"})
+    assert edited.status_code == 200, edited.text
+    assert edited.json()["checked_at"] is None
+    assert edited.json()["registry_status"] is None
+
+    # The local active status cannot override an unsuccessful subsequent lookup.
+    monkeypatch.setattr("app.normatives.registry.RosstandartClient.lookup", unavailable)
+    again = client.post(url)
+    assert again.status_code == 200, again.text
+    item = next(item for item in again.json()["checked"] if item["code"] == "ГОСТ 29322-92")
+    assert item["status"] == "unknown"
+    assert item["source"] == "unknown"
