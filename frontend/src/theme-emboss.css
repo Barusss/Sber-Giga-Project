@@ -357,6 +357,17 @@ nav.documents-page-nav {
 .documents-paper mark { background: #e1bd78; color: #332715; }
 .documents-reader-note { font-size: 12px; }
 
+/* Some existing normative controls use inline bootstrap-era colors.
+   A scoped override keeps the current analysis code untouched (PR #20) while
+   ensuring the entire screen follows the same design tokens. */
+.panel[style*="border-left"] { border-left-color: var(--accent) !important; }
+.panel button[style*="background"] {
+  background: var(--primary) !important;
+  color: var(--on-primary) !important;
+  border-color: #644729 !important;
+}
+.panel button[style*="background"]:hover:not(:disabled) { background: #694d31 !important; }
+
 /* Standards: visible state styling with the same muted palette */
 .report-status { border: 1px solid transparent; }
 .status-obsolete { background: #e7bcb2; border-color: #bd8b7e; color: #6d2d23; }
