@@ -440,14 +440,18 @@ export function NormativesPage() {
       {/* ТАБЛИЦА РЕЕСТРА */}
       <section className="panel">
         <div className="normative-registry-head">
-          <h2 style={{ margin: 0 }}>Локальный реестр</h2>
+          <div><div className="eyebrow">03 / РЕЕСТР</div>
+            <h2>Локальный реестр</h2>
+            <p className="muted">Справочные статусы не считаются проверенными без даты Росстандарта.</p>
+          </div>
           <div className="normative-registry-search">
+            <label>Поиск
             <input 
               value={search} 
               onChange={e => setSearch(e.target.value)} 
               placeholder="Поиск по коду или названию..." 
-               
-            />
+            /></label>
+            <label>Статус
             <select 
               value={statusFilter} 
               onChange={e => setStatusFilter(e.target.value)} 
@@ -457,10 +461,11 @@ export function NormativesPage() {
               <option value="active">Действует</option>
               <option value="obsolete">Устарел</option>
               <option value="unknown">Неизвестно</option>
-            </select>
+            </select></label>
           </div>
         </div>
         
+        <div className="normative-table-wrap">
         <table>
           <thead>
             <tr>
@@ -485,24 +490,24 @@ export function NormativesPage() {
                         Росстандарт · {new Date(i.checked_at).toLocaleDateString('ru-RU')}</small></>
                     : <span className="muted">Только справочная запись</span>}
                 </td>
-                <td>
-                  <button 
+                <td><div className="normative-mini-buttons">
+                  <button type="button"
                     onClick={() => startEdit(i)} 
                     className="secondary"
                   >
                     Изменить
                   </button>
-                  <button 
+                  <button type="button"
                     onClick={() => handleDelete(i.id, i.code)} 
                     className="delete-action"
                   >
                     Удалить
                   </button>
-                </td>
+                </div></td>
               </tr>
             ))}
           </tbody>
-        </table>
+        </table></div>
         
         {!items.length && <p className="muted">Реестр пуст.</p>}
       </section>
