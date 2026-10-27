@@ -1,0 +1,64 @@
+name: One-time cleanup of merged branches
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/cleanup-merged-once.yml'
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  remove-merged:
+    if: github.repository == 'Barusss/Sber-Giga-Project'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete only verified merged branch refs
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const candidates = {
+              'design/emboss-deboss-frontend': '9f2ba417c4e8b163e41fcd92b2eb626a4218fb8a',
+              'docs/review-consistency-20261026': 'd4985fb9054506fa876d4bf6ebedc76c273e2fb3',
+              'fix/module2-acceptance-followup': 'f66d8d6fc5e84b5a58691ba54667c9845daa4238',
+              'fix/ocr-reader-project-switch': 'c78807c7af0bd644663fd23e12c7f46a9015ac67'
+            };
+            const repo = {owner: context.repo.owner, repo: context.repo.repo};
+            const open = await github.paginate(github.rest.pulls.list, {...repo, state: 'open', per_page: 100});
+            const merged = await github.paginate(github.rest.pulls.list, {...repo, state: 'closed', per_page: 100});
+            let deleted = 0;
+            for (const [name, sha] of Object.entries(candidates)) {
+              if (open.some(p => p.head.ref === name && p.head.repo?.full_name === context.repo.owner + '/' + context.repo.repo)) {
+                core.warning('SKIP open PR: ' + name);
+                continue;
+              }
+              if (!merged.some(p => p.merged_at && p.head.ref === name)) {
+                core.warning('SKIP no merged PR: ' + name);
+                continue;
+              }
+              let ref;
+              try {
+                ref = await github.rest.git.getRef({...repo, ref: 'heads/' + name});
+              } catch (error) {
+                if (error.status === 404) {
+                  core.info('Already deleted: ' + name);
+                  continue;
+                }
+                throw error;
+              }
+              if (ref.data.object.sha !== sha) {
+                core.warning('SKIP SHA changed since audit: ' + name);
+                continue;
+              }
+              const diff = await github.rest.repos.compareCommits({...repo, base: 'main', head: name});
+              if (diff.data.ahead_by !== 0) {
+                core.warning('SKIP unmerged commits: ' + name);
+                continue;
+              }
+              await github.rest.git.deleteRef({...repo, ref: 'heads/' + name});
+              core.info('DELETED: ' + name);
+              deleted++;
+            }
+            core.info('Deleted ' + deleted + ' safe merged branch refs. Kept main, dev, test and PR #20/#21 branches.');
