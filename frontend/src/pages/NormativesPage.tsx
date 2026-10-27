@@ -11,6 +11,7 @@ type CheckedStandard = {
   checked_at: string | null
   pages: number[]
   reason: string | null
+  source: string | null
 }
 
 type VerificationReport = {
@@ -255,47 +256,51 @@ export function NormativesPage() {
   }
 
   return (
-    <>
-      <h1>Проверка ГОСТ и НТД</h1>
-      <p className="muted">
-        Автоматическое извлечение ссылок (DeepSeek) и проверка по официальному порталу Росстандарта.
-      </p>
+    <div className="normatives-workspace">
+      <header className="page-heading">
+        <div className="eyebrow">МОДУЛЬ 02 / НОРМАТИВНЫЙ КОНТРОЛЬ</div>
+        <h1>ГОСТ и НТД<span className="heading-dot">.</span></h1>
+        <p className="muted">Извлечение ссылок из документов, проверка по Росстандарту и
+          экспертные замечания с исходными цитатами.</p>
+      </header>
 
       {/* СЕКЦИЯ АНАЛИЗА ДОКУМЕНТА */}
-      <section className="panel stack" style={{ marginBottom: '2rem', borderLeft: '4px solid #007bff' }}>
-        <h2>🔍 Анализ проектного документа</h2>
+      <section className="panel stack normative-analysis">
+        <div className="panel-heading">
+          <div><div className="eyebrow">01 / ДОКУМЕНТ</div><h2>Анализ нормативных ссылок</h2></div>
+          <span className="panel-counter">По 5 нормативов за запрос</span>
+        </div>
         
-        <div style={{ display: 'flex', gap: '10px', marginBottom: '10px' }}>
+        <div className="normative-chooser">
+          <label>Проект
           <select 
             value={selectedProjectId} 
             onChange={e => setSelectedProjectId(e.target.value)} 
             disabled={isExtracting || isChecking}
-            style={{ flex: 1 }}
           >
             <option value="">Выберите проект...</option>
             {projects.map(p => (
               <option key={p.id} value={p.id}>{p.name}</option>
             ))}
-          </select>
-          
+          </select></label>
+          <label>Документ
           <select 
             value={selectedDocId} 
             onChange={e => setSelectedDocId(e.target.value)} 
-            disabled={!selectedProjectId || isExtracting || isChecking} 
-            style={{ flex: 1 }}
+            disabled={!selectedProjectId || isExtracting || isChecking}
           >
             <option value="">Выберите документ...</option>
             {documents.map(d => (
               <option key={d.id} value={d.id}>{d.filename}</option>
             ))}
-          </select>
+          </select></label>
         </div>
 
-        <div style={{ display: 'flex', gap: '10px', marginBottom: '10px' }}>
+        <div className="normative-actions">
           <button 
             onClick={handleExtract} 
             disabled={isExtracting || isChecking || !selectedDocId} 
-            style={{ backgroundColor: '#17a2b8' }}
+            className="secondary"
           >
             {isExtracting ? 'Извлекаем...' : '1. Извлечь нормативные ссылки'}
           </button>
@@ -303,7 +308,7 @@ export function NormativesPage() {
           <button 
             onClick={handleCheck} 
             disabled={isChecking || isExtracting || !selectedDocId} 
-            style={{ backgroundColor: '#28a745' }}
+
           >
             {isChecking ? 'Проверяем...' : checkResume.current?.docId === selectedDocId
               ? 'Продолжить проверку' : '2. Проверить актуальность'}
@@ -436,7 +441,7 @@ export function NormativesPage() {
         </form>
       </section>
       
-      {error && <p className="error">{error}</p>}
+      {error && <p className="error" role="alert">{error}</p>
       
       {/* ТАБЛИЦА РЕЕСТРА */}
       <section className="panel">
@@ -506,6 +511,6 @@ export function NormativesPage() {
         
         {!items.length && <p className="muted">Реестр пуст.</p>}
       </section>
-    </>
+    </div>
   )
 }
