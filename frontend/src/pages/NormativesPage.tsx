@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Normative, Project, Document, json, request } from '../api/client'
 
 type CheckedStandard = {
@@ -24,6 +24,19 @@ type VerificationReport = {
   checked: CheckedStandard[]
 }
 
+type VerificationBatch = VerificationReport & {
+  document_total: number
+  offset: number
+  next_offset: number | null
+}
+
+type VerificationProgress = {
+  checked: number
+  total: number
+}
+
+const CHECK_BATCH_SIZE = 5
+
 export function NormativesPage() {
   const [items, setItems] = useState<Normative[]>([])
   const [search, setSearch] = useState('')
@@ -45,6 +58,19 @@ export function NormativesPage() {
   const [isExtracting, setIsExtracting] = useState(false)
   const [isChecking, setIsChecking] = useState(false)
   const [report, setReport] = useState<VerificationReport | null>(null)
+  const [checkProgress, setCheckProgress] = useState<VerificationProgress | null>(null)
+  const checkResume = useRef<{docId: string, offset: number, report: VerificationReport} | null>(null)
+  const checkController = useRef<AbortController | null>(null)
+
+  useEffect(() => {
+    return () => checkController.current?.abort()
+  }, [])
+
+  useEffect(() => {
+    checkResume.current = null
+    setCheckProgress(null)
+    setReport(null)
+  }, [selectedDocId])
 
   const loadNormatives = () => {
     const params = new URLSearchParams()
@@ -68,6 +94,7 @@ export function NormativesPage() {
         .catch(() => setDocuments([]))
       setSelectedDocId('')
       setReport(null)
+      setCheckProgress(null)
     } else {
       setDocuments([])
     }
@@ -140,20 +167,83 @@ export function NormativesPage() {
   }
 
   async function handleCheck() {
-    if (!selectedDocId) return
+    if (!selectedDocId || isChecking) return
+    const docId = selectedDocId
+    const previous = checkResume.current?.docId === docId ? checkResume.current : null
+    let offset = previous?.offset ?? 0
+    let aggregate: VerificationReport = previous?.report ?? {
+      document_id: docId,
+      total: 0,
+      active: 0,
+      obsolete: 0,
+      unknown: 0,
+      findings_created: 0,
+      findings_already_existing: 0,
+      checked: []
+    }
+    const controller = new AbortController()
+    checkController.current = controller
     setIsChecking(true)
     setError('')
-    setReport(null)
+    if (!previous) {
+      setReport(null)
+      setCheckProgress(null)
+    }
     try {
-      const result = await request<VerificationReport>(
-        `/documents/${selectedDocId}/check-normatives`, 
-        json('POST', {})
+      while (true) {
+        const batch = await request<VerificationBatch>(
+          `/documents/${docId}/check-normatives?offset=${offset}&limit=${CHECK_BATCH_SIZE}`,
+          {method: 'POST', signal: controller.signal}
+        )
+        // Never silently skip, repeat or miscount codes when the API contract changes.
+        if (
+          batch.document_id !== docId || batch.offset !== offset ||
+          batch.total !== batch.checked.length ||
+          !Number.isInteger(batch.document_total) ||
+          batch.document_total < offset + batch.checked.length ||
+          (batch.next_offset !== null &&
+            (batch.next_offset !== offset + batch.checked.length ||
+             batch.next_offset <= offset || batch.next_offset >= batch.document_total))
+        ) {
+          throw new Error('Некорректный ответ проверки. Частичные результаты сохранены.')
+        }
+        aggregate = {
+          document_id: docId,
+          total: aggregate.total + batch.total,
+          active: aggregate.active + batch.active,
+          obsolete: aggregate.obsolete + batch.obsolete,
+          unknown: aggregate.unknown + batch.unknown,
+          findings_created: aggregate.findings_created + batch.findings_created,
+          findings_already_existing:
+            aggregate.findings_already_existing + batch.findings_already_existing,
+          checked: [...aggregate.checked, ...batch.checked]
+        }
+        setReport(aggregate)
+        setCheckProgress({checked: aggregate.total, total: batch.document_total})
+        if (batch.next_offset === null) {
+          if (aggregate.total !== batch.document_total) {
+            throw new Error('Количество проверенных нормативов не совпадает с документом.')
+          }
+          checkResume.current = null
+          loadNormatives()
+          break
+        }
+        offset = batch.next_offset
+        checkResume.current = {docId, offset, report: aggregate}
+      }
+    } catch (error) {
+      const stopped = controller.signal.aborted
+      const message = stopped
+        ? 'Проверка остановлена.'
+        : error instanceof Error ? error.message : 'Ошибка при проверке'
+      setError(
+        aggregate.total > 0
+          ? `${message} Проверено ${aggregate.total} нормативов. Нажмите «Продолжить проверку», чтобы обработать оставшиеся.`
+          : message
       )
-      setReport(result)
       loadNormatives()
-    } catch (e: any) {
-      setError(e.message || 'Ошибка при проверке')
     } finally {
+      if (checkController.current === controller) checkController.current = null
       setIsChecking(false)
     }
   }
@@ -179,6 +269,7 @@ export function NormativesPage() {
           <select 
             value={selectedProjectId} 
             onChange={e => setSelectedProjectId(e.target.value)} 
+            disabled={isExtracting || isChecking}
             style={{ flex: 1 }}
           >
             <option value="">Выберите проект...</option>
@@ -190,7 +281,7 @@ export function NormativesPage() {
           <select 
             value={selectedDocId} 
             onChange={e => setSelectedDocId(e.target.value)} 
-            disabled={!selectedProjectId} 
+            disabled={!selectedProjectId || isExtracting || isChecking} 
             style={{ flex: 1 }}
           >
             <option value="">Выберите документ...</option>
@@ -203,7 +294,7 @@ export function NormativesPage() {
         <div style={{ display: 'flex', gap: '10px', marginBottom: '10px' }}>
           <button 
             onClick={handleExtract} 
-            disabled={isExtracting || !selectedDocId} 
+            disabled={isExtracting || isChecking || !selectedDocId} 
             style={{ backgroundColor: '#17a2b8' }}
           >
             {isExtracting ? 'Извлекаем...' : '1. Извлечь нормативные ссылки'}
@@ -211,12 +302,27 @@ export function NormativesPage() {
           
           <button 
             onClick={handleCheck} 
-            disabled={isChecking || !selectedDocId} 
+            disabled={isChecking || isExtracting || !selectedDocId} 
             style={{ backgroundColor: '#28a745' }}
           >
-            {isChecking ? 'Проверяем...' : '2. Проверить актуальность'}
+            {isChecking ? 'Проверяем...' : checkResume.current?.docId === selectedDocId
+              ? 'Продолжить проверку' : '2. Проверить актуальность'}
           </button>
         </div>
+
+        {isChecking && (
+          <button type="button" className="secondary"
+            onClick={() => checkController.current?.abort()}>
+            Остановить после текущей порции
+          </button>
+        )}
+
+        {checkProgress && (
+          <p role="status" aria-live="polite" className="muted">
+            {isChecking ? 'Проверяем нормативы' : 'Проверка'}: {checkProgress.checked} из {checkProgress.total}.
+            {checkProgress.checked < checkProgress.total ? ' Результат ниже частичный.' : ' Все нормативы обработаны.'}
+          </p>
+        )}
 
         {report && (
           <div>

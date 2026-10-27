@@ -227,3 +227,102 @@ def test_cancelled_standard_without_replacement_has_specific_guidance(client, mo
     assert "замена не указана" in guidance
     assert "Определите действующий нормативный документ" in guidance
     assert "применимость заменяющего стандарта" not in guidance
+
+
+def test_large_document_verifies_all_standards_in_bounded_batches(client, monkeypatch):
+    """More than 50 references must be checked fully, without an HTTP 413."""
+    codes = [f"ГОСТ {41000 + index}-2024" for index in range(53)]
+    monkeypatch.setattr(
+        "app.documents.router.extract_blocks",
+        lambda data, suffix: [ExtractedBlock(
+            2, 0, "Нормативные ссылки: " + ", ".join(codes),
+        )],
+    )
+    project = client.post("/api/v1/projects", json={"name": "Большой нормативный документ"}).json()
+    uploaded = client.post(
+        f"/api/v1/projects/{project['id']}/documents",
+        data={"kind": "other"},
+        files={"file": ("bulk.pdf", BytesIO(b"fake pdf"), "application/pdf")},
+    )
+    assert uploaded.status_code == 201, uploaded.text
+    doc_id = uploaded.json()["id"]
+    fragment = client.get(f"/api/v1/documents/{doc_id}/fragments").json()[0]
+    for code in codes:
+        saved = client.post(f"/api/v1/documents/{doc_id}/facts", json={
+            "fact_type": "normative_reference",
+            "value": {"code": code, "reference_kind": "normative"},
+            "evidence": [{"fragment_id": fragment["id"], "quote": code}],
+        })
+        assert saved.status_code == 201, saved.text
+
+    called = []
+
+    def lookup(self, code, source_url=None):
+        called.append(code)
+        if code == codes[7]:
+            return RegistryResult(
+                code=code, status="obsolete", registry_status="Заменен",
+                replacement="ГОСТ 41007-2025", source_url=CARD_URL,
+                checked_at=datetime.now(timezone.utc),
+            )
+        return RegistryResult(code=code, reason="official_verification_unavailable")
+
+    monkeypatch.setattr("app.normatives.registry.RosstandartClient.lookup", lookup)
+    url = f"/api/v1/documents/{doc_id}/check-normatives"
+
+    assert client.post(url + "?limit=0").status_code == 422
+    assert client.post(url + "?limit=11").status_code == 422
+    assert client.post(url + "?offset=-1").status_code == 422
+
+    offset = 0
+    checked = []
+    created = 0
+    while True:
+        result = client.post(f"{url}?offset={offset}&limit=5")
+        assert result.status_code == 200, result.text
+        batch = result.json()
+        assert batch["document_total"] == len(codes)
+        assert batch["offset"] == offset
+        assert batch["total"] == len(batch["checked"])
+        assert batch["total"] <= 5
+        checked.extend(batch["checked"])
+        created += batch["findings_created"]
+        if batch["next_offset"] is None:
+            break
+        assert batch["next_offset"] == offset + batch["total"]
+        offset = batch["next_offset"]
+
+    assert len(checked) == len(codes)
+    assert {item["code"] for item in checked} == set(codes)
+    assert sorted(called) == sorted(codes)
+    assert created == 1
+    findings = client.get(f"/api/v1/projects/{project['id']}/findings").json()
+    assert len(findings) == 1
+    assert findings[0]["evidence"][0]["quote"] == codes[7]
+    assert findings[0]["evidence"][0]["page"] == 2
+
+    # Repeating a previously committed batch does not create duplicate findings.
+    obsolete_offset = sorted(codes).index(codes[7])
+    repeated = client.post(f"{url}?offset={obsolete_offset}&limit=1")
+    assert repeated.status_code == 200
+    assert repeated.json()["findings_created"] == 0
+    assert repeated.json()["findings_already_existing"] == 1
+    assert len(client.get(f"/api/v1/projects/{project['id']}/findings").json()) == 1
+
+    # A direct request without query params is a safe first batch, not a 413.
+    default = client.post(url)
+    assert default.status_code == 200
+    assert default.json()["total"] == 5
+    assert default.json()["document_total"] == 53
+    assert default.json()["next_offset"] == 5
+
+    empty = client.post(f"{url}?offset=999&limit=5")
+    assert empty.status_code == 200
+    assert empty.json()["total"] == 0
+    assert empty.json()["document_total"] == 53
+    assert empty.json()["next_offset"] is None
+
+    expert = client.get(f"/api/v1/projects/{project['id']}/normative-report").json()
+    assert expert["total"] == 53
+    assert expert["requires_attention"] == 1
+    assert expert["unverified"] == 52
