@@ -68,9 +68,21 @@ def update_normative(normative_id: str, payload: NormativeUpdate, db: Session = 
     update_data = payload.model_dump(exclude_unset=True)
     if update_data.get("title", "") is None or update_data.get("status", "") is None:
         raise HTTPException(422, "Поля title и status не могут быть null")
+    status_changed = (
+        "status" in update_data and update_data["status"] != normative.status
+    )
+    source_changed = (
+        "source_url" in update_data
+        and update_data["source_url"] != normative.source_url
+    )
     for field, value in update_data.items():
         setattr(normative, field, value)
-        
+    # Manually edited statuses or official card URLs cannot retain an older
+    # "verified" badge: only a successful registry lookup may restore it.
+    if status_changed or source_changed:
+        normative.checked_at = None
+        normative.registry_status = None
+
     db.commit()
     db.refresh(normative)
     return normative
