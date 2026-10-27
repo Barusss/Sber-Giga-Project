@@ -8,7 +8,7 @@ import {RequirementsPage} from './pages/RequirementsPage'
 import {ReportsPage} from './pages/ReportsPage'
 import {DebugPanel} from './debug/DebugPanel'
 import './styles.css'
-import './theme-emboss.css'
+import './theme-liquid-glass.css'
 
 const sections = [
   {href: '/', number: '01', title: 'Проекты', category: 'Подготовка'},
