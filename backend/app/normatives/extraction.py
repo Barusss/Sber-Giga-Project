@@ -24,7 +24,7 @@ MAX_CANDIDATES = 500
 # hyphens instead of ASCII '-'. They must be part of the reference pattern and
 # normalization, otherwise a cited edition is silently truncated (e.g.
 # "ГОСТ 29322­92" instead of "ГОСТ 29322-92").
-HYPHEN_CHARS = "‐‑‒–—−\u00ad\\-"
+HYPHEN_CHARS = "‐‑‒–—―−\u00ad\\-"
 
 REFERENCE_PATTERN = re.compile(
     rf"(?<![\w])(?:"
@@ -83,7 +83,7 @@ class ExtractionResult(BaseModel):
 
 
 def normalize_code(value: str) -> str:
-    value = re.sub(r"[‐‑‒–—−\u00ad]", "-", value)
+    value = re.sub(r"[‐‑‒–—―−\u00ad]", "-", value)
     value = " ".join(value.upper().split())
     return re.sub(r"\s*-\s*", "-", value)
 
