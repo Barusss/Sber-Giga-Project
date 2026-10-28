@@ -52,10 +52,10 @@ def test_upgrade_existing_document_and_backfill_chunks(tmp_path):
         assert conn.execute("SELECT updated_at FROM normatives WHERE id='n'").fetchone()[0]
 
 
-def test_upgrade_0005_to_0006_adds_provenance_and_keeps_data(tmp_path):
-    database = tmp_path / "requirements_0005.sqlite3"
+def test_upgrade_0006_to_0007_adds_provenance_and_keeps_data(tmp_path):
+    database = tmp_path / "requirements_0006.sqlite3"
 
-    run_alembic(database, "upgrade", "0005")
+    run_alembic(database, "upgrade", "0006")
     with sqlite3.connect(database) as conn:
         time = datetime.now(timezone.utc).isoformat()
         conn.execute("INSERT INTO projects (id, name, state, created_at) VALUES (?, ?, ?, ?)",
@@ -81,7 +81,7 @@ def test_upgrade_0005_to_0006_adds_provenance_and_keeps_data(tmp_path):
                      VALUES (?, ?, ?, ?, ?, ?, ?)""",
                      ("v1", "p", "r1", "fulfilled", 0, time, time))
 
-    run_alembic(database, "upgrade", "0006")
+    run_alembic(database, "upgrade", "0007")
     with sqlite3.connect(database) as conn:
         tu_columns = {row[1] for row in conn.execute("PRAGMA table_info(tu_requirements)")}
         assert {"fragment_id", "page"} <= tu_columns
@@ -101,7 +101,7 @@ def test_upgrade_0005_to_0006_adds_provenance_and_keeps_data(tmp_path):
             "1.1. Мощность 150 кВт"
         )
 
-    run_alembic(database, "downgrade", "0005")
+    run_alembic(database, "downgrade", "0006")
     with sqlite3.connect(database) as conn:
         tu_columns = {row[1] for row in conn.execute("PRAGMA table_info(tu_requirements)")}
         assert "fragment_id" not in tu_columns and "page" not in tu_columns
