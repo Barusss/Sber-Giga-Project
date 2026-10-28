@@ -1,7 +1,9 @@
-"""Compare extracted normative references with live Rosstandart registry cards.
+"""Compare extracted normative references with the local registry and Rosstandart.
 
-Only a verified Rosstandart response can establish active/obsolete status.
-Local registry records remain lookup hints, never fresh official evidence.
+The local registry is the primary source for availability: a previously
+confirmed active/obsolete status is reused without a network call. Missing or
+unknown records are looked up officially; ``refresh=True`` bypasses the cache
+but still falls back to the archived record when the official site is down.
 """
 from datetime import datetime
 
@@ -55,9 +57,10 @@ def finding_key(finding: Finding, document_id: str, code: str) -> bool:
 
 
 def check_document_standards(
-    db: Session, document: Document, registry: RosstandartClient | None = None
+    db: Session, document: Document, registry: RosstandartClient | None = None,
+    refresh: bool = False,
 ) -> VerificationReport:
-    """Verify official statuses without treating saved statuses as freshly checked."""
+    """Use the local registry first; query the official one only when needed."""
     facts = db.scalars(
         select(Fact).where(
             Fact.document_id == document.id,
@@ -125,48 +128,96 @@ def check_document_standards(
                 })
         pages = sorted({entry["page"] for entry in evidence})
         
-        # Проверяем локальный реестр
+        # The local registry is the primary source when it already contains a
+        # usable status. This keeps verification available during Rosstandart
+        # outages; missing/unknown entries still go to the official registry.
         local_normative = local_cache.get(code)
         local_status = local_normative.status if local_normative else None
-        local_replacement = local_normative.replacement if local_normative else None
-        local_title = local_normative.title if local_normative else None
-        local_source_url = local_normative.source_url if local_normative else None
-        
-        # Обращаемся к Росстандарту
-        hint = local_source_url
-        status: RegistryResult = registry.lookup(code, source_url=hint)
-        
-        # Local data can hint which official card to query, but never counts as
-        # current official verification, even if previously confirmed.
-        confirmed = (
-            status.status in {"active", "obsolete"}
-            and bool(status.source_url)
-            and status.checked_at is not None
-        )
-        if confirmed:
-            final_status = status.status
-            source = "rosstandart"
-            final_replacement = status.replacement
-            final_title = status.title or local_title
-            final_source_url = status.source_url
-            reason = status.reason
+        local_usable = local_status in {"active", "obsolete"}
+
+        official: RegistryResult | None = None
+        if local_usable and not refresh:
+            final_status = local_status
+            source = "local"
+            registry_status = local_normative.registry_status
+            final_replacement = local_normative.replacement
+            final_title = local_normative.title
+            final_source_url = local_normative.source_url
+            checked_at = local_normative.checked_at
+            reason = "local_registry_hit"
         else:
-            final_status = "unknown"
-            source = "local" if local_status in {"active", "obsolete"} else "unknown"
-            final_replacement = None
-            final_title = local_title or status.title
-            final_source_url = None
-            reason = status.reason or "official_verification_unavailable"
+            hint = local_normative.source_url if local_normative else None
+            official = registry.lookup(code, source_url=hint)
+            confirmed = (
+                official.status in {"active", "obsolete"}
+                and bool(official.source_url)
+                and official.checked_at is not None
+            )
+            if confirmed:
+                final_status = official.status
+                source = "rosstandart"
+                registry_status = official.registry_status
+                final_replacement = official.replacement
+                final_title = official.title or (
+                    local_normative.title if local_normative else None
+                )
+                final_source_url = official.source_url
+                checked_at = official.checked_at
+                reason = official.reason
+
+                # Persist the confirmed card so subsequent checks can work
+                # offline without inventing a fresh timestamp.
+                if local_normative is None:
+                    local_normative = Normative(
+                        code=code,
+                        title=final_title or code,
+                        status=official.status,
+                        registry_status=official.registry_status,
+                        replacement=official.replacement,
+                        source_url=official.source_url,
+                        checked_at=official.checked_at,
+                    )
+                    db.add(local_normative)
+                    local_cache[code] = local_normative
+                else:
+                    local_normative.title = final_title or local_normative.title
+                    local_normative.status = official.status
+                    local_normative.registry_status = official.registry_status
+                    local_normative.replacement = official.replacement
+                    local_normative.source_url = official.source_url
+                    local_normative.checked_at = official.checked_at
+            elif local_usable:
+                # A forced refresh failed: keep the archived record instead of
+                # dropping to unknown, but label why it was used.
+                final_status = local_status
+                source = "local"
+                registry_status = local_normative.registry_status
+                final_replacement = local_normative.replacement
+                final_title = local_normative.title
+                final_source_url = local_normative.source_url
+                checked_at = local_normative.checked_at
+                reason = "refresh_failed_local_fallback"
+            else:
+                final_status = "unknown"
+                source = "unknown"
+                registry_status = official.registry_status
+                final_replacement = None
+                final_title = (
+                    local_normative.title if local_normative else official.title
+                )
+                final_source_url = None
+                checked_at = None
+                reason = official.reason or "official_verification_unavailable"
 
         checked.append(StandardCheck(
             code=code,
             reference_kind=role,
             status=final_status,
-            registry_status=status.registry_status,
+            registry_status=registry_status,
             replacement=final_replacement,
             title=final_title,
             source_url=final_source_url,
-            checked_at=status.checked_at,
+            checked_at=checked_at,
             pages=pages,
             reason=reason,
             source=source,
@@ -180,31 +231,14 @@ def check_document_standards(
             snapshots[code] = snapshot
         snapshot.reference_kind = role
         snapshot.status = final_status
-        snapshot.registry_status = status.registry_status if confirmed else None
+        snapshot.registry_status = registry_status
         snapshot.title = final_title
         snapshot.replacement = final_replacement
         snapshot.source_url = final_source_url
-        snapshot.checked_at = status.checked_at if confirmed else None
+        snapshot.checked_at = checked_at
         snapshot.attempted_at = now()
         snapshot.reason = reason
-
-        # Обновляем локальный реестр, если Росстандарт подтвердил
-        if confirmed:
-            if local_normative is None:
-                local_normative = Normative(
-                    code=code,
-                    title=final_title or code,
-                    status=status.status,
-                    replacement=status.replacement,
-                    source_url=status.source_url,
-                )
-                db.add(local_normative)
-                local_cache[code] = local_normative
-            else:
-                local_normative.title = final_title or local_normative.title
-                local_normative.status = status.status
-                local_normative.replacement = status.replacement
-                local_normative.source_url = status.source_url
+        snapshot.source = source
 
         # Retain an auditable informational finding for obsolete bibliography
         # references, but do not present it as a normative requirement.
@@ -220,10 +254,18 @@ def check_document_standards(
             continue
 
         replacement_text = f" Замена по реестру: {final_replacement}." if final_replacement else ""
-        source_text = "Росстандарт" if source == "rosstandart" else "локальный реестр"
+        provenance = (
+            "официальный статус (Росстандарт)"
+            if source == "rosstandart"
+            else "статус по локальному реестру"
+        )
+        checked_text = (
+            f" Дата подтверждения: {checked_at:%d.%m.%Y}."
+            if checked_at else " Дата подтверждения не указана."
+        )
         explanation = (
-            f"Упоминание {code}: официальный статус ({source_text}) «{status.registry_status or final_status}»."
-            f"{replacement_text} Источник: {final_source_url or 'не указан'}"
+            f"Упоминание {code}: {provenance} «{registry_status or final_status}»."
+            f"{replacement_text}{checked_text} Источник: {final_source_url or 'не указан'}"
         )
         
         if role == "informative":

@@ -91,6 +91,7 @@ def test_report_grouping_persistence_provenance_and_review(client, monkeypatch):
     assert normative["source_url"].startswith("https://protect.gost.ru/gost/details/")
     assert normative["checked_at"].startswith("2026-10-19")
     assert normative["attempted_at"] is not None
+    assert normative["source"] == "rosstandart"
     assert normative["replacement"] == "ГОСТ 29322-2014"
     assert normative["evidence"][0]["quote"] == "ГОСТ 29322—92"
     assert normative["evidence"][0]["page"] == 1
@@ -111,6 +112,7 @@ def test_report_grouping_persistence_provenance_and_review(client, monkeypatch):
     assert international["attempted_at"] is not None
     assert international["reason"] == "unsupported_or_incomplete_designation"
     assert international["source_url"] is None
+    assert international["source"] == "unknown"
 
     review_id = normative["finding"]["id"]
     res = client.patch(f"/api/v1/findings/{review_id}/review",
@@ -128,29 +130,65 @@ def test_report_grouping_persistence_provenance_and_review(client, monkeypatch):
     assert next(i for i in persisted["items"] if i["code"] == "ГОСТ 29322-92")["finding"]["review_status"] == "accepted"
 
 
-def test_unknown_refresh_overrides_earlier_success_without_forging_status(client, monkeypatch):
+def test_default_recheck_uses_local_registry_during_outage(client, monkeypatch):
     project_id, doc_id = prepare(client, monkeypatch)
     monkeypatch.setattr("app.normatives.registry.RosstandartClient.lookup", responses)
     assert client.post(f"/api/v1/documents/{doc_id}/check-normatives").status_code == 200
 
+    calls = []
+
     def inaccessible(self, code, source_url=None):
+        calls.append(code)
         return RegistryResult(code=code, reason="official_verification_unavailable")
 
     monkeypatch.setattr("app.normatives.registry.RosstandartClient.lookup", inaccessible)
     assert client.post(f"/api/v1/documents/{doc_id}/check-normatives").status_code == 200
     report = client.get(f"/api/v1/projects/{project_id}/normative-report").json()
-    assert report["unverified"] == 4
-    assert report["requires_attention"] == 0
-    assert report["active"] == 0
-    for item in report["items"]:
-        assert item["status"] == "unknown"
-        assert item["checked_at"] is None
-        assert item["source_url"] is None
-        assert item["reason"] == "official_verification_unavailable"
+    assert (report["total"], report["requires_attention"], report["informative"],
+            report["unverified"], report["active"]) == (4, 1, 1, 1, 1)
+    by_code = {item["code"]: item for item in report["items"]}
+    for code in ("ГОСТ 29322-92", "ГОСТ 1.0-92", "ГОСТ 30804.4.30-2013"):
+        item = by_code[code]
+        assert item["source"] == "local"
+        assert item["reason"] == "local_registry_hit"
+        assert item["checked_at"].startswith("2026-10-19")
+        assert item["source_url"].startswith("https://protect.gost.ru/gost/details/")
+    assert by_code["IEC 61000-4-30:2008"]["source"] == "unknown"
+    assert by_code["IEC 61000-4-30:2008"]["status"] == "unknown"
+    assert "ГОСТ 29322-92" not in calls  # cached cards are used offline
 
     # Findings remain in the audit trail, even if the live registry is offline.
     findings = client.get(f"/api/v1/projects/{project_id}/findings").json()
     assert len(findings) == 2
+
+
+def test_forced_refresh_falls_back_to_local_when_official_is_down(client, monkeypatch):
+    project_id, doc_id = prepare(client, monkeypatch)
+    monkeypatch.setattr("app.normatives.registry.RosstandartClient.lookup", responses)
+    assert client.post(f"/api/v1/documents/{doc_id}/check-normatives").status_code == 200
+
+    calls = []
+
+    def inaccessible(self, code, source_url=None):
+        calls.append(code)
+        return RegistryResult(code=code, reason="official_verification_unavailable")
+
+    monkeypatch.setattr("app.normatives.registry.RosstandartClient.lookup", inaccessible)
+    url = f"/api/v1/documents/{doc_id}/check-normatives?refresh=true"
+    assert client.post(url).status_code == 200
+    assert "ГОСТ 29322-92" in calls  # refresh bypasses the local cache
+
+    report = client.get(f"/api/v1/projects/{project_id}/normative-report").json()
+    assert (report["total"], report["requires_attention"], report["informative"],
+            report["unverified"], report["active"]) == (4, 1, 1, 1, 1)
+    by_code = {item["code"]: item for item in report["items"]}
+    for code in ("ГОСТ 29322-92", "ГОСТ 1.0-92", "ГОСТ 30804.4.30-2013"):
+        item = by_code[code]
+        assert item["source"] == "local"
+        assert item["reason"] == "refresh_failed_local_fallback"
+        assert item["checked_at"].startswith("2026-10-19")
+    assert by_code["IEC 61000-4-30:2008"]["status"] == "unknown"
+    assert len(client.get(f"/api/v1/projects/{project_id}/findings").json()) == 2
 
 
 def test_empty_project_and_not_found(client):

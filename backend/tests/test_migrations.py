@@ -4,6 +4,7 @@ from pathlib import Path
 import os
 import sqlite3
 import subprocess
+import sys
 
 
 def test_upgrade_existing_document_and_backfill_chunks(tmp_path):
@@ -14,8 +15,8 @@ def test_upgrade_existing_document_and_backfill_chunks(tmp_path):
 
     def upgrade(version):
         result = subprocess.run(
-            ["alembic", "upgrade", version], cwd=root, env=env,
-            capture_output=True, text=True,
+            [sys.executable, "-m", "alembic", "upgrade", version],
+            cwd=root, env=env, capture_output=True, text=True,
         )
         assert result.returncode == 0, result.stderr
 
@@ -46,3 +47,49 @@ def test_upgrade_existing_document_and_backfill_chunks(tmp_path):
         columns = {row[1]: row for row in conn.execute("PRAGMA table_info(normatives)")}
         assert columns["updated_at"][3] == 1
         assert conn.execute("SELECT updated_at FROM normatives WHERE id='n'").fetchone()[0]
+        assert {"registry_status", "checked_at"} <= set(columns)
+        verification_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(normative_verifications)")
+        }
+        assert "source" in verification_columns
+
+
+def test_existing_cards_do_not_get_a_forged_check_date(tmp_path):
+    root = Path(__file__).resolve().parents[1]
+    database = tmp_path / "normative_no_forged_date.sqlite3"
+    env = os.environ.copy()
+    env["DATABASE_URL"] = f"sqlite+pysqlite:///{database}"
+
+    def upgrade(version):
+        result = subprocess.run(
+            [sys.executable, "-m", "alembic", "upgrade", version],
+            cwd=root, env=env, capture_output=True, text=True,
+        )
+        assert result.returncode == 0, result.stderr
+
+    upgrade("0005")
+    stamp = datetime.now(timezone.utc).isoformat()
+    with sqlite3.connect(database) as conn:
+        conn.execute(
+            "INSERT INTO normatives (id, code, title, status, source_url, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            ("official", "ГОСТ 1-1", "Official", "active", "https://protect.gost.ru/x", stamp),
+        )
+        conn.execute(
+            "INSERT INTO normatives (id, code, title, status, source_url, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            ("manual", "ГОСТ 2-2", "Manual", "active", None, stamp),
+        )
+
+    upgrade("head")
+    with sqlite3.connect(database) as conn:
+        official = conn.execute(
+            "SELECT checked_at, registry_status FROM normatives WHERE id='official'"
+        ).fetchone()
+        manual = conn.execute(
+            "SELECT checked_at FROM normatives WHERE id='manual'"
+        ).fetchone()
+    # updated_at is not proof of an official check; only a fresh lookup fills it.
+    assert official[0] is None
+    assert official[1] is None
+    assert manual[0] is None

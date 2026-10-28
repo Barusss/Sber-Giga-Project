@@ -11,6 +11,7 @@ type CheckedStandard = {
   checked_at: string | null
   pages: number[]
   reason: string | null
+  source: string | null
 }
 
 type VerificationReport = {
@@ -139,14 +140,15 @@ export function NormativesPage() {
     }
   }
 
-  async function handleCheck() {
+  async function handleCheck(force = false) {
     if (!selectedDocId) return
     setIsChecking(true)
     setError('')
     setReport(null)
     try {
+      const suffix = force ? '?refresh=true' : ''
       const result = await request<VerificationReport>(
-        `/documents/${selectedDocId}/check-normatives`, 
+        `/documents/${selectedDocId}/check-normatives${suffix}`, 
         json('POST', {})
       )
       setReport(result)
@@ -164,11 +166,19 @@ export function NormativesPage() {
     return 'Не подтверждено'
   }
 
+  const sourceLabel = (value: string | null) => {
+    if (value === 'rosstandart') return 'Росстандарт'
+    if (value === 'local') return 'Локальный реестр'
+    return 'Не подтверждено'
+  }
+
   return (
     <>
       <h1>Проверка ГОСТ и НТД</h1>
       <p className="muted">
-        Автоматическое извлечение ссылок (DeepSeek) и проверка по официальному порталу Росстандарта.
+        Извлечение ссылок (DeepSeek) и проверка статусов. Подтверждённые записи
+        локального реестра используются без сетевого запроса; при их отсутствии
+        выполняется запрос к Росстандарту.
       </p>
 
       {/* СЕКЦИЯ АНАЛИЗА ДОКУМЕНТА */}
@@ -210,11 +220,20 @@ export function NormativesPage() {
           </button>
           
           <button 
-            onClick={handleCheck} 
+            onClick={() => handleCheck()} 
             disabled={isChecking || !selectedDocId} 
             style={{ backgroundColor: '#28a745' }}
           >
             {isChecking ? 'Проверяем...' : '2. Проверить актуальность'}
+          </button>
+
+          <button 
+            onClick={() => handleCheck(true)} 
+            disabled={isChecking || !selectedDocId} 
+            style={{ backgroundColor: '#6c757d' }}
+            title="Игнорировать локальный кэш и запросить Росстандарт"
+          >
+            2b. Обновить из Росстандарта
           </button>
         </div>
 
@@ -232,10 +251,10 @@ export function NormativesPage() {
                   <tr>
                     <th>Стандарт</th>
                     <th>Тип</th>
-                    <th>Статус (Росстандарт)</th>
+                    <th>Статус</th>
                     <th>Замена</th>
                     <th>Стр.</th>
-                    <th>Источник</th>
+                    <th>Источник и дата</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -254,11 +273,16 @@ export function NormativesPage() {
                       <td>{item.replacement || '—'}</td>
                       <td>{item.pages.join(', ') || '—'}</td>
                       <td>
-                        {item.source_url ? (
+                        <div>{item.source_url ? (
                           <a href={item.source_url} target="_blank" rel="noopener noreferrer">
-                            Карточка
+                            {sourceLabel(item.source)}
                           </a>
-                        ) : 'Не найдено'}
+                        ) : sourceLabel(item.source)}</div>
+                        <small>
+                          {item.checked_at
+                            ? `Проверено: ${new Date(item.checked_at).toLocaleDateString('ru-RU')}`
+                            : 'Дата подтверждения не указана'}
+                        </small>
                       </td>
                     </tr>
                   ))}
@@ -363,7 +387,7 @@ export function NormativesPage() {
               <th>Название</th>
               <th>Статус</th>
               <th>Замена</th>
-              <th>Обновлен</th>
+              <th>Проверен / изменён</th>
               <th>Действия</th>
             </tr>
           </thead>
@@ -376,7 +400,11 @@ export function NormativesPage() {
                 <td>{i.replacement ?? '—'}</td>
                 <td>
                   <small>
-                    {i.updated_at ? new Date(i.updated_at).toLocaleDateString('ru-RU') : '—'}
+                    {i.checked_at
+                      ? `Проверен ${new Date(i.checked_at).toLocaleDateString('ru-RU')}`
+                      : i.updated_at
+                        ? `Изменён ${new Date(i.updated_at).toLocaleDateString('ru-RU')}`
+                        : '—'}
                   </small>
                 </td>
                 <td>

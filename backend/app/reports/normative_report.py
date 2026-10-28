@@ -84,6 +84,7 @@ class NormativeReportItem(BaseModel):
     checked_at: datetime | None
     attempted_at: datetime | None
     reason: str | None
+    source: str | None
     section: str
     evidence: list[QuoteOut]
     finding: FindingReviewOut | None
@@ -192,6 +193,7 @@ def build_normative_report(db: Session, project: Project, document_id: str | Non
             checked_at=snapshot.checked_at if snapshot else None,
             attempted_at=snapshot.attempted_at if snapshot else None,
             reason=(snapshot.reason if snapshot else "not_yet_verified"),
+            source=snapshot.source if snapshot else None,
             section=section, evidence=citations, finding=finding_out,
         ))
 

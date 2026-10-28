@@ -8,7 +8,7 @@ type Standard={
  document_id:string;document_name:string;code:string;reference_kind:string
  status:string;registry_status:string|null;title:string|null
  replacement:string|null;source_url:string|null;checked_at:string|null
- attempted_at:string|null;reason:string|null
+ attempted_at:string|null;reason:string|null;source:string|null
  section:'requires_attention'|'informative'|'unverified'|'active'
  evidence:Quote[];finding:Review|null
 }
@@ -30,12 +30,21 @@ const unknownLabel=(reason:string|null)=>{
  if(reason==='official_verification_unavailable')return 'Не удалось подтвердить сведения на официальном сайте'
  if(reason==='exact_official_card_not_found')return 'Точная карточка стандарта не найдена'
  if(reason==='not_yet_verified')return 'После обновления требуется повторная проверка актуальности'
- return 'Статус требует дополнительной проверки'
+ return 'Статус не подтверждён'
 }
+const sourceLabel=(source:string|null)=>{
+ if(source==='rosstandart')return 'Росстандарт'
+ if(source==='local')return 'Локальный реестр'
+ return '—'
+}
+const verifiedLabel=(item:Standard)=>
+ item.reason==='refresh_failed_local_fallback'
+  ?'Локальный реестр (Росстандарт недоступен)'
+  :sourceLabel(item.source)
 const groups=[
  {key:'requires_attention',title:'Требуют внимания',subtitle:'Недействующие стандарты в нормативных ссылках. Необходима экспертная оценка применимости замены.'},
  {key:'informative',title:'Справочные упоминания',subtitle:'Недействующие стандарты в предисловии или библиографии. Не всегда требуют изменения документа.'},
- {key:'unverified',title:'Не удалось проверить',subtitle:'По этим обозначениям официальный статус не подтверждён. Система не делает вывод об их действии.'},
+ {key:'unverified',title:'Не удалось проверить',subtitle:'Статус не подтверждён ни локальным реестром, ни Росстандартом. Система не делает вывод об их действии.'},
  {key:'active',title:'Действующие стандарты',subtitle:'Статус подтверждён на дату последней успешной проверки.'},
 ] as const
 
@@ -242,12 +251,13 @@ export function ReportsPage(){
         <span><b>Документ:</b> {item.document_name}</span>
         <span><b>Страницы PDF:</b> {Array.from(new Set(item.evidence.map(e=>e.page))).sort((a,b)=>a-b).join(', ')||'—'}</span>
         <span><b>Тип упоминания:</b> {item.reference_kind==='informative'?'Справочное':'Нормативное'}</span>
+        <span><b>Источник статуса:</b> {verifiedLabel(item)}</span>
         <span><b>Дата проверки:</b> {date(item.checked_at)}</span>
         {item.attempted_at&&!item.checked_at&&<span><b>Последняя попытка:</b> {date(item.attempted_at)}</span>}
        </div>
        {item.replacement&&<p className="report-replacement"><b>Указанный заменяющий стандарт:</b> {item.replacement}</p>}
        {item.status==='unknown'&&<p className="muted">{unknownLabel(item.reason)}</p>}
-       {item.source_url&&<p><a href={item.source_url} target="_blank" rel="noopener noreferrer">Официальная карточка Росстандарта</a></p>}
+       {item.source_url&&<p><a href={item.source_url} target="_blank" rel="noopener noreferrer">Карточка стандарта</a></p>}
        <div className="report-evidence">
         <b>Упоминания в исходном документе · {item.evidence.length}</b>
         {item.evidence.length===0?<p className="muted">Нет подтверждённых цитат.</p>:

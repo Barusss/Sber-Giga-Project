@@ -79,6 +79,8 @@ class NormativeUpdate(BaseModel):
 
 class NormativeOut(NormativeCreate, Schema):
     id: str
+    registry_status: str | None = None
+    checked_at: datetime | None = None
     updated_at: datetime | None = None
 
 # The format is shared by the document, normative and requirement modules.
