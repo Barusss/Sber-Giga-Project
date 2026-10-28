@@ -116,3 +116,46 @@ def test_upgrade_0006_to_0007_adds_provenance_and_keeps_data(tmp_path):
         assert conn.execute(
             "SELECT status FROM requirement_verifications WHERE id='v1'"
         ).fetchone()[0] == "fulfilled"
+
+
+def test_upgrade_0007_tolerates_columns_left_by_old_0006(tmp_path):
+    """Old 0006 deployments already have the columns but still report 0006."""
+    database = tmp_path / "requirements_partial_0006.sqlite3"
+
+    run_alembic(database, "upgrade", "0006")
+    with sqlite3.connect(database) as conn:
+        conn.execute("ALTER TABLE tu_requirements ADD COLUMN fragment_id VARCHAR(36)")
+        conn.execute("ALTER TABLE tu_requirements ADD COLUMN page INTEGER")
+        conn.execute(
+            "CREATE INDEX ix_tu_requirements_fragment_id "
+            "ON tu_requirements (fragment_id)"
+        )
+        conn.execute(
+            "ALTER TABLE requirement_verifications "
+            "ADD COLUMN matched_znp_fragment_id VARCHAR(36)"
+        )
+        conn.execute(
+            "ALTER TABLE requirement_verifications ADD COLUMN matched_znp_page INTEGER"
+        )
+
+    run_alembic(database, "upgrade", "0007")
+    with sqlite3.connect(database) as conn:
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0007"
+        tu_columns = {row[1] for row in conn.execute("PRAGMA table_info(tu_requirements)")}
+        assert {"fragment_id", "page"} <= tu_columns
+        verification_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(requirement_verifications)")
+        }
+        assert {"matched_znp_fragment_id", "matched_znp_page"} <= verification_columns
+        indexes = {row[1] for row in conn.execute("PRAGMA index_list(tu_requirements)")}
+        assert "ix_tu_requirements_fragment_id" in indexes
+
+    run_alembic(database, "downgrade", "0006")
+    with sqlite3.connect(database) as conn:
+        tu_columns = {row[1] for row in conn.execute("PRAGMA table_info(tu_requirements)")}
+        assert "fragment_id" not in tu_columns and "page" not in tu_columns
+        verification_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(requirement_verifications)")
+        }
+        assert "matched_znp_fragment_id" not in verification_columns
+        assert "matched_znp_page" not in verification_columns
