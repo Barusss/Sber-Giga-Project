@@ -64,6 +64,8 @@ def update_normative(normative_id: str, payload: NormativeUpdate, db: Session = 
     
     # Обновляем только те поля, которые были переданы в запросе
     update_data = payload.model_dump(exclude_unset=True)
+    if update_data.get("title", "") is None or update_data.get("status", "") is None:
+        raise HTTPException(422, "Поля title и status не могут быть null")
     for field, value in update_data.items():
         setattr(normative, field, value)
         

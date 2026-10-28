@@ -73,7 +73,7 @@ class NormativeCreate(BaseModel):
     source_url: str | None = None
 
 class NormativeUpdate(BaseModel):
-    title: str | None = None
+    title: str | None = Field(default=None, min_length=1)
     status: Literal["active", "obsolete", "unknown"] | None = None
     replacement: str | None = None
     source_url: str | None = None

@@ -35,6 +35,8 @@ def test_upgrade_existing_document_and_backfill_chunks(tmp_path):
                      ("d", "p", "tu", "old.pdf", "/tmp/old.pdf", "application/pdf", time))
         conn.execute("INSERT INTO fragments (id, document_id, page, position, text) VALUES (?, ?, ?, ?, ?)",
                      ("f", "d", 45, 0, raw))
+        conn.execute("INSERT INTO normatives (id, code, title, status) VALUES (?, ?, ?, ?)",
+                     ("n", "ГОСТ 1.0-92", "old normative", "active"))
 
     run_alembic(database, "upgrade", "head")
     with sqlite3.connect(database) as conn:
@@ -45,6 +47,9 @@ def test_upgrade_existing_document_and_backfill_chunks(tmp_path):
         assert "".join(row[1] for row in rows) == raw
         assert all(row[2:] == (45, 45) for row in rows)
         assert conn.execute("SELECT COUNT(*) FROM chunk_sources").fetchone()[0] == len(rows)
+        columns = {row[1]: row for row in conn.execute("PRAGMA table_info(normatives)")}
+        assert columns["updated_at"][3] == 1
+        assert conn.execute("SELECT updated_at FROM normatives WHERE id='n'").fetchone()[0]
 
 
 def test_upgrade_0005_to_0006_adds_provenance_and_keeps_data(tmp_path):
