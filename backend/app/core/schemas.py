@@ -40,6 +40,7 @@ class Evidence(BaseModel):
     fragment_id: str | None = None
     page: int | None = None
     quote: str
+    requirement_id: str | None = None
 
 class FindingCreate(BaseModel):
     module: Literal["normatives", "requirements"]
@@ -72,13 +73,15 @@ class NormativeCreate(BaseModel):
     source_url: str | None = None
 
 class NormativeUpdate(BaseModel):
-    title: str | None = None
+    title: str | None = Field(default=None, min_length=1)
     status: Literal["active", "obsolete", "unknown"] | None = None
     replacement: str | None = None
     source_url: str | None = None
 
 class NormativeOut(NormativeCreate, Schema):
     id: str
+    registry_status: str | None = None
+    checked_at: datetime | None = None
     updated_at: datetime | None = None
 
 # The format is shared by the document, normative and requirement modules.

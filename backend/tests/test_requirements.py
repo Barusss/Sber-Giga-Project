@@ -220,8 +220,41 @@ def test_db_requirement_verification_hitl_workflow(db_session):
     assert refreshed.human_override_status == RequirementStatus.fulfilled
     assert refreshed.human_comment == "Тип терминала согласован письмом"
 
-
-def test_requirements_endpoint_placeholder(client):
-    """Проверка доступности маршрута анализа требований (ожидаем 501 до реализации пайплайна)."""
+def test_requirements_endpoint_validation(client):
+    """Пустой запрос к реализованному эндпоинту анализа должен возвращать 422."""
     response = client.post("/api/v1/requirements/analyze")
-    assert response.status_code == 501
+    assert response.status_code == 422
+
+
+def test_analyze_requirements_agent_pipeline(client):
+    """Проверка полного цикла работы агента сверки ТУ и ЗнП."""
+    payload = {
+        "tu_requirements": [
+            {
+                "id": "tu-1",
+                "clause_number": "п. 1.1",
+                "category": "power",
+                "text": "Максимальная мощность присоединяемых устройств составляет 150 кВт.",
+            },
+            {
+                "id": "tu-2",
+                "clause_number": "п. 2.1",
+                "category": "metering",
+                "text": "Установить трехфазный счетчик электрической энергии класса точности 0.5S.",
+            },
+        ],
+        "znp_clauses": [
+            {
+                "id": "znp-1",
+                "clause_number": "Раздел 3.1",
+                "text": "Проектом предусмотреть максимальную мощность энергопринимающих устройств 150 кВт.",
+            }
+        ],
+    }
+    response = client.post("/api/v1/requirements/analyze", json=payload)
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["stats"]["total"] == 2
+    assert data["stats"]["fulfilled"] == 1
+    assert data["stats"]["missing"] == 1
+    assert "agent_runs" in data["trace_info"]

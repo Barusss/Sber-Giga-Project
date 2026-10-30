@@ -5,7 +5,6 @@ Local registry records remain lookup hints, never fresh official evidence.
 """
 from datetime import datetime
 
-from fastapi import HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
@@ -16,7 +15,8 @@ from app.core.models import (
 from app.normatives.extraction import normalize_code
 from app.normatives.registry import RegistryResult, RosstandartClient
 
-MAX_STANDARDS = 50
+DEFAULT_STANDARDS_BATCH = 5
+MAX_STANDARDS_BATCH = 10
 FINDING_TYPE = "obsolete_normative"
 
 
@@ -43,6 +43,9 @@ class VerificationReport(BaseModel):
     findings_created: int
     findings_already_existing: int
     checked: list[StandardCheck]
+    document_total: int
+    offset: int
+    next_offset: int | None
 
 
 def finding_key(finding: Finding, document_id: str, code: str) -> bool:
@@ -55,9 +58,17 @@ def finding_key(finding: Finding, document_id: str, code: str) -> bool:
 
 
 def check_document_standards(
-    db: Session, document: Document, registry: RosstandartClient | None = None
+    db: Session, document: Document, registry: RosstandartClient | None = None,
+    offset: int = 0, limit: int = DEFAULT_STANDARDS_BATCH,
 ) -> VerificationReport:
-    """Verify official statuses without treating saved statuses as freshly checked."""
+    """Verify a bounded batch of stable, sorted unique codes.
+
+    The client follows next_offset, preserving each committed batch. Even
+    when the source document references hundreds of codes, no individual
+    request performs an unbounded number of external registry lookups.
+    """
+    if offset < 0 or not 1 <= limit <= MAX_STANDARDS_BATCH:
+        raise ValueError("Invalid normative verification batch")
     facts = db.scalars(
         select(Fact).where(
             Fact.document_id == document.id,
@@ -75,8 +86,11 @@ def check_document_standards(
         if isinstance(code, str) and code.strip():
             grouped.setdefault(normalize_code(code), []).append(fact)
             
-    if len(grouped) > MAX_STANDARDS:
-        raise HTTPException(413, f"Maximum {MAX_STANDARDS} standards per verification request")
+    document_total = len(grouped)
+    selected_codes = sorted(grouped)[offset:offset + limit]
+    next_offset = offset + len(selected_codes)
+    if next_offset >= document_total:
+        next_offset = None
 
     # Кэш локального реестра
     local_cache = {
@@ -102,7 +116,7 @@ def check_document_standards(
     checked = []
     created = found = 0
 
-    for code in sorted(grouped):
+    for code in selected_codes:
         appearances = grouped[code]
         role = "informative"
         if any(f.value.get("reference_kind") != "informative" for f in appearances):
@@ -127,8 +141,6 @@ def check_document_standards(
         
         # Проверяем локальный реестр
         local_normative = local_cache.get(code)
-        local_status = local_normative.status if local_normative else None
-        local_replacement = local_normative.replacement if local_normative else None
         local_title = local_normative.title if local_normative else None
         local_source_url = local_normative.source_url if local_normative else None
         
@@ -152,7 +164,7 @@ def check_document_standards(
             reason = status.reason
         else:
             final_status = "unknown"
-            source = "local" if local_status in {"active", "obsolete"} else "unknown"
+            source = "unknown"  # A saved manual/old status is not current official evidence.
             final_replacement = None
             final_title = local_title or status.title
             final_source_url = None
@@ -162,11 +174,11 @@ def check_document_standards(
             code=code,
             reference_kind=role,
             status=final_status,
-            registry_status=status.registry_status,
+            registry_status=status.registry_status if confirmed else None,
             replacement=final_replacement,
             title=final_title,
             source_url=final_source_url,
-            checked_at=status.checked_at,
+            checked_at=status.checked_at if confirmed else None,
             pages=pages,
             reason=reason,
             source=source,
@@ -187,6 +199,7 @@ def check_document_standards(
         snapshot.checked_at = status.checked_at if confirmed else None
         snapshot.attempted_at = now()
         snapshot.reason = reason
+        snapshot.source = source
 
         # Обновляем локальный реестр, если Росстандарт подтвердил
         if confirmed:
@@ -195,16 +208,20 @@ def check_document_standards(
                     code=code,
                     title=final_title or code,
                     status=status.status,
+                    registry_status=status.registry_status,
                     replacement=status.replacement,
                     source_url=status.source_url,
+                    checked_at=status.checked_at,
                 )
                 db.add(local_normative)
                 local_cache[code] = local_normative
             else:
                 local_normative.title = final_title or local_normative.title
                 local_normative.status = status.status
+                local_normative.registry_status = status.registry_status
                 local_normative.replacement = status.replacement
                 local_normative.source_url = status.source_url
+                local_normative.checked_at = status.checked_at
 
         # Retain an auditable informational finding for obsolete bibliography
         # references, but do not present it as a normative requirement.
@@ -220,9 +237,8 @@ def check_document_standards(
             continue
 
         replacement_text = f" Замена по реестру: {final_replacement}." if final_replacement else ""
-        source_text = "Росстандарт" if source == "rosstandart" else "локальный реестр"
         explanation = (
-            f"Упоминание {code}: официальный статус ({source_text}) «{status.registry_status or final_status}»."
+            f"Упоминание {code}: официальный статус (Росстандарт) «{status.registry_status or final_status}»."
             f"{replacement_text} Источник: {final_source_url or 'не указан'}"
         )
         
@@ -266,4 +282,7 @@ def check_document_standards(
         findings_created=created,
         findings_already_existing=found,
         checked=checked,
+        document_total=document_total,
+        offset=offset,
+        next_offset=next_offset,
     )

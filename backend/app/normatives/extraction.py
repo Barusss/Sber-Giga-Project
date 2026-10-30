@@ -20,28 +20,40 @@ EXTRACTION_VERSION = "deepseek-normative-v2"
 OLD_EXTRACTION_VERSION = "deepseek-normative-v1"
 BATCH_SIZE = 25
 MAX_CANDIDATES = 500
+# PDF text extraction often preserves soft hyphens (U+00AD) or typographic
+# hyphens instead of ASCII '-'. They must be part of the reference pattern and
+# normalization, otherwise a cited edition is silently truncated (e.g.
+# "ГОСТ 29322­92" instead of "ГОСТ 29322-92").
+HYPHEN_CHARS = "‐‑‒–—―−\u00ad\\-"
 
 REFERENCE_PATTERN = re.compile(
-    r"(?<![\w])(?:"
-    r"ГОСТ(?:\s+Р)?(?:\s+(?:ИСО|МЭК|ISO|IEC))?\s+\d+(?:[.]\d+){0,5}(?:\s*[-–—]\s*\d{2,4})?"
-    r"|СП\s+\d+(?:[.]\d+){1,5}"
-    r"|СНиП\s+\d+(?:[.\-]\d+){1,5}"
-    r"|(?:ISO|IEC|EN)\s+\d+(?:[.\-]\d+){0,5}(?::\d{4})?"
-    r"|ПУЭ"
-    r")\b",
+    rf"(?<![\w])(?:"
+    rf"ГОСТ(?:\s+Р)?(?:\s+(?:ИСО|МЭК|ISO|IEC))?\s+\d+(?:[.]\d+){{0,5}}"
+    rf"(?:\s*[{HYPHEN_CHARS}]\s*\d{{2,4}})?"
+    rf"|СП\s+\d+(?:[.]\d+){{1,5}}"
+    rf"|СНиП\s+\d+(?:[.{HYPHEN_CHARS}]\d+){{1,5}}"
+    rf"|(?:ISO|IEC|EN)\s+\d+(?:[.{HYPHEN_CHARS}]\d+){{0,5}}(?::\d{{4}})?"
+    rf"|ПУЭ"
+    rf")\b",
     re.IGNORECASE,
 )
 GOST_EDITION_PATTERN = re.compile(
     r"^(ГОСТ(?: Р)?(?: (?:ИСО|МЭК|ISO|IEC))? \d+(?:\.\d+){0,5})(?:-(\d{2,4}))?$"
 )
 SECTION_PATTERN = re.compile(
-    r"(?mi)^[ \t]*(?P<heading>"
-    r"Предисловие|Содержание|Библиография"
-    r"|1[ \t]+Область[ \t]+применения"
-    r"|2[ \t]+Нормативные[ \t]+ссылки"
-    r"|3[ \t]+Термины[ \t]*,?[ \t]*определения(?:[ \t]+и[ \t]+обозначения)?"
-    r"|4[ \t]+Показатели[ \t]+и[ \t]+нормы"
-    r")(?=[ \t]*(?:\r?$))"
+    r"(?mi)^[^\S\r\n]*(?P<heading>"
+    r"Предисловие|Содержание"
+    r"|1[^\S\r\n]+Область[^\S\r\n]+применения"
+    r"|2[^\S\r\n]+Нормативные[^\S\r\n]+ссылки"
+    r"|3[^\S\r\n]+Термины[^\S\r\n]*,?[^\S\r\n]*определения(?:[^\S\r\n]+и[^\S\r\n]+обозначения)?"
+    r"|4[^\S\r\n]+Показатели[^\S\r\n]+и[^\S\r\n]+нормы"
+    r")(?=[^\S\r\n]*(?:\r?$))"
+)
+# Bibliography can be typeset on the same line as its first entry, e.g.
+# "Библиография IEC 61000-4-30:2008 ...". Treat the line start as the heading
+# even without a trailing newline, otherwise the entry is classified as body.
+INLINE_BIBLIOGRAPHY_PATTERN = re.compile(
+    r"(?mi)^[^\S\r\n]*(?P<heading>Библиография)\b"
 )
 
 SYSTEM_PROMPT = (
@@ -71,7 +83,7 @@ class ExtractionResult(BaseModel):
 
 
 def normalize_code(value: str) -> str:
-    value = re.sub(r"[‐‑‒–—−]", "-", value)
+    value = re.sub(r"[‐‑‒–—―−\u00ad]", "-", value)
     value = " ".join(value.upper().split())
     return re.sub(r"\s*-\s*", "-", value)
 
@@ -82,7 +94,7 @@ def enrich_candidate_code(quote: str, context: str) -> str:
     if year is not None or not base.startswith("ГОСТ"):
         return normalized
     match = re.search(
-        re.escape(quote) + r"\s*[-–—]\s*(\d{2,4})(?!\d)",
+        re.escape(quote) + rf"\s*[{HYPHEN_CHARS}]\s*(\d{{2,4}})(?!\d)",
         context, re.IGNORECASE,
     )
     if match:
@@ -122,7 +134,8 @@ def canonical_code(code: str, editions: dict[str, set[str]]) -> str:
 
 
 def section_after(section: str, heading: str) -> str:
-    name = heading.lower()
+    # PDF extraction can replace spaces with NBSP or other Unicode spaces.
+    name = " ".join(heading.lower().split())
     if name.startswith("предисловие"):
         return "foreword"
     if name.startswith("содержание"):
@@ -146,7 +159,11 @@ def find_candidates(chunks: list[Chunk]) -> tuple[list[dict], dict[str, str]]:
     section = "foreword"
     for fragment in ordered:
         section_by_fragment[fragment.id] = section
-        markers = list(SECTION_PATTERN.finditer(fragment.text))
+        markers = sorted(
+            (*SECTION_PATTERN.finditer(fragment.text),
+             *INLINE_BIBLIOGRAPHY_PATTERN.finditer(fragment.text)),
+            key=lambda item: item.start(),
+        )
         cursor = 0
         for match in REFERENCE_PATTERN.finditer(fragment.text):
             while cursor < len(markers) and markers[cursor].start() <= match.start():
@@ -178,7 +195,9 @@ def own_standard_code(document: Document, chunks: list[Chunk]) -> str | None:
     if not chunks or chunks[0].page_start != 1:
         return None
     cover = chunks[0].text[:700]
-    if "СТАНДАРТ" not in cover.upper():
+    # Do not treat an adjective such as "стандартные напряжения" as a cover
+    # marker; only a standalone word "СТАНДАРТ" (or the official phrase) counts.
+    if not re.search(r"\bСТАНДАРТ\b", cover.upper()):
         return None
     match = REFERENCE_PATTERN.search(cover)
     if match and match.start() < 450:
