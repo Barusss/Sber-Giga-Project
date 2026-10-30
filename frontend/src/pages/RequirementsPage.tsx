@@ -364,7 +364,6 @@ export function RequirementsPage() {
         '/requirements/analyze',
         json('POST', DEMO_PAYLOAD)
       )
-      setTaskProgress(100)
       applyResponse(res)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
