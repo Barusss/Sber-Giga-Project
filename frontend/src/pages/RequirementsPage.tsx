@@ -131,13 +131,6 @@ const STATUS_META: Record<
   },
 }
 
-const AI_PROGRESS_STAGES = [
-  { threshold: 20, text: 'Шаг 1/4: Извлечение и классификация требований ТУ...' },
-  { threshold: 50, text: 'Шаг 2/4: Семантический поиск релевантных пунктов в ЗнП...' },
-  { threshold: 80, text: 'Шаг 3/4: Сверка инженерных параметров (мощность, напряжение, категории)...' },
-  { threshold: 96, text: 'Шаг 4/4: Валидация точности цитат и формирование заключений ИИ...' },
-]
-
 const DEMO_PAYLOAD = {
   tu_requirements: [
     {
@@ -266,7 +259,6 @@ export function RequirementsPage() {
   const [isDemoMode, setIsDemoMode] = useState(false)
   const [forceReanalyze, setForceReanalyze] = useState(false)
   const [busy, setBusy] = useState(false)
-  const [taskProgress, setTaskProgress] = useState(0)
   const [error, setError] = useState('')
 
   useEffect(() => {
@@ -275,45 +267,36 @@ export function RequirementsPage() {
       .catch((e: Error) => setError(e.message))
   }, [])
 
-  // Анимация полосы выполнения во время работы ИИ-агента
+  // Ignore responses from a previously selected project and clear its state
+  // before loading the next one, including engineer comments and progress.
   useEffect(() => {
-    if (!busy) return
-    setTaskProgress(8)
-    const timer = window.setInterval(() => {
-      setTaskProgress((prev) => {
-        if (prev >= 92) return prev
-        const step = prev < 40 ? 9 : prev < 75 ? 5 : 2
-        return Math.min(92, prev + step)
-      })
-    }, 280)
-    return () => window.clearInterval(timer)
-  }, [busy])
-
-  useEffect(() => {
-    if (!selectedProjectId) {
-      setDocs([])
-      setTuDocId('')
-      setZnpDocId('')
-      setItems([])
-      setTraceInfo(null)
-      return
-    }
-    setError('')
+    let active = true
+    setDocs([])
+    setTuDocId('')
+    setZnpDocId('')
+    setItems([])
+    setStats({fulfilled: 0, missing: 0, needs_review: 0, total: 0})
+    setComments({})
+    setTraceInfo(null)
     setIsDemoMode(false)
+    setError('')
+    if (!selectedProjectId) return () => {active = false}
 
     request<Document[]>(`/projects/${selectedProjectId}/documents`)
       .then((loadedDocs) => {
+        if (!active) return
         setDocs(loadedDocs)
-        const tu = loadedDocs.find((d) => d.kind === 'tu')
-        const znp = loadedDocs.find((d) => d.kind === 'znp')
+        const tu = loadedDocs.find((doc) => doc.kind === 'tu')
+        const znp = loadedDocs.find((doc) => doc.kind === 'znp')
         setTuDocId(tu?.id ?? '')
         setZnpDocId(znp?.id ?? '')
       })
-      .catch((e: Error) => setError(e.message))
+      .catch((error: Error) => {if (active) setError(error.message)})
 
     request<CheckRequirementsResponse>(`/requirements/projects/${selectedProjectId}`)
-      .then((res) => applyResponse(res))
-      .catch((e: Error) => setError(e.message))
+      .then((res) => {if (active) applyResponse(res)})
+      .catch((error: Error) => {if (active) setError(error.message)})
+    return () => {active = false}
   }, [selectedProjectId])
 
   function applyResponse(res: CheckRequirementsResponse) {
@@ -364,7 +347,6 @@ export function RequirementsPage() {
         '/requirements/analyze',
         json('POST', payload)
       )
-      setTaskProgress(100)
       applyResponse(res)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -451,10 +433,6 @@ export function RequirementsPage() {
   const needsReviewPercent = stats.total > 0 ? Math.round((stats.needs_review / stats.total) * 100) : 0
   const missingPercent = stats.total > 0 ? Math.max(0, 100 - fulfilledPercent - needsReviewPercent) : 0
 
-  const currentStageLabel =
-    AI_PROGRESS_STAGES.find((s) => taskProgress <= s.threshold)?.text ??
-    AI_PROGRESS_STAGES[AI_PROGRESS_STAGES.length - 1].text
-
   const filteredItems = items.filter((item) => {
     const matchesStatus = statusFilter === 'all' ? true : item.status === statusFilter
     const matchesCategory =
@@ -483,6 +461,7 @@ export function RequirementsPage() {
             Проект
             <select
               value={selectedProjectId}
+              disabled={busy}
               onChange={(e) => setSelectedProjectId(e.target.value)}
             >
               <option value="">Выберите проект...</option>
@@ -498,7 +477,7 @@ export function RequirementsPage() {
             <>
               <label style={{ flex: 1 }}>
                 Документ ТУ
-                <select value={tuDocId} onChange={(e) => setTuDocId(e.target.value)}>
+                <select value={tuDocId} disabled={busy} onChange={(e) => setTuDocId(e.target.value)}>
                   <option value="">Автовыбор ТУ ({tuDocs.length})</option>
                   {tuDocs.map((d) => (
                     <option key={d.id} value={d.id}>
@@ -510,7 +489,7 @@ export function RequirementsPage() {
 
               <label style={{ flex: 1 }}>
                 Документ ЗнП
-                <select value={znpDocId} onChange={(e) => setZnpDocId(e.target.value)}>
+                <select value={znpDocId} disabled={busy} onChange={(e) => setZnpDocId(e.target.value)}>
                   <option value="">Автовыбор ЗнП ({znpDocs.length})</option>
                   {znpDocs.map((d) => (
                     <option key={d.id} value={d.id}>
@@ -558,41 +537,15 @@ export function RequirementsPage() {
           </label>
         </div>
 
-        {/* ПОЛОСА ПРОГРЕССА ВЫПОЛНЕНИЯ ЗАДАЧИ ИИ-АГЕНТОМ */}
         {busy && (
-          <div
-            style={{
-              background: '#f8fafc',
-              border: '1px solid #cbd5e1',
-              borderRadius: 10,
-              padding: '14px 16px',
-            }}
-          >
-            <div
-              className="horizontal"
-              style={{ justifyContent: 'space-between', marginBottom: 8 }}
-            >
-              <b style={{ fontSize: 14, color: '#186c52' }}>{currentStageLabel}</b>
-              <span style={{ fontWeight: 700, fontSize: 14 }}>{taskProgress}%</span>
+          <div className="requirements-busy" role="status" aria-live="polite">
+            <div className="requirements-busy-top">
+              <strong>Идёт анализ ТУ и ЗнП</strong>
+              <span>Ожидание результата сервера</span>
             </div>
-            <div
-              style={{
-                width: '100%',
-                height: 10,
-                background: '#e2e8f0',
-                borderRadius: 999,
-                overflow: 'hidden',
-              }}
-            >
-              <div
-                style={{
-                  width: `${taskProgress}%`,
-                  height: '100%',
-                  background: 'linear-gradient(90deg, #186c52 0%, #10b981 100%)',
-                  transition: 'width 0.25s ease',
-                }}
-              />
-            </div>
+            <div className="requirements-busy-bar" aria-hidden="true"><span/></div>
+            <p>Сервер пока не передаёт реальные этапы и проценты выполнения.
+              Дождитесь завершения запроса, затем откроются результаты с цитатами.</p>
           </div>
         )}
       </section>
