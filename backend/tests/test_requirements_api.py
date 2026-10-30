@@ -295,6 +295,11 @@ def test_project_isolation_type_and_review_protection(client, monkeypatch):
     assert client.post(f"{base}/confirm", json={
         "requirement_id": requirement_id, "status": "fulfilled",
     }).status_code == 409
+    # A caller must not be allowed to swap document roles just by IDs.
+    assert client.post("/api/v1/requirements/analyze", json={
+        "project_id": pid, "tu_document_id": docs["znp"],
+        "znp_document_id": docs["tu"],
+    }).status_code == 409  # Project is approved above.
     assert len(client.get(f"{base}/tu-requirements").json()) == 1
     assert client.get(f"{base}/verifications").json() == []
 
@@ -694,3 +699,77 @@ def test_reanalysis_keeps_confirmed_requirement_when_text_disappears(client, mon
     assert stored_items["1.2"]["is_confirmed_by_human"] is True
     assert stored_items["1.2"]["requirement"]["id"] == \
         removed_item["requirement"]["id"]
+
+
+def test_explicit_document_roles_are_validated_before_analysis(client, monkeypatch):
+    pid, docs = prepare(client, monkeypatch)
+    endpoint = "/api/v1/requirements/analyze"
+    assert client.post(endpoint, json={
+        "project_id": pid,
+        "tu_document_id": docs["znp"],
+        "znp_document_id": docs["tu"],
+    }).status_code == 422
+    assert client.post(endpoint, json={
+        "project_id": pid,
+        "tu_document_id": docs["tu"],
+        "znp_document_id": docs["tu"],
+    }).status_code == 422
+
+
+def test_reanalysis_keeps_confirmed_evidence_and_source_when_new_match_changes(client, monkeypatch):
+    pid, _ = _project_with_documents(client, monkeypatch, _requirements_blocks)
+    endpoint = "/api/v1/requirements/analyze"
+    first = client.post(endpoint, json={"project_id": pid})
+    assert first.status_code == 200, first.text
+    old = next(
+        item for item in first.json()["checked_requirements"]
+        if item["requirement"]["clause_number"] == "1.1"
+    )
+    assert old["matched_clause"] is not None
+    assert old["znp_quote"]
+    assert old["znp_fragment_id"]
+
+    confirmed = client.post(f"/api/v1/requirements/projects/{pid}/confirm", json={
+        "requirement_id": old["requirement"]["id"],
+        "status": "fulfilled",
+        "comment": "Проверено по исходной цитате",
+    })
+    assert confirmed.status_code == 200, confirmed.text
+
+    original_verify = RequirementsAgent.verify_all
+
+    def changed_match(self, tu_requirements, znp_clauses):
+        result = original_verify(self, tu_requirements, znp_clauses)
+        for item in result.checked_requirements:
+            if item.requirement.clause_number == "1.1":
+                item.matched_clause = None
+                item.znp_quote = None
+                item.znp_fragment_id = None
+                item.znp_page = None
+                item.znp_fragment_text = None
+                item.reasoning = "Новая модель не нашла совпадений"
+        return result
+
+    monkeypatch.setattr(RequirementsAgent, "verify_all", changed_match)
+    repeated = client.post(endpoint, json={"project_id": pid})
+    assert repeated.status_code == 200, repeated.text
+    kept = next(
+        item for item in repeated.json()["checked_requirements"]
+        if item["requirement"]["id"] == old["requirement"]["id"]
+    )
+    assert kept["is_confirmed_by_human"] is True
+    assert kept["human_comment"] == "Проверено по исходной цитате"
+    assert kept["status"] == "fulfilled"
+    assert kept["matched_clause"]["text"] == old["matched_clause"]["text"]
+    assert kept["znp_quote"] == old["znp_quote"]
+    assert kept["znp_fragment_id"] == old["znp_fragment_id"]
+    assert kept["znp_page"] == old["znp_page"]
+
+    persisted = client.get(f"/api/v1/requirements/projects/{pid}").json()
+    stored = next(
+        item for item in persisted["checked_requirements"]
+        if item["requirement"]["id"] == old["requirement"]["id"]
+    )
+    assert stored["matched_clause"]["text"] == old["matched_clause"]["text"]
+    assert stored["znp_quote"] == old["znp_quote"]
+    assert stored["znp_fragment_id"] == old["znp_fragment_id"]
