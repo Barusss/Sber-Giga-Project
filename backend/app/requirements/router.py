@@ -531,6 +531,10 @@ def _analyze_project_requirements(
 
     if not tu_doc or not znp_doc:
         raise HTTPException(422, "Project must contain both TU (tu) and ZNP (znp) documents")
+    if tu_doc.kind != DocumentKind.tu:
+        raise HTTPException(422, "Selected TU document must have kind=tu")
+    if znp_doc.kind != DocumentKind.znp:
+        raise HTTPException(422, "Selected ZNP document must have kind=znp")
 
     tu_raw = [
         clause
@@ -738,12 +742,33 @@ def _analyze_project_requirements(
             db.add(verification)
             verification_by_requirement[item.requirement.id] = verification
         elif preserved_human:
-            verification.matched_znp_clause_number = matched_clause_number
-            verification.matched_znp_text = matched_clause_text
-            verification.matched_znp_fragment_id = item.znp_fragment_id
-            verification.matched_znp_page = item.znp_page
+            # Re-analysis must not silently replace the evidence used in a
+            # confirmed engineer decision. Keep the original matched passage,
+            # quote and source location together with the manual verdict.
             analysis["preserved_human"] += 1
             item.id = verification.id
+            item.matched_clause = (
+                ZNPClause(
+                    id=f"znp-preserved-{verification.id}",
+                    clause_number=verification.matched_znp_clause_number or "—",
+                    text=verification.matched_znp_text,
+                    fragment_id=verification.matched_znp_fragment_id,
+                    page=verification.matched_znp_page,
+                    fragment_text=(
+                        fragments_by_id[verification.matched_znp_fragment_id].text
+                        if verification.matched_znp_fragment_id in fragments_by_id
+                        else None
+                    ),
+                )
+                if verification.matched_znp_text else None
+            )
+            item.znp_fragment_id = verification.matched_znp_fragment_id
+            item.znp_page = verification.matched_znp_page
+            item.znp_fragment_text = (
+                fragments_by_id[verification.matched_znp_fragment_id].text
+                if verification.matched_znp_fragment_id in fragments_by_id
+                else None
+            )
             item.confidence_score = verification.confidence_score or 0.0
             item.tu_quote = verification.tu_quote
             item.znp_quote = verification.znp_quote
