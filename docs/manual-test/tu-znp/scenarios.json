@@ -1,0 +1,320 @@
+{
+  "01_happy_path": {
+    "description": "Все параметры и формулировки совпадают. Ожидается 5 fulfilled.",
+    "expected": {
+      "statuses": {
+        "tu-power": "fulfilled",
+        "tu-voltage": "fulfilled",
+        "tu-category": "fulfilled",
+        "tu-accuracy": "fulfilled",
+        "tu-grounding": "fulfilled"
+      },
+      "stats": {
+        "fulfilled": 5,
+        "needs_review": 0,
+        "missing": 0,
+        "total": 5
+      }
+    },
+    "payload": {
+      "tu_requirements": [
+        {
+          "id": "tu-power",
+          "clause_number": "п. 1.1",
+          "category": "power",
+          "text": "Максимальная присоединяемая мощность энергопринимающих устройств составляет 726,9 кВт."
+        },
+        {
+          "id": "tu-voltage",
+          "clause_number": "п. 1.2",
+          "category": "voltage",
+          "text": "Номинальное напряжение в точке присоединения — 0,4 кВ."
+        },
+        {
+          "id": "tu-category",
+          "clause_number": "п. 1.3",
+          "category": "reliability",
+          "text": "Электроснабжение предусмотреть по II категории надёжности."
+        },
+        {
+          "id": "tu-accuracy",
+          "clause_number": "п. 3.1",
+          "category": "metering",
+          "text": "Прибор учёта электрической энергии должен иметь класс точности не ниже 0,5S."
+        },
+        {
+          "id": "tu-grounding",
+          "clause_number": "п. 4.1",
+          "category": "protection",
+          "text": "Выполнить заземление электроустановки."
+        }
+      ],
+      "znp_clauses": [
+        {
+          "id": "znp-power",
+          "clause_number": "п. 1.1",
+          "text": "Расчётная максимальная мощность присоединяемых энергопринимающих устройств — 726,9 кВт."
+        },
+        {
+          "id": "znp-voltage",
+          "clause_number": "п. 1.2",
+          "text": "Присоединение выполнить к электрической сети напряжением 0,4 кВ."
+        },
+        {
+          "id": "znp-category",
+          "clause_number": "п. 1.3",
+          "text": "Электроснабжение предусмотреть по II категории надёжности."
+        },
+        {
+          "id": "znp-accuracy",
+          "clause_number": "п. 3.1",
+          "text": "Прибор учёта электрической энергии принять класса точности 0,5S."
+        },
+        {
+          "id": "znp-grounding",
+          "clause_number": "п. 4.1",
+          "text": "Выполнить заземление электроустановки."
+        }
+      ]
+    }
+  },
+  "02_parameter_mismatches": {
+    "description": "Мощность, напряжение, категория и класс точности расходятся. Ожидается 4 needs_review и 1 fulfilled.",
+    "expected": {
+      "statuses": {
+        "tu-power": "needs_review",
+        "tu-voltage": "needs_review",
+        "tu-category": "needs_review",
+        "tu-accuracy": "needs_review",
+        "tu-grounding": "fulfilled"
+      },
+      "stats": {
+        "fulfilled": 1,
+        "needs_review": 4,
+        "missing": 0,
+        "total": 5
+      }
+    },
+    "payload": {
+      "tu_requirements": [
+        {
+          "id": "tu-power",
+          "clause_number": "п. 1.1",
+          "category": "power",
+          "text": "Максимальная присоединяемая мощность энергопринимающих устройств составляет 726,9 кВт."
+        },
+        {
+          "id": "tu-voltage",
+          "clause_number": "п. 1.2",
+          "category": "voltage",
+          "text": "Номинальное напряжение в точке присоединения — 0,4 кВ."
+        },
+        {
+          "id": "tu-category",
+          "clause_number": "п. 1.3",
+          "category": "reliability",
+          "text": "Электроснабжение предусмотреть по II категории надёжности."
+        },
+        {
+          "id": "tu-accuracy",
+          "clause_number": "п. 3.1",
+          "category": "metering",
+          "text": "Прибор учёта электрической энергии должен иметь класс точности не ниже 0,5S."
+        },
+        {
+          "id": "tu-grounding",
+          "clause_number": "п. 4.1",
+          "category": "protection",
+          "text": "Выполнить заземление электроустановки."
+        }
+      ],
+      "znp_clauses": [
+        {
+          "id": "znp-power",
+          "clause_number": "п. 1.1",
+          "text": "Расчётная максимальная мощность присоединяемых энергопринимающих устройств — 100 кВт."
+        },
+        {
+          "id": "znp-voltage",
+          "clause_number": "п. 1.2",
+          "text": "Номинальное напряжение в точке присоединения — 10 кВ."
+        },
+        {
+          "id": "znp-category",
+          "clause_number": "п. 1.3",
+          "text": "Электроснабжение предусмотреть по III категории надёжности."
+        },
+        {
+          "id": "znp-accuracy",
+          "clause_number": "п. 3.1",
+          "text": "Прибор учёта электрической энергии принять класса точности 1,0."
+        },
+        {
+          "id": "znp-grounding",
+          "clause_number": "п. 4.1",
+          "text": "Выполнить заземление электроустановки."
+        }
+      ]
+    }
+  },
+  "03_missing_and_semantic": {
+    "description": "В ЗнП нет напряжения; точка присоединения передана парафразом; огнезащита отсутствует. Без embeddings ожидается 1 needs_review и 2 missing.",
+    "expected": {
+      "statuses": {
+        "tu-power-voltage": "needs_review",
+        "tu-connection": "missing",
+        "tu-fireproofing": "missing"
+      },
+      "stats": {
+        "fulfilled": 0,
+        "needs_review": 1,
+        "missing": 2,
+        "total": 3
+      }
+    },
+    "payload": {
+      "tu_requirements": [
+        {
+          "id": "tu-power-voltage",
+          "clause_number": "п. 1.1",
+          "category": "power",
+          "text": "Присоединяемая мощность 726,9 кВт при номинальном напряжении 0,4 кВ."
+        },
+        {
+          "id": "tu-connection",
+          "clause_number": "п. 2.1",
+          "category": "connection_point",
+          "text": "Точку присоединения разместить на границе земельного участка заявителя."
+        },
+        {
+          "id": "tu-fireproofing",
+          "clause_number": "п. 4.2",
+          "category": "protection",
+          "text": "Выполнить огнезащиту кабельных линий в электротехнических помещениях."
+        }
+      ],
+      "znp_clauses": [
+        {
+          "id": "znp-power-only",
+          "clause_number": "п. 1.1",
+          "text": "Максимальная присоединяемая мощность — 726,9 кВт."
+        },
+        {
+          "id": "znp-connection-paraphrase",
+          "clause_number": "п. 2.1",
+          "text": "Место подключения определить по меже, выделенной застройщику."
+        },
+        {
+          "id": "znp-grounding",
+          "clause_number": "п. 4.1",
+          "text": "Выполнить заземление электроустановки."
+        }
+      ]
+    },
+    "note": "С embeddings tu-connection переходит в needs_review (semantic-only). Без LLM semantic-канал консервативен: отсутствующий пункт тоже может стать needs_review; LLM-путь возвращает missing."
+  },
+  "04_combined_document": {
+    "description": "Основной сценарий для загрузки tu.docx и znp.docx. Без embeddings ожидается 4 fulfilled, 1 needs_review и 2 missing.",
+    "expected": {
+      "statuses": {
+        "tu-power": "fulfilled",
+        "tu-voltage": "fulfilled",
+        "tu-category": "fulfilled",
+        "tu-accuracy": "needs_review",
+        "tu-connection": "missing",
+        "tu-surge": "fulfilled",
+        "tu-fireproofing": "missing"
+      },
+      "stats": {
+        "fulfilled": 4,
+        "needs_review": 1,
+        "missing": 2,
+        "total": 7
+      }
+    },
+    "payload": {
+      "tu_requirements": [
+        {
+          "id": "tu-power",
+          "clause_number": "п. 1.1",
+          "category": "power",
+          "text": "Максимальная присоединяемая мощность энергопринимающих устройств составляет 726,9 кВт."
+        },
+        {
+          "id": "tu-voltage",
+          "clause_number": "п. 1.2",
+          "category": "voltage",
+          "text": "Номинальное напряжение в точке присоединения — 0,4 кВ."
+        },
+        {
+          "id": "tu-category",
+          "clause_number": "п. 1.3",
+          "category": "reliability",
+          "text": "Электроснабжение предусмотреть по II категории надёжности."
+        },
+        {
+          "id": "tu-accuracy",
+          "clause_number": "п. 3.1",
+          "category": "metering",
+          "text": "Прибор учёта электрической энергии должен иметь класс точности не ниже 0,5S."
+        },
+        {
+          "id": "tu-connection",
+          "clause_number": "п. 2.1",
+          "category": "connection_point",
+          "text": "Точку присоединения разместить на границе земельного участка заявителя."
+        },
+        {
+          "id": "tu-surge",
+          "clause_number": "п. 4.1",
+          "category": "protection",
+          "text": "Предусмотреть установку ограничителя перенапряжений нелинейного."
+        },
+        {
+          "id": "tu-fireproofing",
+          "clause_number": "п. 4.2",
+          "category": "protection",
+          "text": "Выполнить огнезащиту кабельных линий в электротехнических помещениях."
+        }
+      ],
+      "znp_clauses": [
+        {
+          "id": "znp-power",
+          "clause_number": "п. 1.1",
+          "text": "Расчётная максимальная мощность присоединяемых энергопринимающих устройств — 726,9 кВт."
+        },
+        {
+          "id": "znp-voltage",
+          "clause_number": "п. 1.2",
+          "text": "Присоединение выполнить к электрической сети напряжением 0,4 кВ."
+        },
+        {
+          "id": "znp-category",
+          "clause_number": "п. 1.3",
+          "text": "Электроснабжение предусмотреть по II категории надёжности."
+        },
+        {
+          "id": "znp-accuracy",
+          "clause_number": "п. 3.1",
+          "text": "Прибор учёта электрической энергии принять класса точности 1,0."
+        },
+        {
+          "id": "znp-connection",
+          "clause_number": "п. 2.1",
+          "text": "Место подключения определить по меже, выделенной застройщику."
+        },
+        {
+          "id": "znp-surge",
+          "clause_number": "п. 4.1",
+          "text": "Предусмотреть установку ограничителя перенапряжений нелинейного."
+        },
+        {
+          "id": "znp-grounding",
+          "clause_number": "п. 4.2",
+          "text": "Выполнить заземление электроустановки."
+        }
+      ]
+    },
+    "note": "С embeddings tu-connection переходит в needs_review (semantic-only). Без LLM semantic-канал консервативен: отсутствующий пункт тоже может стать needs_review; LLM-путь возвращает missing."
+  }
+}

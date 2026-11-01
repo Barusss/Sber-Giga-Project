@@ -16,4 +16,4 @@ def test_normatives_and_unimplemented_analysis(client):
     normative = client.post("/api/v1/normatives", json={"code":"ГОСТ Р 1", "title":"Тест", "status":"active"})
     assert normative.status_code == 201
     assert client.get("/api/v1/normatives/%D0%93%D0%9E%D0%A1%D0%A2%20%D0%A0%201").status_code == 200
-    assert client.post("/api/v1/requirements/analyze").status_code == 501
+    assert client.post("/api/v1/requirements/analyze").status_code == 422

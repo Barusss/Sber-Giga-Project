@@ -146,11 +146,10 @@ class Normative(Base):
 
 
 class NormativeVerification(Base):
-    """Last observed status for a standard in a particular document.
+    """Last observed official status for a standard in a particular document.
 
-    The snapshot records whether the value came from the local registry or a
-    live Rosstandart lookup. Unknown is used only when neither source can
-    provide a usable status.
+    An unknown lookup overwrites an older snapshot: stale official results
+    must never masquerade as a fresh verification.
     """
     __tablename__ = "normative_verifications"
     __table_args__ = (
@@ -213,6 +212,10 @@ class TURequirement(Base):
     clause_number: Mapped[str] = mapped_column(String(32))
     category: Mapped[RequirementCategory] = mapped_column(Enum(RequirementCategory))
     text: Mapped[str] = mapped_column(Text)
+    fragment_id: Mapped[str | None] = mapped_column(
+        ForeignKey("fragments.id"), index=True, nullable=True
+    )
+    page: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
@@ -225,6 +228,8 @@ class RequirementVerification(Base):
     confidence_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     matched_znp_clause_number: Mapped[str | None] = mapped_column(String(32), nullable=True)
     matched_znp_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    matched_znp_fragment_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    matched_znp_page: Mapped[int | None] = mapped_column(Integer, nullable=True)
     tu_quote: Mapped[str | None] = mapped_column(Text, nullable=True)
     znp_quote: Mapped[str | None] = mapped_column(Text, nullable=True)
     reasoning: Mapped[str | None] = mapped_column(Text, nullable=True)

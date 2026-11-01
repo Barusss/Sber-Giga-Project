@@ -1,0 +1,174 @@
+{
+  "real_tu_2250": {
+    "description": "Синтетическое ЗнП к реальным ТУ на 2250 кВт / 10 кВ / II категорию. В ЗнП намеренно заложены 3 расхождения и 1 пропуск.",
+    "expected": {
+      "statuses": {
+        "tu-power-total": "fulfilled",
+        "tu-stage-1": "fulfilled",
+        "tu-stage-2": "fulfilled",
+        "tu-stage-3": "needs_review",
+        "tu-stage-4": "fulfilled",
+        "tu-voltage": "fulfilled",
+        "tu-connection": "fulfilled",
+        "tu-category": "needs_review",
+        "tu-metering": "needs_review",
+        "tu-reactive": "missing",
+        "tu-reserve": "fulfilled"
+      },
+      "stats": {
+        "fulfilled": 7,
+        "needs_review": 3,
+        "missing": 1,
+        "total": 11
+      }
+    },
+    "payload": {
+      "tu_requirements": [
+        {
+          "id": "tu-power-total",
+          "clause_number": "2.1",
+          "category": "power",
+          "text": "Максимальная присоединяемая мощность энергопринимающих устройств — 2250 кВт."
+        },
+        {
+          "id": "tu-stage-1",
+          "clause_number": "2.2",
+          "category": "power",
+          "text": "1 этап (очередь): присоединяемая мощность — 625 кВт."
+        },
+        {
+          "id": "tu-stage-2",
+          "clause_number": "2.3",
+          "category": "power",
+          "text": "2 этап (очередь): присоединяемая мощность — 875 кВт."
+        },
+        {
+          "id": "tu-stage-3",
+          "clause_number": "2.4",
+          "category": "power",
+          "text": "3 этап (очередь): присоединяемая мощность — 1125 кВт."
+        },
+        {
+          "id": "tu-stage-4",
+          "clause_number": "2.5",
+          "category": "power",
+          "text": "4 этап (очередь): присоединяемая мощность — 2250 кВт."
+        },
+        {
+          "id": "tu-voltage",
+          "clause_number": "3.1",
+          "category": "voltage",
+          "text": "Класс напряжения электрических сетей, к которым осуществляется технологическое присоединение, — 10 кВ."
+        },
+        {
+          "id": "tu-connection",
+          "clause_number": "3.2",
+          "category": "connection_point",
+          "text": "Точка присоединения — вновь сооружаемая ячейка РП-10 кВ."
+        },
+        {
+          "id": "tu-category",
+          "clause_number": "4.1",
+          "category": "reliability",
+          "text": "Электроснабжение предусмотреть по II категории надежности."
+        },
+        {
+          "id": "tu-metering",
+          "clause_number": "5.1",
+          "category": "metering",
+          "text": "Учет электроэнергии выполнить трехфазным прибором учета класса точности 0,5S."
+        },
+        {
+          "id": "tu-reactive",
+          "clause_number": "6.1",
+          "category": "other",
+          "text": "Предусмотреть компенсацию реактивной мощности конденсаторными установками."
+        },
+        {
+          "id": "tu-reserve",
+          "clause_number": "7.1",
+          "category": "other",
+          "text": "Для 4 этапа предусмотреть резервирование электроснабжения от ПС ЛБ802 и ПС ЛБ264."
+        }
+      ],
+      "znp_clauses": [
+        {
+          "id": "znp-power-total",
+          "clause_number": "1.1",
+          "text": "Максимальная присоединяемая мощность энергопринимающих устройств — 2250 кВт."
+        },
+        {
+          "id": "znp-stage-1",
+          "clause_number": "1.2",
+          "text": "1 этап (очередь): присоединяемая мощность — 625 кВт."
+        },
+        {
+          "id": "znp-stage-2",
+          "clause_number": "1.3",
+          "text": "2 этап (очередь): присоединяемая мощность — 875 кВт."
+        },
+        {
+          "id": "znp-stage-3",
+          "clause_number": "1.4",
+          "text": "3 этап (очередь): присоединяемая мощность — 1000 кВт."
+        },
+        {
+          "id": "znp-stage-4",
+          "clause_number": "1.5",
+          "text": "4 этап (очередь): присоединяемая мощность — 2250 кВт."
+        },
+        {
+          "id": "znp-voltage",
+          "clause_number": "2.1",
+          "text": "Присоединение выполнить к электрической сети напряжением 10 кВ."
+        },
+        {
+          "id": "znp-connection",
+          "clause_number": "2.2",
+          "text": "Точку присоединения принять на вновь сооружаемом РП-10 кВ."
+        },
+        {
+          "id": "znp-category",
+          "clause_number": "3.1",
+          "text": "Электроснабжение предусмотреть по III категории надежности."
+        },
+        {
+          "id": "znp-metering",
+          "clause_number": "4.1",
+          "text": "Учет электроэнергии выполнить трехфазным прибором учета класса точности 1,0."
+        },
+        {
+          "id": "znp-reserve",
+          "clause_number": "5.1",
+          "text": "Для 4 этапа принять резервирование электроснабжения от ПС ЛБ802 и ПС ЛБ264."
+        },
+        {
+          "id": "znp-design-norms",
+          "clause_number": "6.1",
+          "text": "Проектную документацию выполнить в соответствии с ПУЭ, ГОСТ и СП."
+        },
+        {
+          "id": "znp-design-stage",
+          "clause_number": "6.2",
+          "text": "Проектирование выполнить в одну стадию."
+        },
+        {
+          "id": "znp-internal-networks",
+          "clause_number": "6.3",
+          "text": "Предусмотреть внутренние электрические сети 0,4 кВ от КТП 10/0,4 кВ."
+        },
+        {
+          "id": "znp-grounding",
+          "clause_number": "6.4",
+          "text": "Выполнить заземление и молниезащиту электроустановок."
+        },
+        {
+          "id": "znp-deadline",
+          "clause_number": "6.5",
+          "text": "Срок выполнения проектных работ — 90 календарных дней."
+        }
+      ]
+    },
+    "note": "Расхождения: 3 этап 1000 вместо 1125 кВт; III вместо II категории; класс точности 1,0 вместо 0,5S. Пропуск: компенсация реактивной мощности."
+  }
+}

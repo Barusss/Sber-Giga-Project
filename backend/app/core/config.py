@@ -23,6 +23,11 @@ class Settings(BaseSettings):
     deepseek_timeout_seconds: float = Field(default=60.0, gt=0)
     deepseek_max_tokens: int = Field(default=3000, ge=1)
 
+    # Optional local semantic channel; without the model the analysis uses lexical search.
+    embedding_enabled: bool = False
+    embedding_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+    embedding_batch_size: int = 32
+
     model_config = SettingsConfigDict(
         env_file=(REPO_ROOT / ".env", Path(".env")),
         extra="ignore",

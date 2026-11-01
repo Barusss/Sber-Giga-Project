@@ -1,4 +1,4 @@
-"""Track the official provenance of local and per-document normative statuses.
+"""Store last official-confirmation provenance, without making local rows authoritative.
 
 Revision ID: 0006
 Revises: 0005

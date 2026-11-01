@@ -40,6 +40,7 @@ class Evidence(BaseModel):
     fragment_id: str | None = None
     page: int | None = None
     quote: str
+    requirement_id: str | None = None
 
 class FindingCreate(BaseModel):
     module: Literal["normatives", "requirements"]

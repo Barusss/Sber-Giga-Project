@@ -30,7 +30,7 @@ def test_pdf_soft_hyphens_keep_the_edition():
 
 
 def test_pdf_horizontal_bar_keeps_the_edition():
-    # Some embedded PDF fonts emit U+2015 HORIZONTAL BAR instead of a dash.
+    # Some embedded PDF fonts emit U+2015 HORIZONTAL BAR instead of '-'.
     raw = "ГОСТ 30804.4.30\u20152013"
     assert REFERENCE_PATTERN.search(raw).group(0) == raw
     assert normalize_code(raw) == "ГОСТ 30804.4.30-2013"

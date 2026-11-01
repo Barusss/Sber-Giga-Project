@@ -1,12 +1,19 @@
 import os
 os.environ["DATABASE_URL"] = "sqlite+pysqlite:///:memory:"
 from fastapi.testclient import TestClient
+from pydantic import SecretStr
 import pytest
 from sqlalchemy import StaticPool, create_engine
 from sqlalchemy.orm import sessionmaker
+from app.core.config import settings
 from app.core.db import Base, get_db
 from app.core import models  # noqa: F401
 from app.main import app
+
+# A developer's root .env may hold a real paid API key. Tests must never call
+# external services; DeepSeek tests pass their own Settings explicitly.
+settings.deepseek_api_key = SecretStr("")
+settings.embedding_enabled = False
 
 @pytest.fixture
 def client():
