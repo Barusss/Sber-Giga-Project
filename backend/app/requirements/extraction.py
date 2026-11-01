@@ -160,6 +160,13 @@ def extract_clauses(fragments: Sequence[Fragment]) -> list[Clause]:
         if is_noise(text):
             continue
         block_type = fragment.block_type or "paragraph"
+        if block_type == "page_furniture":
+            continue
+        if block_type == "toc":
+            current = None
+            pending_heading = None
+            toc_mode = True
+            continue
 
         if _TOC_TITLE_RE.match(text):
             current = None
