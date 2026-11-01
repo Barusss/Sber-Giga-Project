@@ -146,12 +146,13 @@ def check_normatives(
     document_id: str,
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=DEFAULT_STANDARDS_BATCH, ge=1, le=MAX_STANDARDS_BATCH),
+    refresh: bool = Query(default=False),
     db: Session = Depends(get_db),
 ):
-    """Проверить одну порцию нормативов. next_offset указывает следующую порцию."""
+    """Проверить порцию по локальному реестру; refresh принудительно проверяет Росстандарт."""
     document = db.get(Document, document_id)
     if document is None:
         raise HTTPException(404, "Document not found")
     if db.get(Project, document.project_id).state == ReviewState.approved:
         raise HTTPException(409, "Approved project cannot be modified")
-    return check_document_standards(db, document, offset=offset, limit=limit)
+    return check_document_standards(db, document, offset=offset, limit=limit, refresh=refresh)

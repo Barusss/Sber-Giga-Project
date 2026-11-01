@@ -60,7 +60,7 @@ export function NormativesPage() {
   const [isChecking, setIsChecking] = useState(false)
   const [report, setReport] = useState<VerificationReport | null>(null)
   const [checkProgress, setCheckProgress] = useState<VerificationProgress | null>(null)
-  const checkResume = useRef<{docId: string, offset: number, report: VerificationReport} | null>(null)
+  const checkResume = useRef<{docId: string, offset: number, report: VerificationReport, refresh: boolean} | null>(null)
   const checkController = useRef<AbortController | null>(null)
 
   useEffect(() => {
@@ -171,10 +171,10 @@ export function NormativesPage() {
     }
   }
 
-  async function handleCheck() {
+  async function handleCheck(refresh = false) {
     if (!selectedDocId || isChecking) return
     const docId = selectedDocId
-    const previous = checkResume.current?.docId === docId ? checkResume.current : null
+    const previous = checkResume.current?.docId === docId && checkResume.current.refresh === refresh ? checkResume.current : null
     let offset = previous?.offset ?? 0
     let aggregate: VerificationReport = previous?.report ?? {
       document_id: docId,
@@ -197,7 +197,7 @@ export function NormativesPage() {
     try {
       while (true) {
         const batch = await request<VerificationBatch>(
-          `/documents/${docId}/check-normatives?offset=${offset}&limit=${CHECK_BATCH_SIZE}`,
+          `/documents/${docId}/check-normatives?offset=${offset}&limit=${CHECK_BATCH_SIZE}&refresh=${refresh}`,
           {method: 'POST', signal: controller.signal}
         )
         // Never silently skip, repeat or miscount codes when the API contract changes.
@@ -234,7 +234,7 @@ export function NormativesPage() {
           break
         }
         offset = batch.next_offset
-        checkResume.current = {docId, offset, report: aggregate}
+        checkResume.current = {docId, offset, report: aggregate, refresh}
       }
     } catch (error) {
       const stopped = controller.signal.aborted
@@ -253,6 +253,13 @@ export function NormativesPage() {
     }
   }
 
+  const sourceLabel = (value: string | null, reason: string | null) => {
+    if (reason === 'refresh_failed_local_fallback') return 'Локальный реестр (обновление не удалось)'
+    if (value === 'rosstandart') return 'Росстандарт'
+    if (value === 'local') return 'Локальный реестр'
+    return 'Не подтверждено'
+  }
+
   const statusLabel = (value: string) => {
     if (value === 'active') return 'Действует'
     if (value === 'obsolete') return 'Не действует / заменён'
@@ -264,8 +271,8 @@ export function NormativesPage() {
       <header className="page-heading">
         <div className="eyebrow">МОДУЛЬ 02 / НОРМАТИВНЫЙ КОНТРОЛЬ</div>
         <h1>ГОСТ и НТД<span className="heading-dot">.</span></h1>
-        <p className="muted">Извлечение ссылок из документов, проверка по Росстандарту и
-          экспертные замечания с исходными цитатами.</p>
+        <p className="muted">Извлечение ссылок и проверка по локальному реестру с возможностью
+          обновления из Росстандарта. Источник и дата официального подтверждения показываются отдельно.</p>
       </header>
 
       {/* СЕКЦИЯ АНАЛИЗА ДОКУМЕНТА */}
@@ -310,12 +317,19 @@ export function NormativesPage() {
           </button>
           
           <button 
-            onClick={handleCheck} 
+            onClick={() => handleCheck(false)} 
             disabled={isChecking || isExtracting || !selectedDocId} 
 
           >
             {isChecking ? 'Проверяем...' : checkResume.current?.docId === selectedDocId
-              ? 'Продолжить проверку' : '2. Проверить актуальность'}
+              ? 'Продолжить проверку' : '2. Проверить по реестру'}
+          </button>
+          <button type="button" className="secondary"
+            onClick={() => handleCheck(true)}
+            disabled={isChecking || isExtracting || !selectedDocId}
+            title="Проверить все обозначения через Росстандарт, не полагаясь на сохранённый статус">
+            {checkResume.current?.docId === selectedDocId && checkResume.current.refresh
+              ? 'Продолжить обновление' : 'Обновить из Росстандарта'}
           </button>
         </div>
 
@@ -329,7 +343,7 @@ export function NormativesPage() {
         {checkProgress && (
           <div className="normative-progress" role="status" aria-live="polite">
             <div className="normative-progress-top">
-              <span>{isChecking ? 'Проверка Росстандарта' :
+              <span>{isChecking ? 'Проверка нормативов' :
                 checkProgress.checked === checkProgress.total ? 'Все нормативы обработаны' : 'Частичный результат'}</span>
               <strong>{checkProgress.checked} из {checkProgress.total}</strong>
             </div>
@@ -358,7 +372,7 @@ export function NormativesPage() {
                   <tr>
                     <th>Стандарт</th>
                     <th>Тип</th>
-                    <th>Статус (Росстандарт)</th>
+                    <th>Статус</th>
                     <th>Замена</th>
                     <th>Стр.</th>
                     <th>Источник</th>
@@ -374,12 +388,16 @@ export function NormativesPage() {
                       <td>{item.replacement || '—'}</td>
                       <td>{item.pages.join(', ') || '—'}</td>
                       <td>
-                        {item.source === 'rosstandart' && item.source_url ? (
-                          <><a href={item.source_url} target="_blank" rel="noopener noreferrer">
-                            Карточка Росстандарта</a>
-                            <small style={{display: 'block'}}>{item.checked_at ?
-                              new Date(item.checked_at).toLocaleDateString('ru-RU') : 'Дата не указана'}</small></>
-                        ) : 'Не подтверждено'}
+                        {item.source_url ? (
+                          <a href={item.source_url} target="_blank" rel="noopener noreferrer">
+                            {sourceLabel(item.source, item.reason)}
+                          </a>
+                        ) : sourceLabel(item.source, item.reason)}
+                        <small style={{display: 'block'}}>
+                          {item.checked_at
+                            ? `Официально подтверждено: ${new Date(item.checked_at).toLocaleDateString('ru-RU')}`
+                            : 'Дата официального подтверждения не указана'}
+                        </small>
                       </td>
                     </tr>
                   ))}
@@ -389,7 +407,7 @@ export function NormativesPage() {
             
             <p className="normative-note">
               Новых замечаний: {report.findings_created}. Замечания с цитатами доступны
-              в экспертном отчёте. Локальный статус без ответа Росстандарта не является подтверждением.
+              в экспертном отчёте. Локальные значения могут устареть; для новой официальной проверки используйте «Обновить из Росстандарта».
             </p>
           </div>
         )}

@@ -177,6 +177,13 @@ def test_report_registry_persistence_findings_and_idempotency(client, monkeypatc
     assert again.json()["findings_created"] == 0
     assert again.json()["findings_already_existing"] == 1
     assert len(client.get(f"/api/v1/projects/{project_id}/findings").json()) == 1
+    # Default recheck is offline/local-first. Only refresh explicitly reuses
+    # the saved official card URL as a lookup hint.
+    assert not any(source == CARD_URL for _, source in calls)
+    refreshed = client.post(url + "?refresh=true")
+    assert refreshed.status_code == 200, refreshed.text
+    assert refreshed.json()["findings_created"] == 0
+    assert refreshed.json()["findings_already_existing"] == 1
     assert any(source == CARD_URL for _, source in calls)
     assert client.post("/api/v1/documents/unknown/check-normatives").status_code == 404
 
@@ -187,24 +194,33 @@ def test_report_registry_persistence_findings_and_idempotency(client, monkeypatc
     assert client.post(url).status_code == 409
 
 
-def test_outage_does_not_use_cached_status_as_fresh(client, monkeypatch):
+def test_local_registry_used_during_official_outage(client, monkeypatch):
     project_id, document_id = make_document(client, monkeypatch)
     manual = client.post("/api/v1/normatives", json={
-        "code": "ГОСТ 29322-92", "title": "Старое название",
+        "code": "ГОСТ 29322-92", "title": "Локальный стандарт",
         "status": "obsolete", "replacement": "ГОСТ 29322-2014",
         "source_url": CARD_URL,
     })
     assert manual.status_code == 201
 
+    calls = []
     def unknown(self, code, source_url=None):
+        calls.append(code)
         return RegistryResult(code=code, reason="official_verification_unavailable")
     monkeypatch.setattr("app.normatives.registry.RosstandartClient.lookup", unknown)
     response = client.post(f"/api/v1/documents/{document_id}/check-normatives")
     assert response.status_code == 200, response.text
-    assert response.json()["unknown"] == 3
-    assert response.json()["findings_created"] == 0
-    assert client.get(f"/api/v1/projects/{project_id}/findings").json() == []
-
+    result = response.json()
+    assert result["unknown"] == 2
+    assert result["obsolete"] == 1
+    assert result["findings_created"] == 1
+    item = next(x for x in result["checked"] if x["code"] == "ГОСТ 29322-92")
+    assert item["source"] == "local"
+    assert item["checked_at"] is None
+    assert item["reason"] == "local_registry_hit"
+    assert "ГОСТ 29322-92" not in calls
+    finding = client.get(f"/api/v1/projects/{project_id}/findings").json()[0]
+    assert "локальному реестру" in finding["explanation"]
 
 
 def test_cancelled_standard_without_replacement_has_specific_guidance(client, monkeypatch):
@@ -329,8 +345,8 @@ def test_large_document_verifies_all_standards_in_bounded_batches(client, monkey
 
 
 
-def test_official_provenance_does_not_trust_manual_registry_during_outage(client, monkeypatch):
-    """PR #21 provenance is retained, without treating a manual status as verified."""
+def test_local_first_refresh_provenance_and_manual_edits(client, monkeypatch):
+    """Manual statuses stay attributed to local data, and refresh is explicit."""
     project_id, document_id = make_document(client, monkeypatch)
     created = client.post("/api/v1/normatives", json={
         "code": "ГОСТ 29322-92", "title": "Введён вручную",
@@ -345,14 +361,13 @@ def test_official_provenance_does_not_trust_manual_registry_during_outage(client
 
     monkeypatch.setattr("app.normatives.registry.RosstandartClient.lookup", unavailable)
     url = f"/api/v1/documents/{document_id}/check-normatives"
-    response = client.post(url)
-    assert response.status_code == 200, response.text
-    unknown = next(item for item in response.json()["checked"] if item["code"] == "ГОСТ 29322-92")
-    assert unknown["status"] == "unknown"
-    assert unknown["source"] == "unknown"
-    assert unknown["checked_at"] is None
-    assert unknown["source_url"] is None
-    assert client.get(f"/api/v1/projects/{project_id}/findings").json() == []
+    initial = client.post(url)
+    assert initial.status_code == 200, initial.text
+    item = next(item for item in initial.json()["checked"] if item["code"] == "ГОСТ 29322-92")
+    assert item["status"] == "obsolete"
+    assert item["source"] == "local"
+    assert item["checked_at"] is None
+    assert item["reason"] == "local_registry_hit"
 
     def official(self, code, source_url=None):
         if code == "ГОСТ 29322-92":
@@ -364,7 +379,7 @@ def test_official_provenance_does_not_trust_manual_registry_during_outage(client
         return RegistryResult(code=code, reason="official_verification_unavailable")
 
     monkeypatch.setattr("app.normatives.registry.RosstandartClient.lookup", official)
-    verified = client.post(url)
+    verified = client.post(url + "?refresh=true")
     assert verified.status_code == 200, verified.text
     result = next(item for item in verified.json()["checked"] if item["code"] == "ГОСТ 29322-92")
     assert result["source"] == "rosstandart"
@@ -384,10 +399,13 @@ def test_official_provenance_does_not_trust_manual_registry_during_outage(client
     assert edited.json()["checked_at"] is None
     assert edited.json()["registry_status"] is None
 
-    # The local active status cannot override an unsuccessful subsequent lookup.
     monkeypatch.setattr("app.normatives.registry.RosstandartClient.lookup", unavailable)
-    again = client.post(url)
-    assert again.status_code == 200, again.text
-    item = next(item for item in again.json()["checked"] if item["code"] == "ГОСТ 29322-92")
-    assert item["status"] == "unknown"
-    assert item["source"] == "unknown"
+    fallback = client.post(url + "?refresh=true")
+    assert fallback.status_code == 200, fallback.text
+    item = next(item for item in fallback.json()["checked"] if item["code"] == "ГОСТ 29322-92")
+    assert item["status"] == "active"
+    assert item["source"] == "local"
+    assert item["checked_at"] is None
+    assert item["reason"] == "refresh_failed_local_fallback"
+    assert client.get(f"/api/v1/projects/{project_id}/findings").status_code == 200
+

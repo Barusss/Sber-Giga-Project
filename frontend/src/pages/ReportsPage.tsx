@@ -25,6 +25,12 @@ const reviewLabel=(value:string)=>{
  if(value==='rejected')return 'Отклонено экспертом'
  return 'Ожидает решения эксперта'
 }
+const sourceLabel=(item:Standard)=>{
+ if(item.reason==='refresh_failed_local_fallback')return 'Локальный реестр (Росстандарт недоступен)'
+ if(item.source==='rosstandart')return 'Росстандарт'
+ if(item.source==='local')return 'Локальный реестр (не онлайн-проверка)'
+ return 'Не подтверждено'
+}
 const unknownLabel=(reason:string|null)=>{
  if(reason==='unsupported_or_incomplete_designation')return 'Данный вид обозначения пока не поддерживается реестром ГОСТ'
  if(reason==='official_verification_unavailable')return 'Не удалось подтвердить сведения на официальном сайте'
@@ -242,13 +248,13 @@ export function ReportsPage(){
         <span><b>Документ:</b> {item.document_name}</span>
         <span><b>Страницы PDF:</b> {Array.from(new Set(item.evidence.map(e=>e.page))).sort((a,b)=>a-b).join(', ')||'—'}</span>
         <span><b>Тип упоминания:</b> {item.reference_kind==='informative'?'Справочное':'Нормативное'}</span>
-        <span><b>Дата проверки:</b> {date(item.checked_at)}</span>
-        <span><b>Источник статуса:</b> {item.source==='rosstandart'&&item.checked_at?'Росстандарт':'Не подтверждён официально'}</span>
+        <span><b>Дата официального подтверждения:</b> {date(item.checked_at)}</span>
+        <span><b>Источник статуса:</b> {sourceLabel(item)}</span>
         {item.attempted_at&&!item.checked_at&&<span><b>Последняя попытка:</b> {date(item.attempted_at)}</span>}
        </div>
        {item.replacement&&<p className="report-replacement"><b>Указанный заменяющий стандарт:</b> {item.replacement}</p>}
        {item.status==='unknown'&&<p className="muted">{unknownLabel(item.reason)}</p>}
-       {item.source_url&&<p><a href={item.source_url} target="_blank" rel="noopener noreferrer">Официальная карточка Росстандарта</a></p>}
+       {item.source_url&&<p><a href={item.source_url} target="_blank" rel="noopener noreferrer">Сохранённая ссылка на источник</a></p>}
        <div className="report-evidence">
         <b>Упоминания в исходном документе · {item.evidence.length}</b>
         {item.evidence.length===0?<p className="muted">Нет подтверждённых цитат.</p>:
