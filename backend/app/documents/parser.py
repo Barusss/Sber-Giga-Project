@@ -5,6 +5,7 @@ logical placeholder, and its fragment type/section is preserved instead.
 """
 from dataclasses import dataclass
 from io import BytesIO
+import re
 
 import fitz
 from docx import Document as WordDocument
@@ -25,6 +26,96 @@ class ExtractedBlock:
     section_path: str | None = None
     bbox: list[float] | None = None
     extraction_method: str = "text"
+
+
+
+# Most engineering DOCX files use numbered headings, but some use "Normal"
+# instead of Word heading styles. Detect those only if the document has no
+# styled headings, avoiding confusion with numbered requirements in a TU.
+_ROOT = re.compile(r"^([1-9]\d?)\.\s+(.+)$")
+_SUBHEADING = re.compile(r"^([1-9]\d?(?:\.\d{1,2}){1,2})\.\s+(.+)$")
+_APPENDIX = re.compile(r"^Приложение\s+[А-ЯA-Z]\s*[.\-:]\s*.+$", re.I)
+
+
+def heading_level(text: str, style: str, allow_unstyled: bool = True) -> int | None:
+    if style.startswith(("heading", "заголовок")):
+        match = re.search(r"\d+", style)
+        return min(int(match.group()) if match else 1, 3)
+
+    if not allow_unstyled or style.startswith("list"):
+        return None
+    root = _ROOT.match(text)
+    if root:
+        letters = "".join(ch for ch in root.group(2) if ch.isalpha())
+        if letters and letters == letters.upper() and len(text) <= 160:
+            return 1
+    sub = _SUBHEADING.match(text)
+    if sub and len(text) <= 145 and not text.endswith((".", ";", "!", "?")):
+        return min(sub.group(1).count(".") + 1, 3)
+    if _APPENDIX.match(text) and len(text) <= 150:
+        return 1
+    return None
+
+
+def _extract_docx(data: bytes) -> list[ExtractedBlock]:
+    doc = WordDocument(BytesIO(data))
+    blocks: list[ExtractedBlock] = []
+    headings: dict[int, str] = {}
+    has_styled_headings = any(
+        isinstance(item, Paragraph) and item.style
+        and (item.style.name or "").lower().startswith(("heading", "заголовок"))
+        for item in doc.iter_inner_content()
+    )
+    in_toc = False
+
+    for element in doc.iter_inner_content():
+        if isinstance(element, Paragraph):
+            content = element.text.strip()
+            if not content:
+                continue
+            style = (element.style.name or "").lower() if element.style else ""
+            level = heading_level(content, style, allow_unstyled=not has_styled_headings)
+
+            if content.casefold() in {"содержание", "оглавление"}:
+                in_toc = True
+                headings.clear()
+                blocks.append(ExtractedBlock(1, len(blocks), content, "toc"))
+                continue
+
+            if in_toc:
+                # TOC entries must not pollute the searchable chunks.
+                is_body_root = (
+                    level == 1 and
+                    (style.startswith(("heading", "заголовок"))
+                     or bool(_ROOT.match(content) and content == content.upper()))
+                )
+                if not is_body_root:
+                    blocks.append(ExtractedBlock(1, len(blocks), content, "toc"))
+                    continue
+                in_toc = False
+
+            if level:
+                headings[level] = content
+                for previous in list(headings):
+                    if previous > level:
+                        del headings[previous]
+
+            section = " / ".join(headings[i] for i in sorted(headings)) or None
+            block_type = "heading" if level else "paragraph"
+            blocks.append(ExtractedBlock(
+                1, len(blocks), content, block_type, section,
+            ))
+        elif isinstance(element, Table):
+            section = " / ".join(headings[i] for i in sorted(headings)) or None
+            for row in element.rows:
+                content = " | ".join(cell.text.strip() for cell in row.cells)
+                if content.strip(" |"):
+                    block_type = "toc" if in_toc else "table_row"
+                    blocks.append(ExtractedBlock(
+                        1, len(blocks), content, block_type,
+                        None if in_toc else section,
+                    ))
+    return blocks
 
 
 def extract_blocks(data: bytes, extension: str) -> list[ExtractedBlock]:
@@ -55,24 +146,7 @@ def extract_blocks(data: bytes, extension: str) -> list[ExtractedBlock]:
         return blocks
 
     if extension == ".docx":
-        doc = WordDocument(BytesIO(data))
-        section = None
-        for element in doc.iter_inner_content():
-            if isinstance(element, Paragraph):
-                content = element.text.strip()
-                if not content:
-                    continue
-                style = (element.style.name or "").lower() if element.style else ""
-                is_heading = style.startswith("heading") or style.startswith("заголовок")
-                if is_heading:
-                    section = content
-                blocks.append(ExtractedBlock(1, len(blocks), content, "heading" if is_heading else "paragraph", section))
-            elif isinstance(element, Table):
-                for row in element.rows:
-                    text = " | ".join(cell.text.strip() for cell in row.cells)
-                    if text.strip(" |"):
-                        blocks.append(ExtractedBlock(1, len(blocks), text, "table_row", section))
-        return blocks
+        return _extract_docx(data)
 
     raise UnsupportedFile("Supported formats: PDF, DOCX")
 
