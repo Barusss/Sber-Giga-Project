@@ -70,7 +70,7 @@ def build_chunks(fragments: list, max_chars: int = MAX_CHARS) -> list[ChunkDraft
         parts, sources, length, kind = [], [], 0, None
 
     for fragment in fragments:
-        if not fragment.text or fragment.block_type == "toc":
+        if not fragment.text or fragment.block_type in {"toc", "page_furniture"}:
             continue
 
         is_heading = fragment.block_type == "heading"
