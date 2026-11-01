@@ -4,7 +4,7 @@ from pathlib import Path
 from uuid import uuid4
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.db import get_db
@@ -145,6 +145,82 @@ async def upload_document_stream(project_id: str, kind: DocumentKind = Form(...)
 
     return StreamingResponse(process(), media_type="application/x-ndjson",
                              headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
+
+
+
+@router.post("/documents/{document_id}/reindex-chunks")
+def reindex_document_chunks(document_id: str, db: Session = Depends(get_db)):
+    """Rebuild chunks without replacing fragments or losing cited findings.
+
+    The original file must still match all existing fragments. Only section
+    metadata and the derived chunk index change; fragment IDs stay the same.
+    Previous chunk embeddings are invalidated and must be regenerated.
+    """
+    document = db.get(Document, document_id)
+    if document is None:
+        raise HTTPException(404, "Document not found")
+    project = require_project(db, document.project_id)
+    if project.state == ReviewState.approved:
+        raise HTTPException(409, "Approved project cannot be modified")
+
+    path = Path(document.stored_path)
+    if not path.is_file():
+        raise HTTPException(409, "Original document file is unavailable")
+    try:
+        blocks = extract_blocks(path.read_bytes(), path.suffix.lower())
+    except Exception as exc:
+        logger.exception("Document reindex parsing failed")
+        raise HTTPException(422, "Cannot parse the stored document") from exc
+
+    fragments = db.scalars(
+        select(Fragment).where(Fragment.document_id == document_id)
+        .order_by(Fragment.page, Fragment.position)
+    ).all()
+    if len(fragments) != len(blocks) or any(
+        (fragment.page, fragment.position, fragment.text)
+        != (block.page, block.position, block.text)
+        for fragment, block in zip(fragments, blocks)
+    ):
+        raise HTTPException(
+            409, "Stored source fragments differ from the original file",
+        )
+
+    for fragment, block in zip(fragments, blocks):
+        fragment.block_type = block.block_type
+        fragment.section_path = block.section_path
+
+    chunk_ids = select(Chunk.id).where(Chunk.document_id == document_id)
+    db.execute(delete(ChunkSource).where(ChunkSource.chunk_id.in_(chunk_ids)))
+    db.execute(delete(Chunk).where(Chunk.document_id == document_id))
+    db.flush()
+
+    drafts = build_chunks(fragments)
+    for position, draft in enumerate(drafts):
+        chunk = Chunk(
+            document_id=document_id,
+            position=position,
+            text=draft.text,
+            page_start=draft.page_start,
+            page_end=draft.page_end,
+            section_path=draft.section_path,
+            chunking_version=CHUNKING_VERSION,
+        )
+        db.add(chunk)
+        db.flush()
+        for source_position, piece in enumerate(draft.pieces):
+            db.add(ChunkSource(
+                chunk_id=chunk.id, fragment_id=piece.fragment.id,
+                position=source_position,
+                start_offset=piece.start, end_offset=piece.end,
+            ))
+
+    db.commit()
+    return {
+        "document_id": document_id,
+        "fragments_updated": len(fragments),
+        "chunks": len(drafts),
+        "chunking_version": CHUNKING_VERSION,
+    }
 
 
 @router.get("/projects/{project_id}/documents", response_model=list[DocumentOut])
