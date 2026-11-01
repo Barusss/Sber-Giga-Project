@@ -124,7 +124,7 @@ def _extract_docx(data: bytes) -> list[ExtractedBlock]:
 _OCR_CLAUSE_VERBS = re.compile(
     r"\b(?:долж(?:ен|на|но|ны)|обязан\w*|предусматрива\w*|"
     r"обеспечива\w*|устанавлива\w*|выполня\w*|"
-    r"применя\w*|производ\w*|необходим\w*)\b", re.I,
+    r"применя\w*|производ\w*|необходим\w*|"\n    r"установить|выполнить|обеспечить|предусмотреть|разработать|"\n    r"подключить|соблюдать|следует)\b", re.I,
 )
 _PAGE_FOOTER = re.compile(
     r"^\s*(?:стр(?:аница)?\.?\s*)?\d{1,4}\s*(?:из|/)\s*\d{1,4}\s*$",
@@ -140,6 +140,10 @@ _CONTENTS_LINE = re.compile(r"(?:\.{3,}|…{2,})\s*\d{1,4}\s*$")
 def _ocr_heading_level(text: str) -> int | None:
     """Conservative layout inference: never promote a numbered command."""
     if _OCR_CLAUSE_VERBS.search(text):
+        return None
+    # In scanned conditions, 1.2.3. is usually an atomic requirement,
+    # not a section heading. Avoid assuming one from noisy OCR typography.
+    if re.match(r"^\s*\d{1,3}(?:\.\d{1,3}){2,}[.)]?\s+", text):
         return None
     return heading_level(text, "", allow_unstyled=True)
 
