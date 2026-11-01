@@ -89,7 +89,7 @@ def test_reindex_preserves_fragment_ids_and_fact_citations(client):
     for _ in range(2):
         indexed = client.post(f"/api/v1/documents/{doc_id}/reindex-chunks")
         assert indexed.status_code == 200, indexed.text
-        assert indexed.json()["chunking_version"] == "chunks-v2"
+        assert indexed.json()["chunking_version"] == "chunks-v3"
     after = client.get(f"/api/v1/documents/{doc_id}/fragments").json()
     assert [(item["id"], item["text"]) for item in before] == [
         (item["id"], item["text"]) for item in after
