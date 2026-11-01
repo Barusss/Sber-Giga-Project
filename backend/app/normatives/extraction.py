@@ -156,8 +156,13 @@ def find_candidates(chunks: list[Chunk]) -> tuple[list[dict], dict[str, str]]:
     ordered = sorted(fragments.values(), key=lambda frag: (frag.page, frag.position))
     candidates: list[dict] = []
     section_by_fragment = {}
-    section = "foreword"
+    section = "body"
     for fragment in ordered:
+        block_type = getattr(fragment, "block_type", None)
+        if block_type == "heading":
+            section = section_after(section, fragment.text)
+        elif block_type == "toc":
+            continue
         section_by_fragment[fragment.id] = section
         markers = sorted(
             (*SECTION_PATTERN.finditer(fragment.text),
@@ -306,6 +311,7 @@ def extract_normative_facts(db: Session, document: Document) -> ExtractionResult
     ]
     skipped_existing = len(candidates) - len(pending) - skipped_self
     if not pending:
+        document.normative_extraction_completed = True
         db.commit()
         return ExtractionResult(
             document_id=document.id, scanned_chunks=len(chunks), candidates=len(candidates),
@@ -369,6 +375,7 @@ def extract_normative_facts(db: Session, document: Document) -> ExtractionResult
                 fact_id=fact.id, fragment_id=item["fragment_id"], quote=item["quote"],
             ))
         created_ids.append(fact.id)
+    document.normative_extraction_completed = True
     db.commit()
     saved = db.scalars(
         select(Fact).where(Fact.id.in_(created_ids))

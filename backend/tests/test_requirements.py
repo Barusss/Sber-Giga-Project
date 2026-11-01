@@ -107,6 +107,7 @@ def test_check_requirements_response_stats():
     )
     data = resp.model_dump()
     assert data["stats"]["fulfilled"] == 10
+    assert data["stats"]["needs_review"] == 1
     assert data["trace_info"]["model"] == "deepseek-flash"
 
 
@@ -255,6 +256,7 @@ def test_analyze_requirements_agent_pipeline(client):
     assert response.status_code == 200, response.text
     data = response.json()
     assert data["stats"]["total"] == 2
-    assert data["stats"]["fulfilled"] == 1
+    assert data["stats"]["fulfilled"] == 0
+    assert data["stats"]["needs_review"] == 1
     assert data["stats"]["missing"] == 1
     assert "agent_runs" in data["trace_info"]

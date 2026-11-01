@@ -73,6 +73,7 @@ type CheckRequirementsResponse = {
     total?: number
   }
   trace_info?: {
+    degraded?: boolean
     execution_time_ms?: number
     analysis?: {
       created: number
@@ -293,11 +294,22 @@ export function RequirementsPage() {
       })
       .catch((error: Error) => {if (active) setError(error.message)})
 
-    request<CheckRequirementsResponse>(`/requirements/projects/${selectedProjectId}`)
+    return () => {active = false}
+  }, [selectedProjectId])
+
+  useEffect(() => {
+    let active = true
+    setItems([])
+    setStats({fulfilled: 0, missing: 0, needs_review: 0, total: 0})
+    setComments({})
+    setTraceInfo(null)
+    if (!selectedProjectId || !tuDocId || !znpDocId) return () => {active = false}
+    const params = new URLSearchParams({tu_document_id: tuDocId, znp_document_id: znpDocId})
+    request<CheckRequirementsResponse>(`/requirements/projects/${selectedProjectId}?${params}`)
       .then((res) => {if (active) applyResponse(res)})
       .catch((error: Error) => {if (active) setError(error.message)})
     return () => {active = false}
-  }, [selectedProjectId])
+  }, [selectedProjectId, tuDocId, znpDocId])
 
   function applyResponse(res: CheckRequirementsResponse) {
     setItems(res.checked_requirements)
@@ -398,6 +410,7 @@ export function RequirementsPage() {
         `/requirements/projects/${selectedProjectId}/confirm`,
         json('POST', {
           requirement_id: item.requirement.id,
+          verification_id: item.id,
           status: newStatus,
           comment: commentText || null,
         })
@@ -550,6 +563,7 @@ export function RequirementsPage() {
       </section>
 
       {error && <p className="error">{error}</p>}
+      {traceInfo?.degraded && <p className="error">Смысловая проверка ИИ недоступна или не завершена. Показаны поисковые кандидаты. Для утверждения нужны решения инженера.</p>}
 
       {items.length > 0 && (
         <section className="panel stack">
@@ -828,7 +842,7 @@ export function RequirementsPage() {
                 {/* МИНИ-ПОЛОСКА УВЕРЕННОСТИ ИИ */}
                 <div className="horizontal" style={{ gap: 6 }}>
                   <small>
-                    Уверенность ИИ: <b>{confPercent}%</b>
+                    {item.method === 'deterministic' ? 'Сходство текста' : 'Оценка ИИ'}: <b>{confPercent}%</b>
                   </small>
                   <div
                     style={{

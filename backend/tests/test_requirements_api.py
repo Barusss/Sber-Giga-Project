@@ -85,7 +85,7 @@ def test_analyze_persists_fragment_provenance(client, monkeypatch):
     assert set(items) == {"1.1", "1.2"}
 
     power = items["1.1"]
-    assert power["status"] == "fulfilled"
+    assert power["status"] == "needs_review"
     assert power["tu_page"] == 1
     assert power["tu_fragment_id"]
     assert "150 кВт" in power["tu_fragment_text"]
@@ -198,7 +198,7 @@ def test_analyze_skips_headings_toc_and_service_sections(client, monkeypatch):
     }
 
     assert set(items) == {"1.1", "2"}
-    assert items["1.1"]["status"] == "fulfilled"
+    assert items["1.1"]["status"] == "needs_review"
     assert items["2"]["status"] == "missing"
     assert items["2"]["requirement"]["text"] == \
         "Установить счетчик класса точности 0.5S."
@@ -264,7 +264,7 @@ def test_manual_tu_storage_and_human_verdict(client, monkeypatch):
 
 
 def test_project_isolation_type_and_review_protection(client, monkeypatch):
-    pid, docs = prepare(client, monkeypatch)
+    pid, docs = _project_with_documents(client, monkeypatch, _requirements_blocks)
     other = client.post("/api/v1/projects", json={"name": "Другой проект"}).json()["id"]
     base = f"/api/v1/requirements/projects/{pid}"
     payload = {
@@ -289,6 +289,11 @@ def test_project_isolation_type_and_review_protection(client, monkeypatch):
         "requirement_id": "unknown", "status": "fulfilled",
     }).status_code == 404
 
+    assert client.post(f"/api/v1/projects/{pid}/approve").status_code == 409
+    analyzed = client.post("/api/v1/requirements/analyze", json={"project_id": pid}).json()
+    for card in analyzed["checked_requirements"]:
+        assert client.post(f"{base}/confirm", json={"requirement_id": card["requirement"]["id"],
+            "verification_id": card["id"], "status": "fulfilled"}).status_code == 200
     approval = client.post(f"/api/v1/projects/{pid}/approve")
     assert approval.status_code == 200, approval.text
     assert client.post(f"{base}/tu-requirements", json=payload).status_code == 409
@@ -300,8 +305,8 @@ def test_project_isolation_type_and_review_protection(client, monkeypatch):
         "project_id": pid, "tu_document_id": docs["znp"],
         "znp_document_id": docs["tu"],
     }).status_code == 409  # Project is approved above.
-    assert len(client.get(f"{base}/tu-requirements").json()) == 1
-    assert client.get(f"{base}/verifications").json() == []
+    assert client.get(f"{base}/tu-requirements").json()
+    assert client.get(f"{base}/verifications").json()
 
 
 def test_core_legacy_services_still_visible(client):
@@ -542,6 +547,7 @@ def test_reanalysis_merges_duplicates_and_preserves_human_decision(client, monke
         "requirement_id": first["id"],
         "status": "missing",
         "comment": "Инженерное решение",
+        "znp_document_id": docs["znp"],
     }).status_code == 200
 
     analyzed = client.post("/api/v1/requirements/analyze", json={"project_id": pid})
@@ -688,7 +694,7 @@ def test_reanalysis_keeps_confirmed_requirement_when_text_disappears(client, mon
         "tu_document_id": uploaded.json()["id"],
     })
     assert second.status_code == 200, second.text
-    assert second.json()["trace_info"]["analysis"]["removed"] == 1
+    assert second.json()["trace_info"]["analysis"]["removed"] == 0
 
     stored = client.get(base).json()
     stored_items = {

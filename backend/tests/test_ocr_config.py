@@ -8,7 +8,7 @@ from app.documents.parser import extract_blocks
 def test_scanned_pdf_uses_russian_english_lstm(monkeypatch):
     calls = {}
 
-    def fake_ocr(image, *, lang, config, output_type):
+    def fake_ocr(image, *, lang, config, output_type, timeout):
         calls["language"] = lang
         calls["config"] = config
         calls["size"] = image.size

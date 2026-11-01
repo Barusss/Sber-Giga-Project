@@ -8,6 +8,7 @@ from io import BytesIO
 import re
 
 import fitz
+from app.core.config import settings
 from docx import Document as WordDocument
 from docx.table import Table
 from docx.text.paragraph import Paragraph
@@ -47,7 +48,9 @@ def heading_level(text: str, style: str, allow_unstyled: bool = True) -> int | N
     root = _ROOT.match(text)
     if root:
         letters = "".join(ch for ch in root.group(2) if ch.isalpha())
-        if letters and letters == letters.upper() and len(text) <= 160:
+        if (letters and len(text) <= 200 and not _CONTENTS_LINE.search(text)
+                and not _OCR_CLAUSE_VERBS.search(text)
+                and (letters == letters.upper() or not text.endswith((".", ";", "!", "?")))):
             return 1
     sub = _SUBHEADING.match(text)
     if sub and len(text) <= 145 and not text.endswith((".", ";", "!", "?")):
@@ -84,12 +87,7 @@ def _extract_docx(data: bytes) -> list[ExtractedBlock]:
 
             if in_toc:
                 # TOC entries must not pollute the searchable chunks.
-                is_body_root = (
-                    level == 1 and
-                    (style.startswith(("heading", "заголовок"))
-                     or bool(_ROOT.match(content) and content == content.upper()))
-                )
-                if not is_body_root:
+                if _is_toc_entry(content) or _PAGE_FOOTER.match(content):
                     blocks.append(ExtractedBlock(1, len(blocks), content, "toc"))
                     continue
                 in_toc = False
@@ -110,6 +108,8 @@ def _extract_docx(data: bytes) -> list[ExtractedBlock]:
             for row in element.rows:
                 content = " | ".join(cell.text.strip() for cell in row.cells)
                 if content.strip(" |"):
+                    if in_toc and not _is_toc_entry(content):
+                        in_toc = False
                     block_type = "toc" if in_toc else "table_row"
                     blocks.append(ExtractedBlock(
                         1, len(blocks), content, block_type,
@@ -139,6 +139,15 @@ _BULLET_LINE = re.compile(r"^\s*[-—–•●]\s+\S")
 _CONTENTS_LINE = re.compile(r"(?:\.{3,}|…{2,})\s*\d{1,4}\s*$")
 
 
+def _is_toc_entry(text: str) -> bool:
+    return bool(
+        _CONTENTS_LINE.search(text)
+        or (re.search(r"\s+\d{1,4}\s*$", text)
+            and _NUMBERED_LINE.match(text)
+            and not _OCR_CLAUSE_VERBS.search(text))
+    )
+
+
 def _ocr_heading_level(text: str) -> int | None:
     """Conservative layout inference: never promote a numbered command."""
     if _OCR_CLAUSE_VERBS.search(text):
@@ -152,11 +161,14 @@ def _ocr_heading_level(text: str) -> int | None:
 
 def _ocr_lines(page, picture, page_idx: int):
     """Read OCR word coordinates once, retaining line order and real PDF boxes."""
+    if settings.ocr_backend == "paddleocr":
+        from app.documents.ocr import paddle_lines
+        return paddle_lines(page, picture, page_idx)
     import pytesseract
 
     data = pytesseract.image_to_data(
         picture, lang="rus+eng", config="--oem 1 --psm 3",
-        output_type=pytesseract.Output.DICT,
+        output_type=pytesseract.Output.DICT, timeout=settings.ocr_timeout_seconds,
     )
     scale_x = float(page.rect.width) / picture.width
     scale_y = float(page.rect.height) / picture.height
@@ -233,9 +245,9 @@ def _ocr_page_blocks(page, picture, page_idx, sections, toc_mode):
             continue
 
         level = _ocr_heading_level(text)
-        if toc_mode and level == 1 and _ROOT.match(text):
-            # The body starts at an uppercase numbered root, not an entry in
-            # the contents. A table of contents has no true source sections.
+        if toc_mode and not _is_toc_entry(text) and not _PAGE_FOOTER.match(text):
+            # Unknown layout must stay searchable. Do not require uppercase
+            # typography to end a TOC, especially with wrapped scan headings.
             toc_mode = False
 
         if level is not None and not toc_mode:
@@ -296,6 +308,8 @@ def extract_blocks(data: bytes, extension: str) -> list[ExtractedBlock]:
         sections: dict[int, str] = {}
         toc_mode = False
         with fitz.open(stream=data, filetype="pdf") as document:
+            if len(document) > settings.max_pdf_pages:
+                raise ValueError("PDF page limit exceeded")
             for page_idx, page in enumerate(document, start=1):
                 native = [
                     (entry[4].strip(), [round(float(coord), 2) for coord in entry[:4]])
@@ -304,12 +318,12 @@ def extract_blocks(data: bytes, extension: str) -> list[ExtractedBlock]:
                 ]
                 native_chars = sum(len(text) for text, _ in native)
                 should_ocr = native_chars < 30
-                if not should_ocr and native_chars < 180:
+                if not should_ocr:
                     should_ocr = _scan_dominates_page(page)
 
                 if should_ocr:
                     from PIL import Image
-                    pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
+                    pix = page.get_pixmap(matrix=fitz.Matrix(settings.ocr_dpi / 72, settings.ocr_dpi / 72), alpha=False)
                     picture = Image.frombytes(
                         "RGB", (pix.width, pix.height), pix.samples,
                     )

@@ -508,7 +508,7 @@ def test_deterministic_fallback_requires_lexical_support_for_fulfilled():
 
     assert item.method == "deterministic"
     assert item.status.value == "needs_review"
-    assert "лексической опоры" in item.reasoning
+    assert "Смысловая проверка ИИ недоступна" in item.reasoning
 
 
 def test_agent_llm_path_reports_method_and_channels():
