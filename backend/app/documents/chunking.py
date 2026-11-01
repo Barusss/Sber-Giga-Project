@@ -1,7 +1,7 @@
 """Section-aware deterministic chunks with exact offsets to source fragments."""
 from dataclasses import dataclass
 
-CHUNKING_VERSION = "chunks-v2"
+CHUNKING_VERSION = "chunks-v3"
 MAX_CHARS = 1400
 
 
