@@ -229,7 +229,7 @@ def _ocr_page_blocks(page, picture, page_idx, sections, toc_mode):
             flush()
             sections.clear()
             toc_mode = True
-            output.append((text, "toc", None, box))
+            output.append((text, "toc", None, box, None))
             continue
 
         level = _ocr_heading_level(text)
