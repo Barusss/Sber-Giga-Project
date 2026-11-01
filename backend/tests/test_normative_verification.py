@@ -177,6 +177,13 @@ def test_report_registry_persistence_findings_and_idempotency(client, monkeypatc
     assert again.json()["findings_created"] == 0
     assert again.json()["findings_already_existing"] == 1
     assert len(client.get(f"/api/v1/projects/{project_id}/findings").json()) == 1
+    # Default recheck is offline/local-first. Only refresh explicitly reuses
+    # the saved official card URL as a lookup hint.
+    assert not any(source == CARD_URL for _, source in calls)
+    refreshed = client.post(url + "?refresh=true")
+    assert refreshed.status_code == 200, refreshed.text
+    assert refreshed.json()["findings_created"] == 0
+    assert refreshed.json()["findings_already_existing"] == 1
     assert any(source == CARD_URL for _, source in calls)
     assert client.post("/api/v1/documents/unknown/check-normatives").status_code == 404
 
