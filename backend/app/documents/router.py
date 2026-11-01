@@ -182,7 +182,7 @@ def reindex_document_chunks(document_id: str, db: Session = Depends(get_db)):
         for fragment, block in zip(fragments, blocks)
     ):
         raise HTTPException(
-            409, "Stored source fragments differ from the original file",
+            409, "Source fragments changed after parsing (old scans must be uploaded again to preserve citation IDs)",
         )
 
     for fragment, block in zip(fragments, blocks):
