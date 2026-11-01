@@ -4,6 +4,7 @@ from pathlib import Path
 from uuid import uuid4
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
+from starlette.concurrency import run_in_threadpool
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 from app.core.config import settings
@@ -58,12 +59,16 @@ async def _read_upload(project_id: str, file: UploadFile, db: Session):
 
 def _save_document(project_id: str, kind: DocumentKind, file: UploadFile,
                    data: bytes, suffix: str, blocks: list, db: Session) -> Document:
+    if not build_chunks(blocks):
+        raise HTTPException(422, "No useful text extracted; check the document and OCR settings")
     target = settings.upload_dir / f"{uuid4().hex}{suffix}"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(data)
     try:
         document = Document(
             project_id=project_id, kind=kind,
+            extraction_version=("paddleocr-v5" if settings.ocr_backend == "paddleocr" else "tesseract-v3")
+                if any(b.extraction_method == "ocr" for b in blocks) else "text-v3",
             filename=Path(file.filename or "document").name[:255],
             stored_path=str(target), mime_type=file.content_type or "application/octet-stream"
         )
@@ -98,7 +103,7 @@ async def upload_document(project_id: str, kind: DocumentKind = Form(...),
                           file: UploadFile = File(...), db: Session = Depends(get_db)):
     data, suffix = await _read_upload(project_id, file, db)
     try:
-        blocks = extract_blocks(data, suffix)
+        blocks = await run_in_threadpool(extract_blocks, data, suffix)
     except Exception as exc:
         logger.exception("Document parsing failed")
         raise HTTPException(422, "Cannot parse this document") from exc

@@ -122,6 +122,9 @@ def make_document(client, monkeypatch):
             "evidence": [{"fragment_id": frag["id"], "quote": quote}],
         })
         assert saved.status_code == 201, saved.text
+    # Existing manual facts cover all candidates; completion is recorded by
+    # the actual extraction endpoint without calling an external provider.
+    assert client.post(f"/api/v1/documents/{document_id}/extract-facts").status_code == 200
     return project["id"], document_id
 
 

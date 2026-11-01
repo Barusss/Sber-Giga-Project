@@ -264,10 +264,10 @@ def extract_clauses(fragments: Sequence[Fragment]) -> list[Clause]:
         clauses.extend(_draft_to_clauses(draft))
 
     deduplicated: list[Clause] = []
-    seen: set[str] = set()
+    seen: set[tuple] = set()
     for clause in clauses:
-        key = normalize_clause_text(clause.text)
-        if not key or key in seen:
+        key = (clause.section_path, clause.clause_number, normalize_clause_text(clause.text))
+        if not key[2] or key in seen:
             continue
         seen.add(key)
         deduplicated.append(clause)

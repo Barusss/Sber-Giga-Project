@@ -92,7 +92,17 @@ def test_missing_key_and_approved_project(client, monkeypatch):
     assert client.post(url).status_code == 503
     assert "private error" not in client.post(url).text
     assert client.get(f"/api/v1/documents/{doc_id}/facts").json() == []
-    assert client.post(f"/api/v1/projects/{pid}/approve").status_code == 200
+    assert client.post(f"/api/v1/projects/{pid}/approve").status_code == 409
+    from app.core.db import get_db
+    from app.core.models import Project, ReviewState
+    from app.main import app
+    sessions = app.dependency_overrides[get_db]()
+    session = next(sessions)
+    try:
+        session.get(Project, pid).state = ReviewState.approved
+        session.commit()
+    finally:
+        sessions.close()
     assert client.post(url).status_code == 409
     assert client.post("/api/v1/documents/missing/extract-facts").status_code == 404
 

@@ -12,10 +12,14 @@ services:
       interval: 5s
       retries: 10
   api:
-    build: ./backend
+    build:
+      context: ./backend
+      args:
+        INSTALL_PADDLE_OCR: ${INSTALL_PADDLE_OCR:-false}
     env_file: .env
     volumes:
       - uploads:/data/uploads
+      - ocr_models:/root/.paddlex
     ports:
       - "8000:8000"
     depends_on:
@@ -33,3 +37,4 @@ services:
 volumes:
   postgres_data:
   uploads:
+  ocr_models:

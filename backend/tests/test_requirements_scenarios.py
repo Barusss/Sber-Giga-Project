@@ -45,5 +45,11 @@ def test_deterministic_fallback_matches_manual_scenario(scenario):
         for item in result.checked_requirements
     }
 
-    assert actual == scenario["expected"]["statuses"]
-    assert result.stats == scenario["expected"]["stats"]
+    # Semantic gold labels remain unchanged in the fixtures. An offline
+    # candidate cannot automatically confirm even an expected match.
+    expected = {key: ("needs_review" if value == "fulfilled" else value)
+                for key, value in scenario["expected"]["statuses"].items()}
+    assert actual == expected
+    assert result.stats == {**{status: sum(value == status for value in expected.values())
+                             for status in ("fulfilled", "missing", "needs_review")},
+                            "total": len(expected)}

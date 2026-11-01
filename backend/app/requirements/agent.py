@@ -158,6 +158,7 @@ class RequirementsAgent:
                 "execution_time_ms": elapsed_ms,
                 "agent_runs": all_traces,
                 "embedding": self.embedder.status(),
+                "degraded": any(item.method != "llm" for item in checked_items),
             },
         )
 
@@ -614,45 +615,11 @@ class RequirementsAgent:
                 trace,
             )
 
-        coverage_note = ""
-        if coverage_res["is_list"]:
-            coverage_note = (
-                f" Перечень подтверждён полностью ({coverage_res['items_covered']} "
-                f"из {coverage_res['items_total']})."
-            )
-        if (
-            best["similarity_score"] >= MATCH_THRESHOLD
-            and best["lexical_score"] >= MIN_LEXICAL_SCORE_FOR_FULFILLED
-        ):
-            return (
-                LLMVerificationDecision(
-                    status=RequirementStatus.fulfilled,
-                    similarity_score=best["similarity_score"],
-                    matched_znp_clause_id=best["clause_id"],
-                    tu_quote=req.text,
-                    znp_quote=znp_quote,
-                    reasoning=(
-                        f"Требование отражено в пункте {best['clause_number']}, "
-                        f"параметры совпадают.{coverage_note}"
-                    ),
-                    method="deterministic",
-                    channels=channels,
-                ),
-                trace,
-            )
-
-        semantic_only = (
-            best.get("semantic_score") is not None
-            and best["lexical_score"] < MIN_LEXICAL_SCORE_FOR_FULFILLED
-        )
         reasoning = (
-            "Семантическое совпадение без достаточной лексической опоры, "
-            "требуется подтверждение инженером."
-            if semantic_only
-            else "Частичное совпадение, требуется подтверждение инженером."
+            "Смысловая проверка ИИ недоступна или не завершена. "
+            "Найдены только поисковые кандидаты; сходство текста не подтверждает "
+            "выполнение требования. Требуется решение инженера."
         )
-        if coverage_note:
-            reasoning += coverage_note
         return (
             LLMVerificationDecision(
                 status=RequirementStatus.needs_review,

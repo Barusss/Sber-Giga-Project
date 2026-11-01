@@ -159,3 +159,26 @@ def test_upgrade_0007_tolerates_columns_left_by_old_0006(tmp_path):
         }
         assert "matched_znp_fragment_id" not in verification_columns
         assert "matched_znp_page" not in verification_columns
+
+
+def test_pair_migration_preserves_human_decisions_and_backfills_provenance(tmp_path):
+    database = tmp_path / 'pair_upgrade.sqlite3'
+    run_alembic(database, 'upgrade', '0007')
+    with sqlite3.connect(database) as conn:
+        time = datetime.now(timezone.utc).isoformat()
+        conn.execute("INSERT INTO projects(id,name,state,created_at) VALUES('p','P','draft',?)", (time,))
+        for doc, kind in [('tu', 'tu'), ('znp', 'znp')]:
+            conn.execute('INSERT INTO documents(id,project_id,kind,filename,stored_path,mime_type,created_at) VALUES(?,?,?,?,?,?,?)',
+                         (doc, 'p', kind, doc+'.pdf', '/tmp/a.pdf', 'application/pdf', time))
+        conn.execute("INSERT INTO fragments(id,document_id,page,position,text) VALUES('f','znp',1,0,'Evidence')")
+        conn.execute("INSERT INTO tu_requirements(id,project_id,document_id,clause_number,category,text,created_at) VALUES('r','p','tu','1','other','Text',?)", (time,))
+        for vid, fragment, confirmed in [('scoped', 'f', 1), ('unscoped', None, 1), ('automatic', 'f', 0)]:
+            conn.execute('INSERT INTO requirement_verifications(id,project_id,requirement_id,status,matched_znp_fragment_id,is_confirmed_by_human,human_override_status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)',
+                         (vid, 'p', 'r', 'fulfilled', fragment, confirmed, 'fulfilled' if confirmed else None, time, time))
+    run_alembic(database, 'upgrade', 'head')
+    with sqlite3.connect(database) as conn:
+        assert conn.execute("SELECT znp_document_id FROM requirement_verifications WHERE id='scoped'").fetchone()[0] == 'znp'
+        assert conn.execute("SELECT znp_document_id FROM requirement_verifications WHERE id='unscoped'").fetchone()[0] is None
+        assert conn.execute("SELECT human_override_status FROM requirement_verifications WHERE id='scoped'").fetchone()[0] == 'fulfilled'
+        assert conn.execute("SELECT normative_extraction_completed FROM documents WHERE id='tu'").fetchone()[0] == 0
+    run_alembic(database, 'downgrade', '0007')

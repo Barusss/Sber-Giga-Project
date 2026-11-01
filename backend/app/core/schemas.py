@@ -36,6 +36,7 @@ class DocumentOut(Schema):
     created_at: datetime
 
 class Evidence(BaseModel):
+    znp_document_id: str | None = None
     document_id: str
     fragment_id: str | None = None
     page: int | None = None

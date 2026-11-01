@@ -251,17 +251,17 @@ def check_document_standards(
         snapshot.reason = reason
         snapshot.source = source
 
-        # Retain an auditable informational finding for obsolete bibliography
-        # references, but do not present it as a normative requirement.
-        if final_status != "obsolete" or not evidence:
-            continue
-
         already = next(
             (item for item in existing_findings if finding_key(item, document.id, code)),
-            None
+            None,
         )
-        if already is not None:
+        if already is not None and already.review_status != ReviewStatus.pending:
             found += 1
+            continue
+        if final_status != "obsolete" or not evidence:
+            if already is not None:
+                db.delete(already)
+                existing_findings.remove(already)
             continue
 
         replacement_text = f" Замена по реестру: {final_replacement}." if final_replacement else ""
@@ -296,18 +296,17 @@ def check_document_standards(
                 "Решение принимает эксперт."
             )
             
-        finding = Finding(
-            project_id=document.project_id,
-            module="normatives",
-            type=FINDING_TYPE,
-            severity="info" if role == "informative" else "warning",
-            explanation=explanation,
-            suggested_action=guidance,
-            evidence=evidence,
-        )
-        db.add(finding)
-        existing_findings.append(finding)
-        created += 1
+        if already is None:
+            already = Finding(project_id=document.project_id, module="normatives", type=FINDING_TYPE)
+            db.add(already)
+            existing_findings.append(already)
+            created += 1
+        else:
+            found += 1
+        already.severity = "info" if role == "informative" else "warning"
+        already.explanation = explanation
+        already.suggested_action = guidance
+        already.evidence = evidence
 
     db.commit()
     return VerificationReport(

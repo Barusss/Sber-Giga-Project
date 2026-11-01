@@ -16,6 +16,12 @@ RUN apt-get update \
     && apt-get purge -y --auto-remove curl \
     && rm -rf /var/lib/apt/lists/*
 
+ARG INSTALL_PADDLE_OCR=false
+RUN if [ "$INSTALL_PADDLE_OCR" = "true" ]; then \
+      apt-get update && apt-get install -y --no-install-recommends libgl1 libglib2.0-0 libgomp1 && \
+      rm -rf /var/lib/apt/lists/*; fi
+COPY requirements-ocr.txt ./
+RUN if [ "$INSTALL_PADDLE_OCR" = "true" ]; then pip install --no-cache-dir -r requirements-ocr.txt; fi
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt && pip install --no-cache-dir "fastembed>=0.4,<1"
 COPY . .

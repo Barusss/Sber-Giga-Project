@@ -52,6 +52,7 @@ class Document(Base):
     filename: Mapped[str] = mapped_column(String(255))
     stored_path: Mapped[str] = mapped_column(Text)
     mime_type: Mapped[str] = mapped_column(String(128))
+    normative_extraction_completed: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     extraction_version: Mapped[str] = mapped_column(String(32), default="ocr-v2", server_default="ocr-v1")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     project: Mapped[Project] = relationship(back_populates="documents")
@@ -224,7 +225,9 @@ class RequirementVerification(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
     requirement_id: Mapped[str] = mapped_column(ForeignKey("tu_requirements.id"), index=True)
+    znp_document_id: Mapped[str | None] = mapped_column(ForeignKey("documents.id"), index=True, nullable=True)
     status: Mapped[RequirementStatus] = mapped_column(Enum(RequirementStatus))
+    method: Mapped[str | None] = mapped_column(String(32), nullable=True)
     confidence_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     matched_znp_clause_number: Mapped[str | None] = mapped_column(String(32), nullable=True)
     matched_znp_text: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -240,3 +243,12 @@ class RequirementVerification(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 
 
+
+
+class RequirementAnalysis(Base):
+    """Completed nonempty comparison of immutable uploaded documents."""
+    __tablename__ = "requirement_analyses"
+    tu_document_id: Mapped[str] = mapped_column(ForeignKey("documents.id"), primary_key=True)
+    znp_document_id: Mapped[str] = mapped_column(ForeignKey("documents.id"), primary_key=True)
+    requirement_ids: Mapped[list] = mapped_column(JSON)
+    completed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)

@@ -127,3 +127,71 @@ SQLite используется по умолчанию только для ло
 - [OCR, chunks, facts и поиск](docs/DATA_PIPELINE.md)
 - [Данные для ручной проверки ТУ ↔ ЗнП](docs/manual-test/README.md)
 - [Ответственность участников](docs/OWNERSHIP.md)
+
+### Pipeline correctness and optional OCR (2026-11-01)
+
+The parser no longer waits for an uppercase heading to leave a table of contents.
+Ambiguous lines remain searchable. Empty useful extraction is rejected, and PDF
+pages dominated by a scanned image are OCRed even with a partial text overlay.
+Different numbered requirements with identical text remain separate.
+
+Offline TU/ZnP retrieval cannot produce `fulfilled`: candidates require engineer
+review. API traces identify degraded analysis; text similarity is not a calibrated
+confidence. Results, confirmations and findings are scoped to immutable uploaded
+TU/ZnP documents. The UI loads the selected pair and confirms by verification ID.
+Approval requires a completed nonempty comparison, complete results and reviewed
+uncertainties/findings. A single manually entered requirement is insufficient.
+
+Migration `0008` adds pair provenance and completed-analysis manifests. It only
+binds legacy decisions where a real ZnP source fragment proves document identity.
+Unscoped old decisions are retained, but are not copied into a new comparison.
+Existing projects need re-analysis before a new approval; existing approvals are
+kept as historical state. Do not modify uploaded source files in place.
+
+Normative extraction defaults to document body rather than assuming the entire
+TU/ZnP is a foreword. Registry writes normalize designations; legacy spellings
+remain readable. Rechecks update pending automatic findings and remove stale
+obsolete findings when the observed status changes. Engineer-reviewed findings
+remain preserved.
+
+Tesseract remains the default. To try local Russian PP-OCRv5, set in `.env`:
+
+```dotenv
+INSTALL_PADDLE_OCR=true
+OCR_BACKEND=paddleocr
+OCR_DPI=200
+OCR_TIMEOUT_SECONDS=60
+MAX_PDF_PAGES=500
+```
+
+Then rebuild with `docker compose up -d --build api web`. Optional dependencies
+are pinned in `backend/requirements-ocr.txt`. The backend explicitly selects
+`PP-OCRv5_mobile_det` and `eslav_PP-OCRv5_mobile_rec` (Russian/English); it does
+not rely on automatic language selection. Weights are fetched on first use and
+cached in the `ocr_models` volume. For offline deployments, pre-download the two
+official models and set `PADDLE_DETECTION_MODEL_DIR` and
+`PADDLE_RECOGNITION_MODEL_DIR` to directories mounted in the API container.
+Inference and initialization run in a reusable isolated worker; a page timeout
+kills the worker and fails extraction explicitly. There is no silent fallback.
+
+Old scans processed with incorrect TOC metadata or a different OCR engine/DPI
+should be uploaded again and re-analyzed. `reindex-chunks` is safe only when the
+original fragment texts/boundaries still match; it refuses to rewrite evidence IDs.
+
+A reusable comparison tool is available:
+
+```bash
+cd backend
+python scripts/benchmark_ocr.py source-with-text.pdf --pages 1,2,3 --output comparison.json
+```
+
+It rasterizes pages, runs both local engines and records time, word multiset
+coverage, blocks, chunks and clauses. Coverage ignores word order and is neither
+WER nor requirement recall. Image-only input has no text reference, so its
+coverage metric is meaningless. Use a text-bearing reference PDF.
+
+Limits: OCR engines do not yet reconstruct full table-cell relationships in scans.
+The number of extracted clauses alone does not measure completeness. A labeled
+engineering benchmark and live DeepSeek evaluation are still needed. Large
+comparisons remain synchronous HTTP requests; production job queues and a total
+analysis deadline are separate follow-up work.

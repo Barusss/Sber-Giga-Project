@@ -87,6 +87,8 @@ class CheckRequirementsResponse(BaseModel):
 
 class ConfirmRequirementRequest(BaseModel):
     requirement_id: str
+    verification_id: str | None = None
+    znp_document_id: str | None = None
     status: RequirementStatus
     comment: Optional[str] = None
 
@@ -116,6 +118,8 @@ class TURequirementOut(TURequirementCreate):
 
 
 class RequirementVerificationOut(BaseModel):
+    method: str | None = None
+    znp_document_id: str | None = None
     model_config = ConfigDict(from_attributes=True)
     id: str
     project_id: str

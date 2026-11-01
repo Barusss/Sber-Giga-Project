@@ -14,7 +14,8 @@ def test_unstyled_headings_and_contents():
     doc.save(buf)
     blocks = extract_blocks(buf.getvalue(), ".docx")
     chunks = build_chunks(blocks)
-    assert sum(b.block_type == "toc" for b in blocks) == 2
+    # An ambiguous undotted entry is retained rather than dropping body text.
+    assert sum(b.block_type == "toc" for b in blocks) == 1
     assert "1.1. Назначение" in blocks[4].section_path
     assert len(chunks) >= 2
     assert all(chunk.section_path for chunk in chunks)
