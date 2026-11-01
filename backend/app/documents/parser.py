@@ -118,9 +118,177 @@ def _extract_docx(data: bytes) -> list[ExtractedBlock]:
     return blocks
 
 
+
+# Scan OCR has no Word styles. Recover only unambiguous numbered section
+# headings; a numbered engineering requirement must remain ordinary prose.
+_OCR_CLAUSE_VERBS = re.compile(
+    r"\b(?:долж(?:ен|на|но|ны)|обязан\w*|предусматрива\w*|"
+    r"обеспечива\w*|устанавлива\w*|выполня\w*|"
+    r"применя\w*|производ\w*|необходим\w*)\b", re.I,
+)
+_PAGE_FOOTER = re.compile(
+    r"^\s*(?:стр(?:аница)?\.?\s*)?\d{1,4}\s*(?:из|/)\s*\d{1,4}\s*$",
+    re.I,
+)
+_NUMBERED_LINE = re.compile(
+    r"^\s*\d{1,3}(?:\.\d{1,3}){0,5}[.)]?\s+"
+)
+_BULLET_LINE = re.compile(r"^\s*[-—–•●]\s+\S")
+_CONTENTS_LINE = re.compile(r"(?:\.{3,}|…{2,})\s*\d{1,4}\s*$")
+
+
+def _ocr_heading_level(text: str) -> int | None:
+    """Conservative layout inference: never promote a numbered command."""
+    if _OCR_CLAUSE_VERBS.search(text):
+        return None
+    return heading_level(text, "", allow_unstyled=True)
+
+
+def _ocr_lines(page, picture, page_idx: int):
+    """Read OCR word coordinates once, retaining line order and real PDF boxes."""
+    import pytesseract
+
+    data = pytesseract.image_to_data(
+        picture, lang="rus+eng", config="--oem 1 --psm 3",
+        output_type=pytesseract.Output.DICT,
+    )
+    scale_x = float(page.rect.width) / picture.width
+    scale_y = float(page.rect.height) / picture.height
+    lines = []
+    key = None
+    words = []
+    coords = []
+
+    def flush():
+        if not words:
+            return
+        box = [
+            round(min(c[0] for c in coords) * scale_x, 2),
+            round(min(c[1] for c in coords) * scale_y, 2),
+            round(max(c[2] for c in coords) * scale_x, 2),
+            round(max(c[3] for c in coords) * scale_y, 2),
+        ]
+        lines.append((" ".join(words), box, key[:2]))
+
+    for index, raw in enumerate(data["text"]):
+        word = (raw or "").strip()
+        if not word:
+            continue
+        line_key = tuple(
+            int(data[field][index])
+            for field in ("block_num", "par_num", "line_num")
+        )
+        if key is not None and line_key != key:
+            flush()
+            words = []
+            coords = []
+        key = line_key
+        words.append(word)
+        left = float(data["left"][index])
+        top = float(data["top"][index])
+        width = float(data["width"][index])
+        height = float(data["height"][index])
+        coords.append((left, top, left + width, top + height))
+    flush()
+    return lines
+
+
+def _pdf_block_type(text: str, toc_mode: bool, level: int | None) -> str:
+    if _PAGE_FOOTER.match(text):
+        return "page_furniture"
+    if toc_mode or _CONTENTS_LINE.search(text):
+        return "toc"
+    if level is not None:
+        return "heading"
+    return "paragraph"
+
+
+def _ocr_page_blocks(page, picture, page_idx, sections, toc_mode):
+    lines = _ocr_lines(page, picture, page_idx)
+    output = []
+    pending = None
+
+    def flush():
+        nonlocal pending
+        if pending is not None:
+            output.append(pending)
+        pending = None
+
+    for content, box, para_key in lines:
+        text = content.strip()
+        if not text:
+            continue
+
+        if text.casefold() in {"содержание", "оглавление"}:
+            flush()
+            sections.clear()
+            toc_mode = True
+            output.append((text, "toc", None, box))
+            continue
+
+        level = _ocr_heading_level(text)
+        if toc_mode and level == 1 and _ROOT.match(text):
+            # The body starts at an uppercase numbered root, not an entry in
+            # the contents. A table of contents has no true source sections.
+            toc_mode = False
+
+        if level is not None and not toc_mode:
+            flush()
+            sections[level] = text
+            for other in list(sections):
+                if other > level:
+                    del sections[other]
+
+        block_type = _pdf_block_type(text, toc_mode, level)
+        section = " / ".join(sections[i] for i in sorted(sections)) or None
+
+        # Tesseract paragraph IDs join wrapped lines. Never swallow a new
+        # requirement, bullet, heading or page footer in the previous block.
+        separate = (
+            block_type != "paragraph"
+            or _NUMBERED_LINE.match(text)
+            or _BULLET_LINE.match(text)
+            or pending is None
+            or pending[1] != "paragraph"
+            or pending[2] != section
+            or pending[4] != para_key
+        )
+        if separate:
+            flush()
+            pending = (text, block_type, section, box, para_key)
+        else:
+            prev_text, prev_kind, prev_section, prev_box, prev_key = pending
+            pending = (
+                prev_text + " " + text, prev_kind, prev_section,
+                [min(prev_box[0], box[0]), min(prev_box[1], box[1]),
+                 max(prev_box[2], box[2]), max(prev_box[3], box[3])],
+                prev_key,
+            )
+
+    flush()
+    return [
+        ExtractedBlock(
+            page_idx, position, text, kind,
+            None if kind == "toc" else section, box, "ocr",
+        )
+        for position, (text, kind, section, box, _) in enumerate(output)
+    ], toc_mode
+
+
+def _scan_dominates_page(page) -> bool:
+    """Detect a scanned image with only a partial native text overlay."""
+    for info in page.get_images(full=True):
+        for rect in page.get_image_rects(info[0]):
+            if rect.get_area() >= 0.55 * page.rect.get_area():
+                return True
+    return False
+
+
 def extract_blocks(data: bytes, extension: str) -> list[ExtractedBlock]:
     blocks: list[ExtractedBlock] = []
     if extension == ".pdf":
+        sections: dict[int, str] = {}
+        toc_mode = False
         with fitz.open(stream=data, filetype="pdf") as document:
             for page_idx, page in enumerate(document, start=1):
                 native = [
@@ -128,21 +296,43 @@ def extract_blocks(data: bytes, extension: str) -> list[ExtractedBlock]:
                     for entry in page.get_text("blocks", sort=True)
                     if len(entry) > 6 and entry[6] == 0 and entry[4].strip()
                 ]
-                # Image-only pages (or just a scanned page number) need OCR.
-                if sum(len(text) for text, _ in native) < 30:
-                    import pytesseract
+                native_chars = sum(len(text) for text, _ in native)
+                should_ocr = native_chars < 30
+                if not should_ocr and native_chars < 180:
+                    should_ocr = _scan_dominates_page(page)
+
+                if should_ocr:
                     from PIL import Image
                     pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
-                    picture = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
-                    content = pytesseract.image_to_string(
-                        picture, lang="rus+eng", config="--oem 1 --psm 3"
-                    ).strip()
-                    native = [(content, None)] if content else []
-                    method = "ocr"
-                else:
-                    method = "text"
+                    picture = Image.frombytes(
+                        "RGB", (pix.width, pix.height), pix.samples,
+                    )
+                    extracted, toc_mode = _ocr_page_blocks(
+                        page, picture, page_idx, sections, toc_mode,
+                    )
+                    blocks.extend(extracted)
+                    continue
+
                 for pos, (content, bbox) in enumerate(native):
-                    blocks.append(ExtractedBlock(page_idx, pos, content, bbox=bbox, extraction_method=method))
+                    # A digital PDF already has text boundaries provided by
+                    # MuPDF; we do not modify the original source string.
+                    stripped = content.strip()
+                    block_type = "paragraph"
+                    if _PAGE_FOOTER.fullmatch(stripped):
+                        block_type = "page_furniture"
+                    level = _ocr_heading_level(stripped) if "\n" not in stripped else None
+                    if level:
+                        block_type = "heading"
+                        sections[level] = stripped
+                        for other in list(sections):
+                            if other > level:
+                                del sections[other]
+                    section = " / ".join(
+                        sections[i] for i in sorted(sections)
+                    ) or None
+                    blocks.append(ExtractedBlock(
+                        page_idx, pos, content, block_type, section, bbox, "text",
+                    ))
         return blocks
 
     if extension == ".docx":
