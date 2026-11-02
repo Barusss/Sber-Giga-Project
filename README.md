@@ -134,6 +134,7 @@ GitHub Actions проверяет backend, сборку frontend и интегр
 
 ## Документация
 
+- [Текущее состояние, база знаний и оставшиеся задания](docs/PROJECT_STATUS_2026_11_02.md)
 - [API и контракты](docs/API.md)
 - [Документы, OCR, chunks, facts и поиск](docs/DATA_PIPELINE.md)
 - [Аудит чанкинга](docs/CHUNKING_AUDIT.md)
