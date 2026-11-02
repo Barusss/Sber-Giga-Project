@@ -1,160 +1,72 @@
 # Sber Giga Project
 
-Учебная система проверки проектной документации по технологическому присоединению. Три полноценных модуля: **документы и отчётность**, **ГОСТ/НТД**, **соответствие ТУ и ЗнП**.
+Учебная система проверки проектной документации: загрузка PDF/DOCX и сканов, проверка ссылок на ГОСТ/НТД, сопоставление технических условий (ТУ) с заданием на проектирование (ЗнП), решения инженера и отчёты.
 
-## Быстрый запуск (Docker)
+Рабочая версия описана для ветки **`dev` после PR #28**. Автоматический анализ помогает инженеру находить расхождения; качество на конкретных документах проверяется отдельно от успешного CI.
+
+## Запуск
+
+Нужны Git и Docker Compose.
 
 ```bash
+git clone https://github.com/Barusss/Sber-Giga-Project.git
+cd Sber-Giga-Project
+git switch dev
 cp .env.example .env
-# В Windows PowerShell: Copy-Item .env.example .env
-docker compose up --build
+# Windows PowerShell: Copy-Item .env.example .env
 ```
 
-- Интерфейс: http://localhost:5173
-- Swagger API: http://localhost:8000/docs
-- Healthcheck: http://localhost:8000/health
-
-Первый запуск создаёт таблицы через Alembic. PostgreSQL и загруженные документы хранятся в Docker volumes. Учётные данные в `.env.example` — **только для локальной разработки**.
-
-## OCR для русскоязычных сканов
-
-Backend использует **Tesseract 5** с официальными предобученными LSTM-моделями **`tessdata_best`** для русского и английского языков (`rus+eng`). Docker-образ скачивает `rus.traineddata` и `eng.traineddata` из [tesseract-ocr/tessdata_best](https://github.com/tesseract-ocr/tessdata_best) **во время сборки**. Для первой сборки нужен доступ к GitHub; файлы моделей не хранятся в репозитории. Эти модели точнее стандартных быстрых моделей, но медленнее.
-
-OCR применяется только к PDF-страницам, на которых почти нет извлекаемого текста. Для Tesseract указаны `--oem 1 --psm 3` (нейросетевой LSTM и автоматическое определение структуры страницы). DOCX и текстовые PDF обрабатываются без OCR. Чтобы проверить установленные модели в контейнере:
+В `.env` задайте `DEEPSEEK_API_KEY`, если требуется анализ через модель. Ключ используется только backend и не должен попадать в Git или frontend. Остальные параметры для локального Docker-запуска уже заданы в примере.
 
 ```bash
-docker compose exec api tesseract --list-langs
+docker compose up -d --build
 ```
 
-При запуске backend без Docker необходимо установить Tesseract 5 и самостоятельно положить модели `rus.traineddata` и `eng.traineddata` из `tessdata_best` в каталог `TESSDATA_PREFIX`. Результаты OCR, особенно обозначения ГОСТ, номера и технические параметры, следует сверять с оригиналом.
+- Приложение: http://localhost:5173
+- Документация API: http://localhost:8000/docs
+- Проверка доступности backend: http://localhost:8000/health
 
-## Диагностика веб-интерфейса и просмотр OCR
+При старте API автоматически выполняет `alembic upgrade head`. PostgreSQL, документы и веса PaddleOCR сохраняются в volumes. Первая сборка загружает зависимости и модели Tesseract, поэтому требует доступа к их источникам. Учётные данные БД из примера предназначены для локальной разработки.
 
-В левом меню есть кнопка **«Диагностика»**. Она открывает журнал операций этой вкладки: активные запросы API, завершения, ошибки и этапы обработки загружаемого документа. Записи можно отфильтровать по ошибкам, скопировать или очистить. Хранятся только последние 100 операций в памяти вкладки; после перезагрузки они исчезают. **Это не серверный журнал** и не замена логам Docker. Тела запросов, распознанные тексты и ключи DeepSeek не сохраняются.
-
-При загрузке через веб-интерфейс используется дополнительный маршрут `POST /api/v1/projects/{project_id}/documents/stream`. Он принимает те же multipart-поля `kind` и `file` и возвращает строки JSON (`application/x-ndjson`) по мере обработки: `received`, `parsing`, `parsed`, `indexing`, `complete` (с объектом документа) или `error`. Это **реальные этапы на сервере**, но без процентов и без логирования каждой OCR-страницы. Сбои до запуска потока возвращают обычный HTTP-код ошибки, сбои обработки внутри потока передаются событием `error`, а подробная трассировка остаётся в логах backend. Во всех событиях одного потока присутствует `trace_id` (12 символов); при ошибке его можно сопоставить со строкой `trace_id=...` в `docker compose logs api`. Старый `POST /projects/{project_id}/documents` возвращает прежний JSON и статус 201.
-
-В разделе **«Документы и сканы»** результат теперь показывается страницами. Можно искать по всем страницам, подсвечивать совпадения, менять размер текста, копировать оригинальный текст страницы и включать исходные переносы строк. По умолчанию переносы, появившиеся при OCR, визуально объединяются в абзацы без изменения сохранённого текста.
-
-## DeepSeek (общий AI-клиент)
-
-Скопируйте `.env.example` в `.env` и укажите в нём `DEEPSEEK_API_KEY=ваш_ключ`. По умолчанию используется `DEEPSEEK_MODEL=deepseek-flash` с `DEEPSEEK_THINKING=disabled` для структурированных ответов. Ключ хранится **только на сервере** и не попадает во frontend.
-
-Общий Python-клиент `app.ai.deepseek.DeepSeekClient` предоставляет `complete()` и `complete_json()` для модулей №2 и №3; пример, ограничения и настройки — в [docs/DEEPSEEK.md](docs/DEEPSEEK.md). Он используется извлечением нормативных ссылок (модуль №2) и агентной сверкой ТУ/ЗнП (модуль №3). Без ключа приложение продолжает работать: модуль №3 переходит на детерминированный fallback, а запрос к модели выдаёт понятную ошибку.
-
-## Что уже работает
-
-- Создание и просмотр проектов.
-- Загрузка PDF и DOCX, извлечение текста, OCR для PDF-сканов (при наличии Tesseract).
-- OCR-блоки со страницами, позициями и координатами (для PDF), поисковые chunks с точными ссылками на источники.
-- Текстовый поиск по всему документу, хранение фактов с проверяемыми цитатами.
-- Поддержка PostgreSQL pgvector для векторного поиска при загрузке embeddings из модулей.
-- Управление локальным реестром нормативов; проверка local-first с пометкой источника и даты, принудительная проверка Росстандарта через `refresh=true`, fallback при сбоях сайта.
-- Единая модель замечаний, ручное подтверждение/отклонение, запрет утверждения при непроверенных замечаниях.
-- Выгрузка структурированного JSON-отчёта.
-- OpenAPI (`/docs`), миграция базы, базовые backend-тесты.
-
-## Автоматическое извлечение нормативных ссылок
-
-`POST /api/v1/documents/{document_id}/extract-facts` обходит chunks документа, находит явные обозначения ГОСТ/СП/СНиП/ПУЭ/ISO/IEC/EN и просит DeepSeek отобрать настоящие нормативные ссылки. Сохраняет факты с проверенными исходными цитатами и страницами без дублирования. **Ключ нужен только при вызове модели**, выставляется в локальном `.env`; это пока не проверка актуальности ГОСТ. Инструкция: [docs/NORMATIVE_EXTRACTION.md](docs/NORMATIVE_EXTRACTION.md).
-
-## Проверка актуальности стандартов
-
-`POST /api/v1/documents/{document_id}/check-normatives` по умолчанию использует сохранённый локальный статус; `?refresh=true` обращается к официальному фонду Росстандарта (https://protect.gost.ru/gost), сопоставляет точные обозначения и возвращает статус, замену и ссылку на карточку; подтверждённые недействующие стандарты создают замечания в проекте. Возможен запуск со страницы «ГОСТ и НТД». Неподтверждённые сведения остаются `unknown`. [Инструкция](docs/NORMATIVE_VERIFICATION.md).
-
-## Экспертный отчёт
-
-`GET /api/v1/projects/{project_id}/normative-report` и страница «Отчёт» показывают недействующие стандарты, справочные упоминания, неподтверждённые ссылки, действующие стандарты, страницы и цитаты PDF, официальные карточки и решения эксперта. Даты проверки сохраняются по каждому документу. Теперь можно выбрать последнюю загрузку (по умолчанию), один документ либо весь проект; экспертный и технический JSON выгружаются отдельно. Карточки показывают фрагменты исходного текста с выделенной цитатой, сворачивают длинные списки упоминаний и раскрывают все цитаты при печати. Печатную форму для выбранных документов можно сохранить в PDF через браузер. [Инструкция](docs/EXPERT_NORMATIVE_REPORT.md).
-
-## Интеграция основы модуля ТУ и ЗнП (участник DPazY)
-
-Подготовленные участником №3 структуры требований ТУ, пунктов ЗнП, результатов LLM и решений инженера включены в основную кодовую базу. Миграция `0004` добавляет `tu_requirements` и `requirement_verifications` **после** существующей `0003`; данные ГОСТ сохраняются. API позволяет вручную сохранять требования, читать проверки и записывать экспертный override без выдуманного ИИ-результата. Инструкция и примеры: [docs/API.md](docs/API.md).
-
-## Автоматическая сверка ТУ и ЗнП (участник №3)
-
-`POST /api/v1/requirements/analyze` запускает агентную проверку: поиск подходящих пунктов ЗнП, чтение соседних пунктов, сверку числовых параметров (мощность, напряжение, категория надёжности, класс точности) и валидацию доказательных цитат. Поддерживаются явные списки требований (demo/бенчмарк) и документы проекта (`{project_id, tu_document_id?, znp_document_id?, force?}` — атомарные пункты извлекаются из fragments). Результаты сохраняются в `requirement_verifications`, замечания — в общие `findings`; повторный запуск обновляет записи по стабильному ключу, сохраняет решения инженера и accepted/rejected-замечания, а `force=true` сбрасывает их. Ответ содержит провенанс обеих сторон, `method`/`channels` и счётчики `trace_info.analysis`. Инженер подтверждает или переопределяет решение через `POST /requirements/projects/{project_id}/confirm`; страница «ТУ ↔ ЗнП» показывает статистику, объяснения, исходные фрагменты с подсветкой цитат и прогресс ручной проверки.
-
-При недоступной LLM (нет ключа, ошибка API, невалидный JSON/инструмент) выполняется детерминированный инструментальный прогон без выдуманных результатов. При `EMBEDDING_ENABLED=true` и установленном `fastembed` поиск гибридный; иначе используется лексический канал, а причина отключения видна в `trace_info.embedding`. Порог `missing` — `0.25`; автоматическое `fulfilled` в fallback требует лексической опоры, поэтому чисто семантическое совпадение уходит в `needs_review`. Финальное решение всегда за человеком.
-
-## 🛠 Вклад в Модуль №2: ГОСТ и НТД (Реализованные улучшения)
-
-В рамках развития модуля нормативных ссылок были реализованы следующие ключевые функции:
-
-- **Полноценное управление локальным реестром**: Реализован CRUD-интерфейс с поиском по коду/названию, фильтрацией по статусам и **безопасным удалением** (возврат `409 Conflict`, если норматив уже участвовал в проверках, что гарантирует сохранность исторических данных).
-- **Проверяемая верификация (fail-closed)**: при проверке система использует локальный реестр как подсказку для поиска официальной карточки. Подтвердить `active` или `obsolete` может только полученный ответ Росстандарта с источником и датой. Если официальный портал недоступен, итоговый статус остаётся `unknown` даже при наличии локальной записи: локальный статус не выдаётся за результат новой проверки.
-- **Улучшение пользовательского интерфейса**: Страница «ГОСТ и НТД» полностью переработана: исключен ручной ввод ID, добавлены каскадные списки выбора проекта и документа, реализованы кнопки последовательного запуска «Извлечь» и «Проверить», а также inline-редактирование записей реестра.
-- **Оценка качества извлечения (Metrics)**: Разработан скрипт `test_metrics.py` для объективного расчета Precision и Recall на эталонной разметке. Пока использует пример заранее заданных данных, поэтому реальные Precision/Recall необходимо измерить на ответах API с проверенной эталонной разметкой. Неполное обозначение, например `ГОСТ 1.0`, не считается точным совпадением с редакцией `ГОСТ 1.0-92`.
-- **Пост-обработка извлечения**: функция `enrich_candidate_code` восстанавливает редакцию только при наличии явного суффикса в исходном тексте. PR #16 расширил поддержку типографских и мягких дефисов, неразрывных пробелов в заголовках, библиографии в одной строке с записью и валидации PATCH реестра. Это улучшает обработку PDF, но не заменяет оценку Precision/Recall на размеченных документах.
-
-## Ещё предстоит реализовать
-
-- Обработка нестандартных обозначений, расширенная юридическая оценка применимости и устойчивый официальный API (если появится) — участник 2.
-- Качество семантического сопоставления требований ТУ и ЗнП: разметка пунктов и оценка качества на реальных документах — участник 3.
-- Генерация embeddings для chunks документов и извлечение фактов — предметные модули 2/3.
-- Асинхронные долгие проверки, более качественный OCR сложных сканов, разметка разделов PDF.
-- PDF/Excel-экспорт, полноценный аудит решений инженера, роли/авторизация, дополнительные тесты — участник 1.
-
-Не использовать для реальной экспертизы без проверки человеком: система учебная, не гарантирует актуальность нормативов.
-
-## Разработка без Docker
-
-Backend (нужен Python 3.12):
+Обновление существующей установки:
 
 ```bash
-cd backend
-python -m venv .venv
-# активировать виртуальное окружение
-pip install -r requirements.txt
-alembic upgrade head
-uvicorn app.main:app --reload
-pytest -q
+git switch dev
+git pull --ff-only origin dev
+docker compose up -d --build api web
 ```
 
-Frontend (нужен Node.js 22):
+Не перезаписывайте свой `.env`. Для старых сканов с ошибочными границами/метаданными оглавления нужна повторная загрузка и анализ. Переиндексация chunks не исправляет исходное OCR и не должна менять ID доказательных фрагментов.
 
-```bash
-cd frontend
-npm install
-npm run dev
-npm run build
-```
+## Пользовательский сценарий
 
-SQLite используется по умолчанию только для локального запуска без переменной DATABASE_URL. Для Docker — PostgreSQL.
+1. Создайте проект и загрузите документы в разделе «Документы и сканы». Проверьте извлечённый текст, страницы и числовые параметры.
+2. В «ГОСТ и НТД» выберите проект и документ, извлеките нормативные ссылки и запустите проверку. При необходимости обновите сведения из Росстандарта.
+3. В «ТУ ↔ ЗнП» выберите пару документов и запустите анализ. Сверьте требования, найденные пункты, цитаты и объяснения; подтвердите или измените решения.
+4. Разберите замечания и откройте отчёт. Доступны JSON и печатная форма нормативного отчёта, которую можно сохранить в PDF через браузер.
 
-## Контракты и распределение
+Пустое извлечение отклоняется. Для утверждения проекта требуется завершённый непустой анализ, полный набор результатов и рассмотренные неопределённости/замечания. Один вручную добавленный пункт не заменяет проверку всей пары.
 
-- [API-контракты](docs/API.md)
-- [OCR, chunks, facts и поиск](docs/DATA_PIPELINE.md)
-- [Данные для ручной проверки ТУ ↔ ЗнП](docs/manual-test/README.md)
-- [Ответственность участников](docs/OWNERSHIP.md)
+## Возможности и правила анализа
 
-### Pipeline correctness and optional OCR (2026-11-01)
+| Модуль | Реализовано | Что учитывать |
+|---|---|---|
+| Документы | PDF/DOCX, OCR сканов, фрагменты с источниками, структурные chunks, поиск и постраничный просмотр | Физические страницы DOCX без рендеринга неизвестны; сложные таблицы сканов восстанавливаются неполностью |
+| ГОСТ/НТД | Извлечение через DeepSeek, реестр с поиском/фильтрами/редактированием, проверка порциями, источники и замены | Локальный статус не означает свежую официальную проверку |
+| ТУ/ЗнП | Извлечение атомарных требований, поиск кандидатов, агентная сверка DeepSeek, числовые проверки и проверка цитат | Без LLM кандидаты требуют ручной проверки; автоматического `fulfilled` в fallback нет |
+| Экспертная работа | Решения инженера, замечания, привязка результатов к паре документов, JSON и нормативный отчёт | Полноценный неизменяемый аудит и отдельный Excel/PDF-экспорт остаются задачами развития |
 
-The parser no longer waits for an uppercase heading to leave a table of contents.
-Ambiguous lines remain searchable. Empty useful extraction is rejected, and PDF
-pages dominated by a scanned image are OCRed even with a partial text overlay.
-Different numbered requirements with identical text remain separate.
+**ГОСТ:** обычная проверка работает local-first и явно возвращает `source=local`. Обновление `refresh=true` обращается к Росстандарту; успешный ответ маркируется `rosstandart`. Если обновление не удалось, пригодные сохранённые сведения возвращаются с прежней датой и признаком fallback, иначе статус остаётся `unknown`. DeepSeek не определяет актуальность стандарта.
 
-Offline TU/ZnP retrieval cannot produce `fulfilled`: candidates require engineer
-review. API traces identify degraded analysis; text similarity is not a calibrated
-confidence. Results, confirmations and findings are scoped to immutable uploaded
-TU/ZnP documents. The UI loads the selected pair and confirms by verification ID.
-Approval requires a completed nonempty comparison, complete results and reviewed
-uncertainties/findings. A single manually entered requirement is insufficient.
+**ТУ/ЗнП:** повторный анализ сохраняет результаты и решения в пределах выбранной пары загруженных документов. Решение для одного ЗнП не переносится на другой. `force=true` намеренно сбрасывает сохранённые решения; используйте его только для полного пересмотра. Миграция `0008` добавляет привязку пары и записи завершённого анализа; старые проекты нужно повторно проанализировать перед новым утверждением.
 
-Migration `0008` adds pair provenance and completed-analysis manifests. It only
-binds legacy decisions where a real ZnP source fragment proves document identity.
-Unscoped old decisions are retained, but are not copied into a new comparison.
-Existing projects need re-analysis before a new approval; existing approvals are
-kept as historical state. Do not modify uploaded source files in place.
+**Поиск:** `EMBEDDING_ENABLED=true` включает опциональный гибридный поиск через FastEmbed. Без embeddings используется лексический канал. Поддержка pgvector в БД сама по себе не означает, что все chunks уже получили embeddings. Сходство текста не является калиброванной вероятностью правильности решения.
 
-Normative extraction defaults to document body rather than assuming the entire
-TU/ZnP is a foreword. Registry writes normalize designations; legacy spellings
-remain readable. Rechecks update pending automatic findings and remove stale
-obsolete findings when the observed status changes. Engineer-reviewed findings
-remain preserved.
+## OCR
 
-Tesseract remains the default. To try local Russian PP-OCRv5, set in `.env`:
+По умолчанию используется **Tesseract 5 + tessdata_best, rus+eng**. Текстовые PDF и DOCX не требуют OCR; сканированные страницы, включая страницы с недостаточным текстовым слоем, распознаются отдельно. Для PDF сохраняются координаты и страницы.
+
+Опционально доступен **PaddleOCR PP-OCRv5**: `PP-OCRv5_mobile_det` и русско-английская `eslav_PP-OCRv5_mobile_rec`. В `.env`:
 
 ```dotenv
 INSTALL_PADDLE_OCR=true
@@ -164,34 +76,72 @@ OCR_TIMEOUT_SECONDS=60
 MAX_PDF_PAGES=500
 ```
 
-Then rebuild with `docker compose up -d --build api web`. Optional dependencies
-are pinned in `backend/requirements-ocr.txt`. The backend explicitly selects
-`PP-OCRv5_mobile_det` and `eslav_PP-OCRv5_mobile_rec` (Russian/English); it does
-not rely on automatic language selection. Weights are fetched on first use and
-cached in the `ocr_models` volume. For offline deployments, pre-download the two
-official models and set `PADDLE_DETECTION_MODEL_DIR` and
-`PADDLE_RECOGNITION_MODEL_DIR` to directories mounted in the API container.
-Inference and initialization run in a reusable isolated worker; a page timeout
-kills the worker and fails extraction explicitly. There is no silent fallback.
+После изменения пересоберите API. Веса PaddleOCR загружаются при первом использовании и сохраняются в `ocr_models`. Для заранее скачанных моделей можно задать `PADDLE_DETECTION_MODEL_DIR` и `PADDLE_RECOGNITION_MODEL_DIR` и смонтировать эти каталоги в контейнер. Таймаут завершает OCR с явной ошибкой, без незаметной смены движка.
 
-Old scans processed with incorrect TOC metadata or a different OCR engine/DPI
-should be uploaded again and re-analyzed. `reindex-chunks` is safe only when the
-original fragment texts/boundaries still match; it refuses to rewrite evidence IDs.
-
-A reusable comparison tool is available:
+На контрольных растровых страницах PaddleOCR показал немного лучшее покрытие слов, но работал медленнее на CPU; это не доказывает полноту извлечения требований. Поэтому Tesseract остаётся стандартным вариантом. Воспроизводимое сравнение на PDF с эталонным текстовым слоем:
 
 ```bash
 cd backend
 python scripts/benchmark_ocr.py source-with-text.pdf --pages 1,2,3 --output comparison.json
 ```
 
-It rasterizes pages, runs both local engines and records time, word multiset
-coverage, blocks, chunks and clauses. Coverage ignores word order and is neither
-WER nor requirement recall. Image-only input has no text reference, so its
-coverage metric is meaningless. Use a text-bearing reference PDF.
+Метрика покрытия слов не учитывает порядок, не равна WER и не является recall требований. Для PDF без текстового эталона она неинформативна.
 
-Limits: OCR engines do not yet reconstruct full table-cell relationships in scans.
-The number of extracted clauses alone does not measure completeness. A labeled
-engineering benchmark and live DeepSeek evaluation are still needed. Large
-comparisons remain synchronous HTTP requests; production job queues and a total
-analysis deadline are separate follow-up work.
+## Диагностика и ограничения
+
+Кнопка «Диагностика» показывает последние 100 операций текущей вкладки. Загрузка через NDJSON сообщает этапы `received`, `parsing`, `parsed`, `indexing`, `complete/error`. `trace_id` помогает сопоставить ошибку с серверными логами:
+
+```bash
+docker compose logs --tail=200 api
+```
+
+Основные открытые направления:
+
+- Размеченный набор реальных ТУ/ЗнП, оценка полноты требований, совпадений, пропусков и числовых противоречий с живым DeepSeek.
+- Реальные precision/recall нормативных ссылок вместо демонстрационных данных `test_metrics.py`.
+- Сложные таблицы, повороты и дефекты сканов, физическая пагинация DOCX.
+- Фоновые задания и общий лимит времени анализа: большие сравнения пока выполняются синхронно.
+- Роли/авторизация, аудит решений, расширенный экспорт и приёмка полного сценария на PostgreSQL.
+
+## Разработка и проверки
+
+Стек: FastAPI/Python 3.12, React/TypeScript/Node.js 22, PostgreSQL 16 + pgvector, Alembic, Docker Compose.
+
+Backend без Docker:
+
+```bash
+cd backend
+python -m venv .venv
+# Активируйте виртуальное окружение
+pip install -r requirements.txt
+alembic upgrade head
+uvicorn app.main:app --reload
+pytest -q
+```
+
+Для запуска вне Docker настройте доступный `DATABASE_URL` и каталог загрузок. Без `DATABASE_URL` используется SQLite. Для OCR установите Tesseract и модели rus/eng либо опциональные зависимости из `requirements-ocr.txt`.
+
+Frontend:
+
+```bash
+cd frontend
+npm install
+npm run dev
+npm run build
+```
+
+GitHub Actions проверяет backend, сборку frontend и интеграцию PostgreSQL с миграциями. В проверке PR #28 прошли 168 backend-тестов и устранены 14 воспроизведений аудита. Эти результаты относятся к той версии и не заменяют оценку качества ИИ на размеченных документах.
+
+## Документация
+
+- [Текущее состояние, база знаний и оставшиеся задания](docs/PROJECT_STATUS_2026_11_02.md)
+- [API и контракты](docs/API.md)
+- [Документы, OCR, chunks, facts и поиск](docs/DATA_PIPELINE.md)
+- [Аудит чанкинга](docs/CHUNKING_AUDIT.md)
+- [Настройка DeepSeek](docs/DEEPSEEK.md)
+- [Извлечение нормативных ссылок](docs/NORMATIVE_EXTRACTION.md)
+- [Локальный реестр и Росстандарт](docs/NORMATIVE_VERIFICATION.md)
+- [Экспертный нормативный отчёт](docs/EXPERT_NORMATIVE_REPORT.md)
+- [Материалы ручного тестирования](docs/manual-test/README.md)
+- [Распределение модулей](docs/OWNERSHIP.md)
+- [Историческое ревью 26 октября](docs/REVIEW_2026_10_26.md)
