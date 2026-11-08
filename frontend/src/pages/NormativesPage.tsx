@@ -110,22 +110,23 @@ export function NormativesPage({projectId}: {projectId?: string} = {}) {
   }, [selectedProjectId])
 
   const liveExtract = operations.find(job => job.kind === 'normative_extract' &&
-    job.document_id === selectedDocId && (job.status === 'queued' || job.status === 'running'))
+    job.project_id === selectedProjectId && job.document_id === selectedDocId && (job.status === 'queued' || job.status === 'running'))
   const liveCheck = operations.find(job => job.kind === 'normative_check' &&
-    job.document_id === selectedDocId && (job.status === 'queued' || job.status === 'running'))
+    job.project_id === selectedProjectId && job.document_id === selectedDocId && (job.status === 'queued' || job.status === 'running'))
   const extracting = isExtracting || !!liveExtract
   const checking = isChecking || !!liveCheck
 
   useEffect(() => {
     if (!operationContext || !selectedProjectId) return
-    const latest = operations.find(job => (job.kind === 'normative_check' ||
-      job.kind === 'normative_extract') && job.document_id)
+    const latest = operations.find(job => job.project_id === selectedProjectId &&
+      (job.kind === 'normative_check' || job.kind === 'normative_extract') && job.document_id)
     if (!selectedDocId && latest?.document_id) {
       setSelectedDocId(latest.document_id)
       return
     }
     const verification = operations.find(job =>
-      job.kind === 'normative_check' && job.document_id === selectedDocId)
+      job.kind === 'normative_check' && job.project_id === selectedProjectId &&
+      job.document_id === selectedDocId)
     if (verification?.result) {
       const saved = verification.result as VerificationReport
       if (Array.isArray(saved.checked) && typeof saved.total === 'number') {
@@ -137,7 +138,8 @@ export function NormativesPage({projectId}: {projectId?: string} = {}) {
       }
     }
     for (const job of operations) {
-      if (!seenFinished.current.has(job.id) && job.status === 'completed' &&
+      if (!seenFinished.current.has(job.id) && job.project_id === selectedProjectId &&
+          job.status === 'completed' &&
           (job.kind === 'normative_extract' || job.kind === 'normative_check')) {
         seenFinished.current.add(job.id)
         loadNormatives()
