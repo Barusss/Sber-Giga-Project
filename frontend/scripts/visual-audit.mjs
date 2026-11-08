@@ -140,7 +140,14 @@ async function inspect(viewport,label) {
     evaluations.push({view:label,page:item.name,...observed})
     console.log('Visual page:',label,item.name,'width:',observed.containerWidth,'overflow:',observed.scrollWidth>viewport.width)
     if(viewport.width>=1024||['comparisons','review','documents'].includes(item.name)) {
-      await page.screenshot({path:`visual-artifacts/${label}-${item.name}.png`,fullPage:true,animations:'disabled'})
+      const shot = await page.screenshot({path:`visual-artifacts/${label}-${item.name}.png`,fullPage:true,animations:'disabled'})
+      // Temporary review evidence: emit small base64 chunks for screenshot inspection.
+      if(label==='desktop' && ['comparisons','review','documents','report'].includes(item.name)){
+        const encoded=shot.toString('base64')
+        for(let index=0,offset=0;offset<encoded.length;index++,offset+=6000){
+          console.log(`UI_SHOT_CHUNK:${item.name}:${index}:${encoded.slice(offset,offset+6000)}`)
+        }
+      }
     }
   }
   await page.close()
