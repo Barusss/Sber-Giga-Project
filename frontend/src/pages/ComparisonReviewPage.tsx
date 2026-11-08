@@ -1,4 +1,5 @@
-import {useEffect, useMemo, useState} from 'react'
+import {useEffect, useMemo, useRef, useState} from 'react'
+import {useOperations} from '../operations/OperationsPanel'
 import {Link, useParams, useSearchParams} from 'react-router-dom'
 import {json, request} from '../api/client'
 import {ComparisonPair, RunSummary} from './ComparisonsPage'
@@ -40,6 +41,8 @@ const date = (stamp: string) => new Date(stamp).toLocaleString('ru-RU', {
 
 export function ComparisonReviewPage({projectId, approved}: {projectId: string; approved: boolean}) {
   const {pairId} = useParams<{pairId:string}>()
+  const {operations, start} = useOperations()
+  const processedRuns = useRef(new Set<string>())
   const [searchParams, setSearchParams] = useSearchParams()
   const [pair, setPair] = useState<ComparisonPair|null>(null)
   const [runs, setRuns] = useState<RunSummary[]>([])
@@ -115,15 +118,46 @@ export function ComparisonReviewPage({projectId, approved}: {projectId: string; 
       .some(text => text.toLocaleLowerCase('ru').includes(search.trim().toLocaleLowerCase('ru'))))
   ), [items, status, search])
 
+  const running = operations.some(job =>
+    (job.kind === 'comparison' || job.kind === 'comparison_batch') &&
+    (job.status === 'queued' || job.status === 'running') &&
+    !!pairId && job.pair_ids.includes(pairId))
+
+  useEffect(() => {
+    if (!pairId) return
+    for (const job of operations) {
+      if ((job.kind !== 'comparison' && job.kind !== 'comparison_batch') ||
+          !job.pair_ids.includes(pairId) ||
+          (job.status !== 'completed' && job.status !== 'failed') ||
+          processedRuns.current.has(job.id)) continue
+      processedRuns.current.add(job.id)
+      if (job.status === 'completed') {
+        const saved = job.result?.runs
+        const selected = Array.isArray(saved)
+          ? saved.find(item => typeof item === 'object' && item !== null &&
+              'pair_id' in item && item.pair_id === pairId)
+          : undefined
+        if (selected && typeof selected.run_id === 'string') {
+          if (!requestedRun || requestedRun === pair?.current_run_id) {
+            setSearchParams({run:selected.run_id}, {replace:true})
+          }
+        }
+      }
+      void load().catch(e => setError(e instanceof Error ? e.message : String(e)))
+    }
+  }, [operations, pairId, requestedRun, pair?.current_run_id])
+
   async function rerun() {
-    if (busy || approved) return
-    setBusy(true);setError('')
+    if (busy || approved || running) return
+    setBusy(true)
+    setError('')
     try {
-      const result = await request<RunDetail>(`${root}/runs`, {method:'POST'})
-      await load()
-      setSearchParams({run:result.run.id})
-    } catch(e) {setError(e instanceof Error ? e.message : String(e))}
-    finally {setBusy(false)}
+      await start({kind:'comparison', pair_ids:[pairId!]})
+    } catch(e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
   }
 
   async function deleteRun(run: RunSummary) {
@@ -173,8 +207,8 @@ export function ComparisonReviewPage({projectId, approved}: {projectId: string; 
         <h2>Сверка документов</h2>
         {pair && <p>{pair.tu_filename} / {pair.znp_filename}</p>}
       </div>
-      {pair && !approved && <button disabled={busy} onClick={rerun}>
-        {busy ? 'Сохраняем…' : 'Повторить проверку'}
+      {pair && !approved && <button disabled={busy || running} onClick={rerun}>
+        {running ? 'Проверка выполняется' : busy ? 'Запускаем…' : 'Повторить проверку'}
       </button>}
     </div>
     {error && <p role="alert" className="error">{error}</p>}
