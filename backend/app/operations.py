@@ -6,10 +6,11 @@ supports browser disconnects; process restarts require a separate task queue.
 """
 import logging
 from copy import deepcopy
+from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 from uuid import uuid4
 from pathlib import Path
-from threading import Lock, Thread
+from threading import Lock
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
@@ -32,6 +33,10 @@ from app.requirements.workspace import execute_comparison
 router = APIRouter(tags=["operations"])
 logger = logging.getLogger(__name__)
 _enqueue_lock = Lock()
+# Avoid exhausting SQLAlchemy's default 5+10 connection pool while long-running
+# OCR / registry / LLM requests occupy database sessions. Pending jobs remain
+# queued in PostgreSQL and do not open a database session until a worker starts.
+_workers = ThreadPoolExecutor(max_workers=2, thread_name_prefix="operation")
 ACTIVE = ("queued", "running")
 KINDS = ("normative_extract", "normative_check", "comparison", "comparison_batch")
 
@@ -255,7 +260,7 @@ def _enqueue(db: Session, project_id: str, kind: str, params: dict) -> Operation
         db.add(job)
         db.commit()
         db.refresh(job)
-        Thread(target=_worker, args=(job.id,), daemon=True, name=f"operation-{job.id[:8]}").start()
+        _workers.submit(_worker, job.id)
         return job
 
 

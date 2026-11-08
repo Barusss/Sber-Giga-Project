@@ -1,6 +1,6 @@
 """Operations must persist in the DB and outlive the request that starts them."""
 from io import BytesIO
-from threading import Event
+from threading import Event, Lock
 from types import SimpleNamespace
 import time
 
@@ -245,3 +245,50 @@ def test_normative_check_can_stop_after_current_batch(ops_client, monkeypatch):
     assert job["progress_current"] == 1
     assert job["progress_total"] == 3
     assert job["result"]["total"] == 1
+
+
+def test_background_worker_queue_does_not_exhaust_db_pool(ops_client, monkeypatch):
+    """The third CPU/network-heavy operation waits without acquiring a DB connection."""
+    jobs = []
+    started = []
+    lock = Lock()
+    two_started = Event()
+    release = Event()
+
+    def slow_check(db, document, offset, limit, refresh):
+        with lock:
+            started.append(document.id)
+            if len(started) == 2:
+                two_started.set()
+        if not release.wait(5):
+            raise AssertionError("Test worker was never released")
+        return mock_normative_batch(document, offset, total=1)
+
+    monkeypatch.setattr("app.operations.check_document_standards", slow_check)
+    try:
+        for _ in range(3):
+            project_id = create_project(ops_client)
+            document_id = create_document(ops_client, project_id, "tu", monkeypatch)
+            response = ops_client.post(
+                f"/api/v1/projects/{project_id}/operations",
+                json={"kind": "normative_check", "document_id": document_id},
+            )
+            assert response.status_code == 202, response.text
+            jobs.append((project_id, response.json()["id"]))
+
+        assert two_started.wait(4), "Two worker slots were not started"
+        third_project, third_id = jobs[2]
+        third_status = ops_client.get(
+            f"/api/v1/projects/{third_project}/operations/{third_id}"
+        )
+        assert third_status.status_code == 200, third_status.text
+        assert third_status.json()["status"] == "queued"
+        assert len(started) == 2
+    finally:
+        release.set()
+
+    for project_id, job_id in jobs:
+        finished = wait_for(
+            ops_client, f"/api/v1/projects/{project_id}/operations/{job_id}"
+        )
+        assert finished["status"] == "completed"

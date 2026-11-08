@@ -112,6 +112,12 @@ def check_document_standards(
         )
     ).all()
     
+    # The read phase has finished and there are no writes yet. Release the
+    # checked-out connection before slow external Rosstandart requests.
+    # SessionLocal uses expire_on_commit=False and the evidence relationships
+    # above were eagerly loaded; all later updates are flushed at the end.
+    db.commit()
+
     registry = registry or RosstandartClient()
     checked = []
     created = found = 0
