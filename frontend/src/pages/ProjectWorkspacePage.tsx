@@ -6,6 +6,7 @@ import {NormativesPage} from './NormativesPage'
 import {ReportsPage} from './ReportsPage'
 import {ComparisonsPage, ComparisonPair} from './ComparisonsPage'
 import {ComparisonReviewPage} from './ComparisonReviewPage'
+import {OperationsPanel, OperationsProvider} from '../operations/OperationsPanel'
 
 const tabs = [
   {key: 'documents', title: 'Документы'},
@@ -62,7 +63,7 @@ export function ProjectWorkspacePage() {
 
   const base = `/projects/${projectId}`
   const insideReview = location.pathname.includes('/comparisons/')
-  return <div className="workspace">
+  return <OperationsProvider projectId={projectId}><div className="workspace">
     <div className="workspace-breadcrumb">
       <Link to="/">Проекты</Link><span aria-hidden="true">/</span><span>{project.name}</span>
     </div>
@@ -78,6 +79,7 @@ export function ProjectWorkspacePage() {
         {tab.title}
       </NavLink>)}
     </nav>
+    <OperationsPanel/>
     <div className={'workspace-body' + (insideReview ? ' workspace-review' : '')}>
       <Routes>
         <Route index element={<WorkspaceStart projectId={projectId}/>}/>
@@ -89,5 +91,5 @@ export function ProjectWorkspacePage() {
         <Route path="*" element={<Navigate to={base} replace/>}/>
       </Routes>
     </div>
-  </div>
+  </div></OperationsProvider>
 }
