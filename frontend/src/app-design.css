@@ -647,3 +647,19 @@ nav.documents-page-nav button.active { background:#ddf1f9; color:#077ca9; border
 .prepare-reference-results li strong { font-weight:650; font-size:12px; color:#345566; overflow-wrap:anywhere; }
 .prepare-reference-results li small { color:#637e8e; font-size:11px; }
 .prepare-success { background:#edf7f0; border:1px solid #d1e9dc; color:#28734b; border-radius:5px; padding:10px 12px; margin:13px 0 0; font-size:12px; }
+
+/* The sole bright CTA uses the approved brand highlight, not the base blue action. */
+button.primary-cta,
+.workspace-section-heading > button.primary-cta,
+.projects-workspace button.primary-cta {
+  background:#b9ec27;
+  border-color:#b2df20;
+  color:#344a2b;
+}
+button.primary-cta:hover:not(:disabled),
+.workspace-section-heading > button.primary-cta:hover:not(:disabled),
+.projects-workspace button.primary-cta:hover:not(:disabled) {
+  background:#c8f448;
+  border-color:#b2df20;
+  color:#283d20;
+}
