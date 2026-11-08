@@ -142,11 +142,22 @@ export function ComparisonsPage({projectId, approved}: {projectId: string; appro
         <p>Загрузите хотя бы один документ каждого типа.</p>
         <Link to={`/projects/${projectId}/documents`} className="workspace-link">Перейти к документам</Link>
       </section>}
-    <div className="workspace-stats">
-      <div><strong>{pairs.length}</strong><span>Всего сверок</span></div>
-      <div><strong>{waiting.length}</strong><span>Ожидают запуска</span></div>
-      <div><strong>{toReview.length}</strong><span>На рассмотрении</span></div>
-      <div><strong>{reviewed.length}</strong><span>Рассмотрено</span></div>
+    {waiting.length > 0 && !approved && <div className="workspace-next-action">
+      <div>
+        <strong>{waiting.length} сверок ожидают запуска</strong>
+        <p>Запустите все ожидающие проверки или выберите нужную пару в списке.</p>
+      </div>
+      <button type="button" className="secondary" disabled={busy}
+        onClick={() => run(waiting.map(pair => pair.id))}>
+        Запустить все
+      </button>
+    </div>}
+    <div className="workspace-summary" aria-label="Сводка сверок">
+      <span><strong>{pairs.length}</strong> сверок</span>
+      <span><strong>{pairs.reduce((total, pair) => total + pair.run_count, 0)}</strong> запусков</span>
+      <span><strong>{waiting.length}</strong> ожидают</span>
+      <span><strong>{toReview.length}</strong> на рассмотрении</span>
+      <span><strong>{reviewed.length}</strong> рассмотрено</span>
     </div>
 
     {tuDocs.length > 0 && znpDocs.length > 0 &&
@@ -189,12 +200,7 @@ export function ComparisonsPage({projectId, approved}: {projectId: string; appro
             </tr>)}</tbody>
           </table></div>
           {!visible.length && <p className="muted">Сверок по выбранному фильтру нет.</p>}
-          {waiting.length > 0 && !approved && <div className="workspace-footer">
-            <span>Ожидают запуска: {waiting.length}</span>
-            <button disabled={busy} onClick={() => run(waiting.map(pair => pair.id))}>
-              Запустить ожидающие сверки
-            </button>
-          </div>}
+
         </> : <>
           <p className="workspace-help">Выберите нужные сочетания документов. Один файл может участвовать в нескольких сверках.</p>
           <div className="workspace-matrix-scroll"><table className="workspace-matrix">
