@@ -391,9 +391,6 @@ export function NormativesPage({projectId}: {projectId?: string} = {}) {
           </button>
         )}
 
-          </div>
-        </div>
-
         {extractMessage && <p className="prepare-success" role="status">{extractMessage}</p>}
         {projectId && selectedDocId && <section className="prepare-reference-results">
           <div className="workspace-section-heading">
@@ -412,6 +409,9 @@ export function NormativesPage({projectId}: {projectId?: string} = {}) {
               ? 'В документе не найдено нормативных ссылок.'
               : 'Для этого документа ещё нет сохранённых нормативных ссылок.'}</p>}
         </section>}
+
+          </div>
+        </div>
 
         {checkProgress && (
           <div className="normative-progress" role="status" aria-live="polite">
