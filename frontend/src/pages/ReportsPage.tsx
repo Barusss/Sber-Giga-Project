@@ -286,15 +286,15 @@ export function ReportsPage({projectId}: {projectId?: string} = {}){
      ? 'Извлечение нормативных ссылок завершено; ссылки не найдены.'
      : 'Для части выбранных документов извлечение нормативных ссылок не завершено.'}</p>
    </section>}
-   <nav className="report-jump-nav no-print" aria-label="Разделы отчёта">
-    {groups.map(group=><a key={group.key} href={`#report-group-${group.key}`}>
+   {report.items.length>0&&<nav className="report-jump-nav no-print" aria-label="Разделы отчёта">
+    {groups.filter(group=>report.items.some(item=>item.section===group.key)).map(group=><a key={group.key} href={`#report-group-${group.key}`}>
      {group.title}<span>{report.items.filter(item=>item.section===group.key).length}</span>
     </a>)}
-   </nav>
+   </nav>}
    {report.items.some(item=>item.reason==='not_yet_verified')&&<p className="report-warning">
     Для части документов нет сохранённой проверки. Перейдите в «ГОСТ и НТД» и повторно проверьте их ID: результаты предыдущей версии реестра не содержат даты проверки.
    </p>}
-   {groups.map(group=>{
+   {groups.filter(group=>report.items.some(item=>item.section===group.key)).map(group=>{
     const items=report.items.filter(item=>item.section===group.key)
     return <section key={group.key} id={`report-group-${group.key}`} className="panel report-section">
      <div className="report-section-heading"><div><h2>{group.title}</h2><p className="muted">{group.subtitle}</p></div><span className="report-count">{items.length}</span></div>
