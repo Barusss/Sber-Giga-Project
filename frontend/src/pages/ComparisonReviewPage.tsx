@@ -185,7 +185,7 @@ export function ComparisonReviewPage({projectId, approved}: {projectId: string; 
             <h3>История запусков</h3><span className="panel-counter">{runs.length}</span>
           </div>
           {runs.length ? <div className="workspace-run-list">
-            {runs.map((run,index) => <div key={run.id} className={'workspace-run-row '+(requestedRun === run.id ? 'active' : '')}>
+            {runs.map(run => <div key={run.id} className={'workspace-run-row '+(requestedRun === run.id ? 'active' : '')}>
               <button type="button" className="workspace-run-select" onClick={() => setSearchParams({run:run.id})}>
                 <strong>{date(run.created_at)}</strong>
                 <small>{run.is_current ? 'Текущий результат' : 'Исторический снимок'} ·
