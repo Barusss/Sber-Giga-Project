@@ -269,10 +269,16 @@ export function DocumentsPage({projectId}: {projectId?: string} = {}) {
               <option value="other">Другое</option>
             </select>
           </label>
-          <label>PDF или DOCX
-            <input ref={fileInput} type="file" accept=".pdf,.docx"
-              onChange={event => setFile(event.target.files?.[0] ?? null)}
-              disabled={busy} required />
+          <label className="documents-file-label">PDF или DOCX
+            <span className="documents-file-picker">
+              <span className="documents-file-button" aria-hidden="true">Выбрать файл</span>
+              <span className="documents-file-name">{file?.name || 'Файл не выбран'}</span>
+              <input ref={fileInput} className="documents-file-native"
+                type="file" accept=".pdf,.docx"
+                aria-label="Выбрать PDF или DOCX"
+                onChange={event => setFile(event.target.files?.[0] ?? null)}
+                disabled={busy} required />
+            </span>
           </label>
           <button disabled={busy || !project || !file} type="submit">
             {busy ? 'Обрабатываем...' : 'Загрузить и распознать'}
