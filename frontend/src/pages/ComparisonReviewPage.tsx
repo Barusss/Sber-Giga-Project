@@ -50,6 +50,7 @@ export function ComparisonReviewPage({projectId, approved}: {projectId: string; 
   const [decisions, setDecisions] = useState<Record<string,Status>>({})
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const [view, setView] = useState<'review'|'history'>('review')
   const base = `/projects/${projectId}/comparisons`
   const root = `${base}/${pairId}`
   const requestedRun = searchParams.get('run') || ''
@@ -122,6 +123,7 @@ export function ComparisonReviewPage({projectId, approved}: {projectId: string; 
       const result = await request<RunDetail>(`${root}/runs`, {method:'POST'})
       await load()
       setSearchParams({run:result.run.id})
+      setView('review')
     } catch(e) {setError(e instanceof Error ? e.message : String(e))}
     finally {setBusy(false)}
   }
@@ -180,15 +182,26 @@ export function ComparisonReviewPage({projectId, approved}: {projectId: string; 
     {error && <p role="alert" className="error">{error}</p>}
     {!pair ? <p className="muted">Загружаем сверку…</p> :
       <>
-        <section className="panel workspace-history">
-          <div className="workspace-section-heading">
-            <h3>История запусков</h3><span className="panel-counter">{runs.length}</span>
+        <div className="workspace-review-toolbar">
+          <div className="workspace-view-tabs" role="group" aria-label="Раздел сверки">
+            <button type="button" className={view === 'review' ? 'active' : ''}
+              onClick={() => setView('review')}>Замечания {detail?.result.stats.total ?? ''}</button>
+            <button type="button" className={view === 'history' ? 'active' : ''}
+              onClick={() => setView('history')}>История запусков {runs.length}</button>
           </div>
+          {detail && view === 'review' && <span className="workspace-run-note">
+            {date(detail.run.created_at)}{detail.run.is_current ? '' : ' · Архивный результат'}
+          </span>}
+        </div>
+        {view === 'history' && <section className="panel workspace-history">
           {runs.length ? <div className="workspace-run-list">
             {runs.map(run => <div key={run.id} className={'workspace-run-row '+(requestedRun === run.id ? 'active' : '')}>
-              <button type="button" className="workspace-run-select" onClick={() => setSearchParams({run:run.id})}>
+              <button type="button" className="workspace-run-select" onClick={() => {
+                setSearchParams({run:run.id})
+                setView('review')
+              }}>
                 <strong>{date(run.created_at)}</strong>
-                <small>{run.is_current ? 'Текущий результат' : 'Исторический снимок'} ·
+                <small>{run.is_current ? 'Текущий результат' : 'Архивный результат'} ·
                   {run.stats.total || 0} требований · {run.confirmed} решений инженера
                 </small>
               </button>
@@ -196,18 +209,18 @@ export function ComparisonReviewPage({projectId, approved}: {projectId: string; 
                 onClick={() => deleteRun(run)}>Удалить запуск</button>}
             </div>)}
           </div> : <p className="muted">Запусков пока нет. Выполните сверку, чтобы получить результаты.</p>}
-        </section>
+        </section>}
 
-        {detail && <div className="workspace-verification">
+        {detail && view === 'review' && <div className="workspace-verification">
           <div className="workspace-section-heading">
             <div><h3>Замечания и соответствия</h3><p>Результат от {date(detail.run.created_at)}</p></div>
             {!detail.run.is_current && <span className="workspace-status queued">Исторический результат, только чтение</span>}
           </div>
-          <div className="workspace-stats">
-            <div><strong>{detail.result.stats.total}</strong><span>Требований</span></div>
-            <div><strong>{detail.result.stats.fulfilled}</strong><span>Соответствуют</span></div>
-            <div><strong>{detail.result.stats.missing}</strong><span>Не соответствуют</span></div>
-            <div><strong>{detail.result.stats.needs_review}</strong><span>Требуют рассмотрения</span></div>
+          <div className="workspace-summary">
+            <span><strong>{detail.result.stats.total}</strong> требований</span>
+            <span><strong>{detail.result.stats.fulfilled}</strong> соответствуют</span>
+            <span><strong>{detail.result.stats.missing}</strong> не соответствуют</span>
+            <span><strong>{detail.result.stats.needs_review}</strong> требуют рассмотрения</span>
           </div>
           {detail.result.trace_info?.degraded && <p className="error">
             ИИ-анализ был недоступен или неполон. Выводы требуют ручного подтверждения.
