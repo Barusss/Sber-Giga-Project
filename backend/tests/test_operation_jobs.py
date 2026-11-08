@@ -1,5 +1,7 @@
 """Operations must persist in the DB and outlive the request that starts them."""
 from io import BytesIO
+from threading import Event
+from types import SimpleNamespace
 import time
 
 from fastapi.testclient import TestClient
@@ -173,3 +175,73 @@ def test_operation_rejects_foreign_project_documents(ops_client, monkeypatch):
     )
     assert response.status_code == 422
     assert ops_client.get(f"/api/v1/projects/{second}/operations").json() == []
+
+
+def mock_normative_batch(doc, offset, total=3):
+    record = SimpleNamespace(model_dump=lambda mode=None: {
+        "code": f"TEST-{offset}", "reference_kind": "normative",
+        "status": "unknown", "registry_status": None, "replacement": None,
+        "source_url": None, "checked_at": None, "pages": [],
+        "reason": "unavailable", "source": "unknown",
+    })
+    return SimpleNamespace(
+        document_id=doc.id, total=1, active=0, obsolete=0, unknown=1,
+        findings_created=0, findings_already_existing=0, checked=[record],
+        document_total=total, offset=offset,
+        next_offset=offset + 1 if offset + 1 < total else None,
+    )
+
+
+def test_normative_check_stores_batch_progress_and_final_report(ops_client, monkeypatch):
+    project_id = create_project(ops_client)
+    doc_id = create_document(ops_client, project_id, "tu", monkeypatch)
+
+    def fake_check(db, document, offset, limit, refresh):
+        time.sleep(.055)
+        return mock_normative_batch(document, offset)
+
+    monkeypatch.setattr("app.operations.check_document_standards", fake_check)
+    response = ops_client.post(
+        f"/api/v1/projects/{project_id}/operations",
+        json={"kind": "normative_check", "document_id": doc_id},
+    )
+    assert response.status_code == 202, response.text
+    job_id = response.json()["id"]
+    completed = wait_for(
+        ops_client, f"/api/v1/projects/{project_id}/operations/{job_id}",
+    )
+    assert completed["progress_total"] == 3
+    assert completed["progress_current"] == 3
+    assert completed["result"]["total"] == 3
+    assert len(completed["result"]["checked"]) == 3
+
+
+def test_normative_check_can_stop_after_current_batch(ops_client, monkeypatch):
+    project_id = create_project(ops_client)
+    doc_id = create_document(ops_client, project_id, "tu", monkeypatch)
+    started = Event()
+
+    def fake_check(db, document, offset, limit, refresh):
+        started.set()
+        time.sleep(.2)
+        return mock_normative_batch(document, offset)
+
+    monkeypatch.setattr("app.operations.check_document_standards", fake_check)
+    response = ops_client.post(
+        f"/api/v1/projects/{project_id}/operations",
+        json={"kind": "normative_check", "document_id": doc_id},
+    )
+    assert response.status_code == 202
+    job_id = response.json()["id"]
+    assert started.wait(4)
+    stopped = ops_client.post(
+        f"/api/v1/projects/{project_id}/operations/{job_id}/cancel",
+    )
+    assert stopped.status_code == 200
+    job = wait_for(
+        ops_client, f"/api/v1/projects/{project_id}/operations/{job_id}",
+        wanted="cancelled",
+    )
+    assert job["progress_current"] == 1
+    assert job["progress_total"] == 3
+    assert job["result"]["total"] == 1
