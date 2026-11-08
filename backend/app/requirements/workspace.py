@@ -14,13 +14,14 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.core.db import get_db
 from app.core.models import (
-    ComparisonPair, ComparisonRun, Document, DocumentKind, Finding,
+    ComparisonPair, ComparisonRun, Document, DocumentKind, Finding, Project,
     RequirementAnalysis, RequirementVerification, TURequirement, ReviewState,
 )
 from app.requirements.router import (
     _analysis_lock, _confirm_requirement, _finding_in_pair,
-    _lock_project_for_analysis, analyze_requirements, get_project_requirements,
+    _lock_project_for_analysis, _analyze_project_requirements, get_project_requirements,
 )
+from app.requirements.agent import RequirementsAgent
 from app.requirements.schemas import (
     AnalyzeProjectRequirementsRequest, ConfirmRequirementRequest, RequirementStatus,
 )
@@ -44,7 +45,7 @@ class RunConfirm(BaseModel):
 
 
 def _project(db: Session, project_id: str, edit: bool = False):
-    project = db.get(__import__("app.core.models", fromlist=["Project"]).Project, project_id)
+    project = db.get(Project, project_id)
     if project is None:
         raise HTTPException(404, "Project not found")
     if edit and project.state == ReviewState.approved:
@@ -200,23 +201,26 @@ def get_comparison(project_id: str, pair_id: str, db: Session = Depends(get_db))
 @router.post("/projects/{project_id}/comparisons/{pair_id}/runs", status_code=201)
 def execute_comparison(project_id: str, pair_id: str, db: Session = Depends(get_db)):
     pair = _pair(db, project_id, pair_id, edit=True)
-    response = analyze_requirements(AnalyzeProjectRequirementsRequest(
-        project_id=project_id,
-        tu_document_id=pair.tu_document_id,
-        znp_document_id=pair.znp_document_id,
-        force=False,
-    ), db)
-    persisted = get_project_requirements(project_id, pair.tu_document_id, pair.znp_document_id, db)
-    persisted.trace_info = response.trace_info
-    for old in db.scalars(select(ComparisonRun).where(
-        ComparisonRun.pair_id == pair.id, ComparisonRun.is_current.is_(True)
-    )).all():
-        old.is_current = False
-    run = ComparisonRun(pair_id=pair.id, result=persisted.model_dump(mode="json"), is_current=True)
-    db.add(run)
-    db.commit()
-    db.refresh(run)
-    return {"run": _summary(run), "result": run.result}
+    with _analysis_lock(project_id):
+        _lock_project_for_analysis(db, project_id)
+        response = _analyze_project_requirements(AnalyzeProjectRequirementsRequest(
+            project_id=project_id,
+            tu_document_id=pair.tu_document_id,
+            znp_document_id=pair.znp_document_id,
+            force=False,
+        ), db, RequirementsAgent())
+        persisted = get_project_requirements(project_id, pair.tu_document_id, pair.znp_document_id, db)
+        persisted.trace_info = response.trace_info
+        for old in db.scalars(select(ComparisonRun).where(
+            ComparisonRun.pair_id == pair.id, ComparisonRun.is_current.is_(True)
+        )).all():
+            old.is_current = False
+        run = ComparisonRun(pair_id=pair.id, result=persisted.model_dump(mode="json"), is_current=True)
+        db.add(run)
+        db.commit()
+        db.refresh(run)
+        return {"run": _summary(run), "result": run.result}
+
 
 
 @router.get("/projects/{project_id}/comparisons/{pair_id}/runs")
