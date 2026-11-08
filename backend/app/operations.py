@@ -5,7 +5,9 @@ is committed so the UI polls real state rather than a simulated timer. This
 supports browser disconnects; process restarts require a separate task queue.
 """
 import logging
+from copy import deepcopy
 from io import BytesIO
+from uuid import uuid4
 from pathlib import Path
 from threading import Lock, Thread
 
@@ -83,7 +85,7 @@ def _update(db: Session, job_id: str, *, status: str | None = None,
     if total is not None:
         job.progress_total = total
     if result is not None:
-        job.result = result
+        job.result = deepcopy(result)
     if error is not None:
         job.error = error[:2000]
     if status in ("completed", "failed", "cancelled"):
@@ -261,7 +263,7 @@ def _enqueue(db: Session, project_id: str, kind: str, params: dict) -> Operation
 async def enqueue_upload(project_id: str, kind: DocumentKind = Form(...),
                          file: UploadFile = File(...), db: Session = Depends(get_db)):
     data, suffix = await _read_upload(project_id, file, db)
-    temp_id = __import__("uuid").uuid4().hex
+    temp_id = uuid4().hex
     path = settings.upload_dir / "pending" / f"{temp_id}{suffix}"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(data)
