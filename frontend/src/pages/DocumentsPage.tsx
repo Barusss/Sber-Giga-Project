@@ -97,9 +97,9 @@ async function readUploadResponse(response: Response, onEvent: (event: UploadEve
   return document
 }
 
-export function DocumentsPage() {
+export function DocumentsPage({projectId}: {projectId?: string} = {}) {
   const [projects, setProjects] = useState<Project[]>([])
-  const [project, setProject] = useState('')
+  const [project, setProject] = useState(projectId ?? '')
   const [kind, setKind] = useState<'tu'|'znp'|'other'>('tu')
   const [file, setFile] = useState<File | null>(null)
   const [docs, setDocs] = useState<Document[]>([])
@@ -117,8 +117,12 @@ export function DocumentsPage() {
   const fileInput = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
-    request<Project[]>('/projects').then(setProjects).catch(err => setError(humanError(err)))
-  }, [])
+    if (!projectId) request<Project[]>('/projects').then(setProjects).catch(err => setError(humanError(err)))
+  }, [projectId])
+
+  useEffect(() => {
+    if (projectId && project !== projectId) selectProject(projectId)
+  }, [projectId])
 
   useEffect(() => {
     let cancelled = false
@@ -244,19 +248,19 @@ export function DocumentsPage() {
   return (
     <div className="documents-workspace">
       <header className="documents-heading">
-        <h1>Документы и сканы</h1>
+        <h1>Документы</h1>
         <p className="muted">Загружайте PDF или DOCX. Сканированные страницы распознаются, а обычный текст сохраняется без OCR.</p>
       </header>
 
       <form onSubmit={upload} className="panel documents-upload">
         <div className="documents-upload-grid">
-          <label>Проект
+          {!projectId && <label>Проект
             <select value={project} onChange={event => selectProject(event.target.value)}
               disabled={busy} required>
               <option value="">Выберите проект</option>
               {projects.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
             </select>
-          </label>
+          </label>}
           <label>Тип документа
             <select value={kind} onChange={event => setKind(event.target.value as 'tu'|'znp'|'other')}
               disabled={busy}>
