@@ -165,12 +165,24 @@ async function review(page,width,errors) {
     await page.locator('main.app-content').waitFor()
     if(tab) await verifyTabs(page,tab)
     await checkNoOverflow(page,width,name)
-    if(width===1440) await screenshot(page,`${name}-desktop`,name==='comparisons'||name==='review')
+    if(width===1440) await screenshot(page,`${name}-desktop`,true)
     if(width===390 && (name==='comparisons'||name==='review'||name==='documents')) {
       await screenshot(page,`${name}-mobile`,name==='comparisons')
     }
   }
   await page.goto(root+'/projects/prj-1/comparisons',{waitUntil:'networkidle'})
+  await page.getByRole('link',{name:'Подготовка'}).hover()
+  await verifyTabs(page,'Сверки')
+  const tabBackground = await page.getByRole('link',{name:'Подготовка'}).evaluate(
+    element=>getComputedStyle(element).backgroundColor)
+  assert(['transparent','rgba(0, 0, 0, 0)'].includes(tabBackground),
+    'Hovering inactive project tab must not produce a filled button')
+  const primaryButton = await page.getByRole('button',{name:'Создать сверки'}).evaluate(element=>({
+    background:getComputedStyle(element).backgroundColor,
+    color:getComputedStyle(element).color,
+  }))
+  assert.equal(primaryButton.background,'rgb(8, 126, 171)')
+  assert.equal(primaryButton.color,'rgb(255, 255, 255)')
   await page.getByRole('button',{name:'Матрица'}).click()
   assert(await page.locator('.workspace-matrix tbody tr').count()===4,
     'Matrix contains four TU document rows')
@@ -179,6 +191,12 @@ async function review(page,width,errors) {
   await checkNoOverflow(page,width,'matrix')
   if(width===1440)await screenshot(page,'matrix-desktop',true)
   if(width===390)await screenshot(page,'matrix-mobile')
+  await page.goto(root+'/projects/prj-1/comparisons/cmp-2?run=run-2',{waitUntil:'networkidle'})
+  assert.equal(await page.locator('.workspace-requirement').count(),3,'Remarks show all three requirements')
+  await page.getByRole('tab',{name:/История запусков/}).click()
+  assert.equal(await page.locator('.workspace-run-row').count(),2,'History shows two runs')
+  await page.locator('.workspace-run-select').first().click()
+  assert.equal(await page.locator('.workspace-requirement').count(),3,'Selecting a run returns to remarks')
   assert.equal(errors.length,0,`Browser exceptions: ${errors.join(' | ')}`)
 }
 
