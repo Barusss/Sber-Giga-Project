@@ -70,10 +70,10 @@ function guidanceFor(item:Standard):string{
  return `Для ${item.code} в карточке Росстандарта замена не указана. Определите действующий нормативный документ для соответствующих требований и оцените необходимость изменения ссылки.`
 }
 
-export function ReportsPage(){
+export function ReportsPage({projectId}: {projectId?: string} = {}){
  const [searchParams,setSearchParams]=useSearchParams()
  const [projects,setProjects]=useState<Project[]>([])
- const [project,setProject]=useState(searchParams.get('project_id')||'')
+ const [project,setProject]=useState(projectId||searchParams.get('project_id')||'')
  const [documentSelection,setDocumentSelection]=useState(searchParams.get('document_id')||'latest')
  const [documents,setDocuments]=useState<Document[]>([])
  const [activeDocumentId,setActiveDocumentId]=useState<string|null>(null)
@@ -89,8 +89,12 @@ export function ReportsPage(){
  const [expandedQuotes,setExpandedQuotes]=useState<Record<string,boolean>>({})
 
  useEffect(()=>{
-  request<Project[]>('/projects').then(setProjects).catch(e=>setError(String(e)))
- },[])
+  if(!projectId)request<Project[]>('/projects').then(setProjects).catch(e=>setError(String(e)))
+ },[projectId])
+
+ useEffect(()=>{
+  if(projectId && projectId!==project){setProject(projectId);setPairSelection('');setDocumentSelection('latest')}
+ },[projectId])
 
  function changeProject(id:string){
   setProject(id)
@@ -199,12 +203,12 @@ export function ReportsPage(){
    <p className="muted">Результаты сопоставления ТУ и ЗнП, нормативные ссылки, исходные цитаты и решения эксперта.</p>
   </header>
   <section className="panel stack no-print">
-   <label>Проект
+   {!projectId&&<label>Проект
     <select value={project} onChange={e=>changeProject(e.target.value)}>
      <option value="">Выберите проект</option>
      {projects.map(item=><option key={item.id} value={item.id}>{item.name}</option>)}
     </select>
-   </label>
+   </label>}
    {project&&<>
     <label>Отображаемые документы
      <select value={documentSelection} onChange={e=>changeDocument(e.target.value)} disabled={loading}>
@@ -245,7 +249,7 @@ export function ReportsPage(){
      <p><b>ТУ:</b> {requirements.pair.tu_filename} · <b>ЗнП:</b> {requirements.pair.znp_filename}</p>
      <p>Проверка завершена: {date(requirements.pair.completed_at)}. {requirements.complete?'Результат полный.':'Сохранённый результат неполный — требуется проверка.'}</p>
      <p>Всего: {requirements.stats.total} · Отражено: {requirements.stats.fulfilled} · Требуют проверки: {requirements.stats.needs_review} · Пропущено: {requirements.stats.missing} · Решений инженера: {requirements.confirmed}</p>
-     <p className="no-print"><a href="/requirements">Перейти к решениям инженера</a></p>
+     <p className="no-print"><a href={projectId ? `/projects/${projectId}/comparisons` : '/requirements'}>Перейти к решениям инженера</a></p>
      {requirements.items.map(item=><article className="report-entry" key={item.id}>
       <h3>Требование ТУ {item.requirement.clause_number}</h3>
       <p>Автоматический результат: {item.automatic_status==='fulfilled'?'отражено':item.automatic_status==='missing'?'не найдено':'требует проверки'}</p>
