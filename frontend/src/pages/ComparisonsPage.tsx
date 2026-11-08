@@ -130,9 +130,9 @@ export function ComparisonsPage({projectId, approved}: {projectId: string; appro
 
   return <div className="comparisons-workspace">
     <div className="workspace-section-heading">
-      <div><h2>Сверки</h2><p>Одна пара документов может проверяться многократно. Результаты запусков сохраняются.</p></div>
+      <h2>Сверки ТУ и ЗнП</h2>
       {tuDocs.length > 0 && znpDocs.length > 0 &&
-        <button onClick={() => setLayout('matrix')} className="secondary">Создать сверки</button>}
+        <button onClick={() => setLayout('matrix')}>Создать сверки</button>}
     </div>
     {error && <p className="error" role="alert">{error}</p>}
     {busy && <p role="status" className="workspace-progress">{progress || 'Сохраняем изменения…'}</p>}
