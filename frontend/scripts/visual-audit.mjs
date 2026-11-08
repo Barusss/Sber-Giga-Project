@@ -67,7 +67,7 @@ function mock(path,method) {
   }
   return []
 }
-const server = spawn('npm',['run','preview','--','--host','127.0.0.1','--port','4173','--strictPort'],{
+const server = spawn(process.execPath,['node_modules/vite/bin/vite.js','preview','--host','127.0.0.1','--port','4173','--strictPort'],{
   cwd:process.cwd(),stdio:['ignore','pipe','pipe']
 })
 let output=''
@@ -152,6 +152,8 @@ try {
 } finally {
   await browser.close()
   server.kill('SIGTERM')
+  server.stdout.destroy()
+  server.stderr.destroy()
 }
 console.log('Visual audits:',JSON.stringify(evaluations,null,2))
 if(problems.length)throw new Error('Visual audit errors:\n'+problems.join('\n'))
