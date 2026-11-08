@@ -94,7 +94,7 @@
 .workspace-matrix-cell.new span { padding-left:12px; }
 .workspace-matrix-cell.new.selected { background:#eff9cb; border-color:#b8db37; color:#527122; }
 .workspace-matrix-cell:hover { border-color:#79c4e0; }
-.workspace-comparison-review { max-width:1300px; }
+.workspace-comparison-review { width:100%; min-width:0; max-width:none; }
 .workspace-history { margin-bottom:22px; }
 .workspace-history .workspace-section-heading { margin-bottom:10px; }
 .workspace-run-list { display:grid; }
