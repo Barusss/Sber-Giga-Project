@@ -28,6 +28,16 @@ jobs:
           node-version: '22'
       - run: npm install
       - run: npm run build
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:ui
+        env:
+          UI_SCREENSHOT_LOG: '1'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ui-smoke-screenshots
+          path: frontend/ui-artifacts/*.png
+          if-no-files-found: ignore
   postgres-integration:
     runs-on: ubuntu-latest
     services:
