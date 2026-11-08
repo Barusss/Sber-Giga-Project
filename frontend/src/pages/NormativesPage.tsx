@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Normative, Project, Document, json, request } from '../api/client'
+import {useOptionalOperations} from '../operations/OperationsPanel'
 
 type CheckedStandard = {
   code: string
@@ -39,6 +40,8 @@ type VerificationProgress = {
 const CHECK_BATCH_SIZE = 5
 
 export function NormativesPage({projectId}: {projectId?: string} = {}) {
+  const operationContext = useOptionalOperations()
+  const operations = operationContext?.operations ?? []
   const [items, setItems] = useState<Normative[]>([])
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
@@ -62,6 +65,7 @@ export function NormativesPage({projectId}: {projectId?: string} = {}) {
   const [checkProgress, setCheckProgress] = useState<VerificationProgress | null>(null)
   const checkResume = useRef<{docId: string, offset: number, report: VerificationReport, refresh: boolean} | null>(null)
   const checkController = useRef<AbortController | null>(null)
+  const seenFinished = useRef(new Set<string>())
 
   useEffect(() => {
     return () => checkController.current?.abort()
@@ -104,6 +108,46 @@ export function NormativesPage({projectId}: {projectId?: string} = {}) {
       setDocuments([])
     }
   }, [selectedProjectId])
+
+  const liveExtract = operations.find(job => job.kind === 'normative_extract' &&
+    job.document_id === selectedDocId && (job.status === 'queued' || job.status === 'running'))
+  const liveCheck = operations.find(job => job.kind === 'normative_check' &&
+    job.document_id === selectedDocId && (job.status === 'queued' || job.status === 'running'))
+  const extracting = isExtracting || !!liveExtract
+  const checking = isChecking || !!liveCheck
+
+  useEffect(() => {
+    if (!operationContext || !selectedProjectId) return
+    const latest = operations.find(job => (job.kind === 'normative_check' ||
+      job.kind === 'normative_extract') && job.document_id)
+    if (!selectedDocId && latest?.document_id) {
+      setSelectedDocId(latest.document_id)
+      return
+    }
+    const verification = operations.find(job =>
+      job.kind === 'normative_check' && job.document_id === selectedDocId)
+    if (verification?.result) {
+      const saved = verification.result as VerificationReport
+      if (Array.isArray(saved.checked) && typeof saved.total === 'number') {
+        setReport(saved)
+        setCheckProgress({
+          checked: verification.progress_current ?? saved.total,
+          total: verification.progress_total ?? saved.total,
+        })
+      }
+    }
+    for (const job of operations) {
+      if (!seenFinished.current.has(job.id) && job.status === 'completed' &&
+          (job.kind === 'normative_extract' || job.kind === 'normative_check')) {
+        seenFinished.current.add(job.id)
+        loadNormatives()
+        if (job.kind === 'normative_extract') {
+          request<Document[]>(`/projects/${selectedProjectId}/documents`)
+            .then(setDocuments).catch(() => undefined)
+        }
+      }
+    }
+  }, [operations, selectedDocId, selectedProjectId, operationContext])
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -159,6 +203,18 @@ export function NormativesPage({projectId}: {projectId?: string} = {}) {
 
   async function handleExtract() {
     if (!selectedDocId) return
+    if (operationContext) {
+      setIsExtracting(true)
+      setError('')
+      try {
+        await operationContext.start({kind:'normative_extract', document_id:selectedDocId})
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e))
+      } finally {
+        setIsExtracting(false)
+      }
+      return
+    }
     setIsExtracting(true)
     setError('')
     setReport(null)
@@ -176,7 +232,19 @@ export function NormativesPage({projectId}: {projectId?: string} = {}) {
   }
 
   async function handleCheck(refresh = false) {
-    if (!selectedDocId || isChecking) return
+    if (!selectedDocId || checking) return
+    if (operationContext) {
+      setIsChecking(true)
+      setError('')
+      try {
+        await operationContext.start({kind:'normative_check', document_id:selectedDocId, refresh})
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e))
+      } finally {
+        setIsChecking(false)
+      }
+      return
+    }
     const docId = selectedDocId
     const previous = checkResume.current?.docId === docId && checkResume.current.refresh === refresh ? checkResume.current : null
     let offset = previous?.offset ?? 0
@@ -289,7 +357,7 @@ export function NormativesPage({projectId}: {projectId?: string} = {}) {
           <select
             value={selectedProjectId}
             onChange={e => setSelectedProjectId(e.target.value)}
-            disabled={isExtracting || isChecking}
+            disabled={extracting || checking}
           >
             <option value="">Выберите проект...</option>
             {projects.map(p => (
@@ -300,7 +368,7 @@ export function NormativesPage({projectId}: {projectId?: string} = {}) {
           <select 
             value={selectedDocId} 
             onChange={e => setSelectedDocId(e.target.value)} 
-            disabled={!selectedProjectId || isExtracting || isChecking}
+            disabled={!selectedProjectId || extracting || checking}
           >
             <option value="">Выберите документ...</option>
             {documents.map(d => (
@@ -312,32 +380,34 @@ export function NormativesPage({projectId}: {projectId?: string} = {}) {
         <div className="normative-actions">
           <button 
             onClick={handleExtract} 
-            disabled={isExtracting || isChecking || !selectedDocId} 
+            disabled={extracting || checking || !selectedDocId} 
             className="secondary"
           >
-            {isExtracting ? 'Извлекаем...' : 'Извлечь нормативные ссылки'}
+            {extracting ? 'Извлекаем...' : 'Извлечь нормативные ссылки'}
           </button>
           
           <button 
             onClick={() => handleCheck(false)} 
-            disabled={isChecking || isExtracting || !selectedDocId} 
+            disabled={checking || extracting || !selectedDocId} 
 
           >
-            {isChecking ? 'Проверяем...' : checkResume.current?.docId === selectedDocId
+            {checking ? 'Проверяем...' : checkResume.current?.docId === selectedDocId
               ? 'Продолжить проверку' : 'Проверить по реестру'}
           </button>
           <button type="button" className="secondary"
             onClick={() => handleCheck(true)}
-            disabled={isChecking || isExtracting || !selectedDocId}
+            disabled={checking || extracting || !selectedDocId}
             title="Проверить все обозначения через Росстандарт, не полагаясь на сохранённый статус">
             {checkResume.current?.docId === selectedDocId && checkResume.current.refresh
               ? 'Продолжить обновление' : 'Обновить из Росстандарта'}
           </button>
         </div>
 
-        {isChecking && (
+        {checking && (
           <button type="button" className="secondary"
-            onClick={() => checkController.current?.abort()}>
+            onClick={() => liveCheck && operationContext
+              ? void operationContext.cancel(liveCheck.id)
+              : checkController.current?.abort()}>
             Остановить после текущей порции
           </button>
         )}
@@ -345,7 +415,7 @@ export function NormativesPage({projectId}: {projectId?: string} = {}) {
         {checkProgress && (
           <div className="normative-progress" role="status" aria-live="polite">
             <div className="normative-progress-top">
-              <span>{isChecking ? 'Проверка нормативов' :
+              <span>{checking ? 'Проверка нормативов' :
                 checkProgress.checked === checkProgress.total ? 'Все нормативы обработаны' : 'Частичный результат'}</span>
               <strong>{checkProgress.checked} из {checkProgress.total}</strong>
             </div>
