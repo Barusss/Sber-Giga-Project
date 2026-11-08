@@ -170,6 +170,21 @@ async function review(page,width,errors) {
       await screenshot(page,`${name}-mobile`,name==='comparisons')
     }
   }
+  await page.goto(root+'/projects/prj-1/documents',{waitUntil:'networkidle'})
+  assert.equal(await page.locator('.documents-file-name').first().textContent(),'Файл не выбран')
+  await page.locator('input.documents-file-native').setInputFiles({
+    name:'sample-tu.pdf',mimeType:'application/pdf',buffer:Buffer.from('%PDF-1.7 smoke'),
+  })
+  assert.equal(await page.locator('.documents-file-name').first().textContent(),'sample-tu.pdf')
+  await page.goto(root+'/projects/prj-1/prepare',{waitUntil:'networkidle'})
+  const disabledButton = await page.getByRole('button',{name:'Проверить по реестру'}).evaluate(element=>({
+    disabled:element.disabled,background:getComputedStyle(element).backgroundColor,
+  }))
+  assert.equal(disabledButton.disabled,true)
+  assert.notEqual(disabledButton.background,'rgb(8, 126, 171)','Disabled buttons must not resemble active primary actions')
+  await page.goto(root+'/projects/prj-1/report',{waitUntil:'networkidle'})
+  assert.equal(await page.locator('[id^="report-group-"]').count(),0,
+    'Empty report must not repeat four empty categories')
   await page.goto(root+'/projects/prj-1/comparisons',{waitUntil:'networkidle'})
   await page.getByRole('link',{name:'Подготовка'}).hover()
   await verifyTabs(page,'Сверки')
