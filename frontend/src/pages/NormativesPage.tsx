@@ -38,7 +38,7 @@ type VerificationProgress = {
 
 const CHECK_BATCH_SIZE = 5
 
-export function NormativesPage() {
+export function NormativesPage({projectId}: {projectId?: string} = {}) {
   const [items, setItems] = useState<Normative[]>([])
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
@@ -53,7 +53,7 @@ export function NormativesPage() {
 
   const [projects, setProjects] = useState<Project[]>([])
   const [documents, setDocuments] = useState<Document[]>([])
-  const [selectedProjectId, setSelectedProjectId] = useState('')
+  const [selectedProjectId, setSelectedProjectId] = useState(projectId ?? '')
   const [selectedDocId, setSelectedDocId] = useState('')
   
   const [isExtracting, setIsExtracting] = useState(false)
@@ -83,8 +83,12 @@ export function NormativesPage() {
   }
 
   useEffect(() => {
-    request<Project[]>('/projects').then(setProjects).catch(e => setError(e.message))
-  }, [])
+    if (!projectId) request<Project[]>('/projects').then(setProjects).catch(e => setError(e.message))
+  }, [projectId])
+
+  useEffect(() => {
+    if (projectId) setSelectedProjectId(projectId)
+  }, [projectId])
 
   useEffect(() => { loadNormatives() }, [search, statusFilter])
 
@@ -270,7 +274,7 @@ export function NormativesPage() {
     <div className="normatives-workspace">
       <header className="page-heading">
         <div className="eyebrow">МОДУЛЬ 02 / НОРМАТИВНЫЙ КОНТРОЛЬ</div>
-        <h1>ГОСТ и НТД<span className="heading-dot">.</span></h1>
+        <h1>{projectId ? 'Подготовка документов' : 'ГОСТ и НТД'}</h1>
         <p className="muted">Извлечение ссылок и проверка по локальному реестру с возможностью
           обновления из Росстандарта. Источник и дата официального подтверждения показываются отдельно.</p>
       </header>
@@ -283,17 +287,17 @@ export function NormativesPage() {
         </div>
         
         <div className="normative-chooser">
-          <label>Проект
-          <select 
-            value={selectedProjectId} 
-            onChange={e => setSelectedProjectId(e.target.value)} 
+          {!projectId && <label>Проект
+          <select
+            value={selectedProjectId}
+            onChange={e => setSelectedProjectId(e.target.value)}
             disabled={isExtracting || isChecking}
           >
             <option value="">Выберите проект...</option>
             {projects.map(p => (
               <option key={p.id} value={p.id}>{p.name}</option>
             ))}
-          </select></label>
+          </select></label>}
           <label>Документ
           <select 
             value={selectedDocId} 
@@ -313,7 +317,7 @@ export function NormativesPage() {
             disabled={isExtracting || isChecking || !selectedDocId} 
             className="secondary"
           >
-            {isExtracting ? 'Извлекаем...' : '1. Извлечь нормативные ссылки'}
+            {isExtracting ? 'Извлекаем...' : 'Извлечь нормативные ссылки'}
           </button>
           
           <button 
@@ -322,7 +326,7 @@ export function NormativesPage() {
 
           >
             {isChecking ? 'Проверяем...' : checkResume.current?.docId === selectedDocId
-              ? 'Продолжить проверку' : '2. Проверить по реестру'}
+              ? 'Продолжить проверку' : 'Проверить по реестру'}
           </button>
           <button type="button" className="secondary"
             onClick={() => handleCheck(true)}
@@ -414,7 +418,7 @@ export function NormativesPage() {
         )}
       </section>
 
-      {/* СЕКЦИЯ УПРАВЛЕНИЯ РЕЕСТРОМ */}
+      {!projectId && <>
       <section className="panel stack" id="normative-editor">
         <div className="eyebrow">02 / ЛОКАЛЬНЫЙ СПРАВОЧНИК</div>
         <h2>{editId ? 'Редактирование норматива' : 'Добавить норматив вручную'}</h2>
@@ -533,6 +537,7 @@ export function NormativesPage() {
         
         {!items.length && <p className="muted">Реестр пуст.</p>}
       </section>
+      </>}
     </div>
   )
 }
