@@ -1,6 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import { Normative, Project, Document, json, request } from '../api/client'
 
+type ExtractedReference = {
+  id: string
+  value: {code?: string; reference_kind?: string}
+}
+
 type CheckedStandard = {
   code: string
   reference_kind: string
@@ -55,6 +60,11 @@ export function NormativesPage({projectId}: {projectId?: string} = {}) {
   const [documents, setDocuments] = useState<Document[]>([])
   const [selectedProjectId, setSelectedProjectId] = useState(projectId ?? '')
   const [selectedDocId, setSelectedDocId] = useState('')
+  const [references, setReferences] = useState<ExtractedReference[]>([])
+  const [referencesLoading, setReferencesLoading] = useState(false)
+  const [referencesError, setReferencesError] = useState('')
+  const [factsRefresh, setFactsRefresh] = useState(0)
+  const [extractMessage, setExtractMessage] = useState('')
   
   const [isExtracting, setIsExtracting] = useState(false)
   const [isChecking, setIsChecking] = useState(false)
@@ -71,7 +81,21 @@ export function NormativesPage({projectId}: {projectId?: string} = {}) {
     checkResume.current = null
     setCheckProgress(null)
     setReport(null)
+    setExtractMessage('')
   }, [selectedDocId])
+
+  useEffect(() => {
+    if (!selectedDocId || !projectId) {setReferences([]);return}
+    let active = true
+    setReferencesLoading(true)
+    setReferencesError('')
+    setReferences([])
+    request<ExtractedReference[]>(`/documents/${selectedDocId}/facts?fact_type=normative_reference`)
+      .then(result => {if(active) setReferences(result)})
+      .catch(error => {if(active) setReferencesError(error instanceof Error ? error.message : String(error))})
+      .finally(() => {if(active) setReferencesLoading(false)})
+    return () => {active = false}
+  }, [selectedDocId, projectId, factsRefresh])
 
   const loadNormatives = () => {
     const params = new URLSearchParams()
@@ -95,7 +119,10 @@ export function NormativesPage({projectId}: {projectId?: string} = {}) {
   useEffect(() => {
     if (selectedProjectId) {
       request<Document[]>(`/projects/${selectedProjectId}/documents`)
-        .then(setDocuments)
+        .then(loaded => {
+          setDocuments(loaded)
+          if (projectId) setSelectedDocId(loaded[0]?.id || '')
+        })
         .catch(() => setDocuments([]))
       setSelectedDocId('')
       setReport(null)
@@ -167,7 +194,8 @@ export function NormativesPage({projectId}: {projectId?: string} = {}) {
     checkResume.current = null
     try {
       await request(`/documents/${selectedDocId}/extract-facts`, json('POST', {}))
-      alert('Ссылки извлечены! Теперь можно проверить актуальность.')
+      setFactsRefresh(previous => previous + 1)
+      setExtractMessage('Нормативные ссылки обновлены.')
     } catch (e: any) {
       setError(e.message || 'Ошибка при извлечении')
     } finally {
@@ -270,46 +298,64 @@ export function NormativesPage({projectId}: {projectId?: string} = {}) {
     return 'Не подтверждено'
   }
 
+  const currentDoc = documents.find(document => document.id === selectedDocId)
+
   return (
     <div className="normatives-workspace">
       <header className="page-heading">
         <div className="eyebrow">МОДУЛЬ 02 / НОРМАТИВНЫЙ КОНТРОЛЬ</div>
         <h1>{projectId ? 'Подготовка документов' : 'ГОСТ и НТД'}</h1>
-        <p className="muted">Извлечение ссылок и проверка по локальному реестру с возможностью
-          обновления из Росстандарта. Источник и дата официального подтверждения показываются отдельно.</p>
+        <p className="muted">{projectId
+          ? 'Проверяйте нормативные ссылки в документах проекта.'
+          : 'Проверка нормативных документов и обновление сведений из Росстандарта.'}</p>
       </header>
 
       {/* СЕКЦИЯ АНАЛИЗА ДОКУМЕНТА */}
       <section className="panel stack normative-analysis">
         <div className="panel-heading">
-          <div><div className="eyebrow">01 / ДОКУМЕНТ</div><h2>Анализ нормативных ссылок</h2></div>
-          <span className="panel-counter">По 5 нормативов за запрос</span>
+          <div><div className="eyebrow">01 / ДОКУМЕНТ</div><h2>{projectId ? 'Нормативные ссылки' : 'Анализ нормативных ссылок'}</h2></div>
+          <span className="panel-counter">{projectId ? documents.length + ' документов' : 'Пакетная проверка'}</span>
         </div>
         
-        <div className="normative-chooser">
-          {!projectId && <label>Проект
-          <select
-            value={selectedProjectId}
-            onChange={e => setSelectedProjectId(e.target.value)}
-            disabled={isExtracting || isChecking}
-          >
-            <option value="">Выберите проект...</option>
-            {projects.map(p => (
-              <option key={p.id} value={p.id}>{p.name}</option>
-            ))}
-          </select></label>}
-          <label>Документ
-          <select 
-            value={selectedDocId} 
-            onChange={e => setSelectedDocId(e.target.value)} 
-            disabled={!selectedProjectId || isExtracting || isChecking}
-          >
-            <option value="">Выберите документ...</option>
-            {documents.map(d => (
-              <option key={d.id} value={d.id}>{d.filename}</option>
-            ))}
-          </select></label>
-        </div>
+        <div className={projectId ? 'prepare-workarea' : ''}>
+          {projectId && <div className="prepare-document-list">
+            <h3>Документы проекта</h3>
+            <div className="prepare-document-buttons">
+              {documents.map(document => <button key={document.id} type="button"
+                className={'prepare-document-option' + (selectedDocId === document.id ? ' active' : '')}
+                disabled={isExtracting || isChecking}
+                onClick={() => setSelectedDocId(document.id)}>
+                <strong>{document.filename}</strong>
+                <small>{document.kind === 'tu' ? 'Технические условия' :
+                  document.kind === 'znp' ? 'Задание на проектирование' : 'Другой документ'}</small>
+              </button>)}
+            </div>
+            {!documents.length && <p className="muted">Сначала загрузите документы в проект.</p>}
+          </div>}
+          <div className={projectId ? 'prepare-check' : ''}>
+            {projectId && <div className="prepare-selected">
+              <h3>{currentDoc?.filename || 'Выберите документ слева'}</h3>
+              {currentDoc?.normative_extraction_completed &&
+                <small>Нормативные ссылки ранее извлекались из документа</small>}
+            </div>}
+            {!projectId && <div className="normative-chooser">
+              <label>Проект
+                <select value={selectedProjectId}
+                  onChange={e => setSelectedProjectId(e.target.value)}
+                  disabled={isExtracting || isChecking}>
+                  <option value="">Выберите проект...</option>
+                  {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                </select>
+              </label>
+              <label>Документ
+                <select value={selectedDocId}
+                  onChange={e => setSelectedDocId(e.target.value)}
+                  disabled={!selectedProjectId || isExtracting || isChecking}>
+                  <option value="">Выберите документ...</option>
+                  {documents.map(d => <option key={d.id} value={d.id}>{d.filename}</option>)}
+                </select>
+              </label>
+            </div>}
 
         <div className="normative-actions">
           <button 
@@ -343,6 +389,28 @@ export function NormativesPage({projectId}: {projectId?: string} = {}) {
             Остановить после текущей порции
           </button>
         )}
+
+        {extractMessage && <p className="prepare-success" role="status">{extractMessage}</p>}
+        {projectId && selectedDocId && <section className="prepare-reference-results">
+          <div className="workspace-section-heading">
+            <h3>Найденные нормативные ссылки</h3>
+            {!referencesLoading && <span className="panel-counter">{references.length}</span>}
+          </div>
+          {referencesLoading ? <p className="muted">Загружаем список…</p> :
+            referencesError ? <p className="error" role="alert">{referencesError}</p> :
+            references.length ? <ul>
+              {references.map(reference => <li key={reference.id}>
+                <strong>{reference.value.code || 'Обозначение не указано'}</strong>
+                <small>{reference.value.reference_kind === 'informative'
+                  ? 'Справочная ссылка' : 'Нормативная ссылка'}</small>
+              </li>)}
+            </ul> : <p className="muted">{currentDoc?.normative_extraction_completed
+              ? 'В документе не найдено нормативных ссылок.'
+              : 'Для этого документа ещё нет сохранённых нормативных ссылок.'}</p>}
+        </section>}
+
+          </div>
+        </div>
 
         {checkProgress && (
           <div className="normative-progress" role="status" aria-live="polite">

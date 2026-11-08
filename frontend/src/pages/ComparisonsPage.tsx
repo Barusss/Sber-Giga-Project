@@ -130,9 +130,9 @@ export function ComparisonsPage({projectId, approved}: {projectId: string; appro
 
   return <div className="comparisons-workspace">
     <div className="workspace-section-heading">
-      <div><h2>Сверки</h2><p>Одна пара документов может проверяться многократно. Результаты запусков сохраняются.</p></div>
+      <div><h2>Сверки ТУ и ЗнП</h2></div>
       {tuDocs.length > 0 && znpDocs.length > 0 &&
-        <button onClick={() => setLayout('matrix')} className="secondary">Создать сверки</button>}
+        <button onClick={() => setLayout('matrix')} className="primary-cta">Создать сверки</button>}
     </div>
     {error && <p className="error" role="alert">{error}</p>}
     {busy && <p role="status" className="workspace-progress">{progress || 'Сохраняем изменения…'}</p>}
@@ -184,18 +184,25 @@ export function ComparisonsPage({projectId, approved}: {projectId: string; appro
           <div className="workspace-table-scroll"><table className="workspace-table">
             <thead><tr><th>Технические условия</th><th>Задание на проектирование</th><th>Состояние</th><th>Запусков</th><th>Действия</th></tr></thead>
             <tbody>{visible.map(pair => <tr key={pair.id}>
-              <td className="workspace-doc-name">{pair.tu_filename}</td>
-              <td className="workspace-doc-name">{pair.znp_filename}</td>
-              <td><span className={'workspace-status '+pair.status}>{statusLabels[pair.status]}</span></td>
-              <td>{pair.run_count}</td>
-              <td><div className="workspace-row-actions">
-                <Link to={`${base}/${pair.id}`} className="workspace-link">
-                  {pair.status === 'queued' ? 'Открыть' : 'Замечания и история'}
-                </Link>
+              <td className="workspace-doc-name" data-label="ТУ">{pair.tu_filename}</td>
+              <td className="workspace-doc-name" data-label="ЗнП">{pair.znp_filename}</td>
+              <td data-label="Статус"><span className={'workspace-status '+pair.status}>{statusLabels[pair.status]}</span></td>
+              <td data-label="Запусков">{pair.run_count}</td>
+              <td data-label="Действия"><div className="workspace-row-actions">
+                <Link to={`${base}/${pair.id}`} className="workspace-link">Открыть</Link>
                 {pair.status === 'queued' && !approved &&
                   <button type="button" className="secondary" disabled={busy} onClick={() => run([pair.id])}>Запустить</button>}
-                {!approved && <button type="button" className="workspace-danger" disabled={busy}
-                  onClick={() => remove(pair)}>Удалить</button>}
+                {!approved && <details className="workspace-row-menu">
+                  <summary aria-label={`Действия со сверкой ${pair.tu_filename} и ${pair.znp_filename}`}
+                    title="Другие действия"><svg viewBox="0 0 24 24" width="18" height="18"
+                      aria-hidden="true" fill="currentColor"><circle cx="5" cy="12" r="1.7"/>
+                      <circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg>
+                  </summary>
+                  <div className="workspace-row-menu-content">
+                    <button type="button" className="workspace-danger" disabled={busy}
+                      onClick={() => remove(pair)}>Удалить сверку</button>
+                  </div>
+                </details>}
               </div></td>
             </tr>)}</tbody>
           </table></div>
@@ -226,7 +233,7 @@ export function ComparisonsPage({projectId, approved}: {projectId: string; appro
           </table></div>
           <div className="workspace-footer">
             <span>Выбрано комбинаций: {selected.length}</span>
-            <button disabled={!selected.length || busy || approved} onClick={addSelected}>
+            <button className="primary-cta" disabled={!selected.length || busy || approved} onClick={addSelected}>
               Добавить в очередь
             </button>
           </div>

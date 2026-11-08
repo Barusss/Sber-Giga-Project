@@ -197,6 +197,7 @@ export function ReportsPage({projectId}: {projectId?: string} = {}){
   (!activeDocumentId||f.evidence.some(e=>e.document_id===activeDocumentId))
  )
  const pending=findings.some(f=>f.review_status==='pending')
+ const populatedGroups=groups.filter(group=>report?.items.some(item=>item.section===group.key))
  return <div className="expert-report">
   <header className="report-header">
    <h1>Экспертный отчёт</h1>
@@ -220,12 +221,17 @@ export function ReportsPage({projectId}: {projectId?: string} = {}){
      </select>
     </label>
     <p className="muted">Выбранный документ определяет область проверки нормативов и прочих замечаний. Результат ТУ/ЗнП относится к выбранной паре документов.</p>
-    <div className="horizontal">
-     <span>Статус проекта: <b>{state==='approved'?'Утверждён':'В работе'}</b></span>
-     <button className="secondary" onClick={reload} disabled={loading}>Обновить отчёт</button>
-     <button className="secondary" onClick={downloadExpert} disabled={!report||loading}>Экспертный JSON (выбор)</button>
-     <button className="secondary" onClick={downloadTechnical} disabled={loading}>Технический JSON (весь проект)</button>
-     <button className="secondary" onClick={()=>window.print()} disabled={!report||loading}>Печать / Сохранить PDF</button>
+    <div className="report-actions">
+     <span className="report-state">Статус: <b>{state==='approved'?'Утверждён':'В работе'}</b></span>
+     <button className="secondary" onClick={reload} disabled={loading}>Обновить</button>
+     <button className="secondary" onClick={()=>window.print()} disabled={!report||loading}>Сохранить PDF</button>
+     <details className="report-export-menu">
+      <summary>Экспорт данных</summary>
+      <div>
+       <button type="button" className="secondary" onClick={downloadExpert} disabled={!report||loading}>Экспертный JSON</button>
+       <button type="button" className="secondary" onClick={downloadTechnical} disabled={loading}>Технический JSON</button>
+      </div>
+     </details>
      <button onClick={approve} disabled={busy||loading||state==='approved'||pending||!report}>Утвердить проект</button>
     </div>
     {pending&&<p className="muted">Утверждение возможно только после рассмотрения всех замечаний проекта, даже если в отчёте выбран один документ.</p>}
@@ -286,19 +292,19 @@ export function ReportsPage({projectId}: {projectId?: string} = {}){
      ? 'Извлечение нормативных ссылок завершено; ссылки не найдены.'
      : 'Для части выбранных документов извлечение нормативных ссылок не завершено.'}</p>
    </section>}
-   <nav className="report-jump-nav no-print" aria-label="Разделы отчёта">
-    {groups.map(group=><a key={group.key} href={`#report-group-${group.key}`}>
+   {populatedGroups.length > 1 && <nav className="report-jump-nav no-print" aria-label="Разделы отчёта">
+    {populatedGroups.map(group=><a key={group.key} href={`#report-group-${group.key}`}>
      {group.title}<span>{report.items.filter(item=>item.section===group.key).length}</span>
     </a>)}
-   </nav>
+   </nav>}
    {report.items.some(item=>item.reason==='not_yet_verified')&&<p className="report-warning">
     Для части документов нет сохранённой проверки. Перейдите в «ГОСТ и НТД» и повторно проверьте их ID: результаты предыдущей версии реестра не содержат даты проверки.
    </p>}
-   {groups.map(group=>{
+   {populatedGroups.map(group=>{
     const items=report.items.filter(item=>item.section===group.key)
     return <section key={group.key} id={`report-group-${group.key}`} className="panel report-section">
      <div className="report-section-heading"><div><h2>{group.title}</h2><p className="muted">{group.subtitle}</p></div><span className="report-count">{items.length}</span></div>
-     {items.length===0?<p className="muted">Нет записей в этой категории.</p>:items.map(item=>
+     {items.map(item=>
       <article key={item.document_id+item.code} className="report-entry">
        <div className="report-entry-heading">
         <div><h3>{item.code}</h3>{item.title&&<p>{item.title}</p>}</div>
