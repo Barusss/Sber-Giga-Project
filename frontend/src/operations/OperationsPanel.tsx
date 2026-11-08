@@ -40,6 +40,10 @@ type ContextValue = {
 const OperationsContext = createContext<ContextValue|null>(null)
 const active = (job: Operation) => job.status === 'queued' || job.status === 'running'
 
+export function useOptionalOperations() {
+  return useContext(OperationsContext)
+}
+
 export function useOperations() {
   const value = useContext(OperationsContext)
   if (!value) throw new Error('OperationsProvider is required')
