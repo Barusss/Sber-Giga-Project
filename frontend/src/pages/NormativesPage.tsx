@@ -273,17 +273,14 @@ export function NormativesPage({projectId}: {projectId?: string} = {}) {
   return (
     <div className="normatives-workspace">
       <header className="page-heading">
-        <div className="eyebrow">МОДУЛЬ 02 / НОРМАТИВНЫЙ КОНТРОЛЬ</div>
         <h1>{projectId ? 'Подготовка документов' : 'ГОСТ и НТД'}</h1>
-        <p className="muted">Извлечение ссылок и проверка по локальному реестру с возможностью
-          обновления из Росстандарта. Источник и дата официального подтверждения показываются отдельно.</p>
+        <p className="muted">Извлечение и проверка нормативных ссылок в документах проекта.</p>
       </header>
 
       {/* СЕКЦИЯ АНАЛИЗА ДОКУМЕНТА */}
       <section className="panel stack normative-analysis">
         <div className="panel-heading">
-          <div><div className="eyebrow">01 / ДОКУМЕНТ</div><h2>Анализ нормативных ссылок</h2></div>
-          <span className="panel-counter">По 5 нормативов за запрос</span>
+          <h2>Анализ нормативных ссылок</h2>
         </div>
         
         <div className="normative-chooser">
