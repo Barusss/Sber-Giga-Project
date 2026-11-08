@@ -14,6 +14,7 @@ from app.core.models import (
 )
 from app.normatives.extraction import normalize_code
 from app.normatives.verification import FINDING_TYPE, finding_key
+from app.core.schemas import DocumentOut
 
 
 CONTEXT_RADIUS = 115
@@ -58,7 +59,9 @@ def evidence_context(source_text: str, quote: str) -> str | None:
 
 class QuoteOut(BaseModel):
     fragment_id: str
-    page: int
+    page: int | None
+    logical_page: int | None = None
+    pagination_kind: str = "unknown"
     quote: str
     context: str | None = None
 
@@ -167,15 +170,18 @@ def build_normative_report(db: Session, project: Project, document_id: str | Non
             section = "requires_attention"
 
         quoted = {}
+        pagination_kind = DocumentOut.model_validate(doc_by_id[doc_id]).pagination_kind
         for fact in related:
             for evidence in fact.evidence:
                 quoted[(evidence.fragment_id, evidence.quote)] = QuoteOut(
                     fragment_id=evidence.fragment_id,
-                    page=evidence.fragment.page,
+                    page=evidence.fragment.page if pagination_kind == "physical" else None,
+                    logical_page=evidence.fragment.page if pagination_kind != "physical" else None,
+                    pagination_kind=pagination_kind,
                     quote=evidence.quote,
                     context=evidence_context(evidence.fragment.text, evidence.quote),
                 )
-        citations = sorted(quoted.values(), key=lambda item: (item.page, item.fragment_id))
+        citations = sorted(quoted.values(), key=lambda item: (item.page or item.logical_page or 0, item.fragment_id))
 
         finding = next((f for f in findings if finding_key(f, doc_id, code)), None)
         finding_out = FindingReviewOut(

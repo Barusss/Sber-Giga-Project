@@ -12,6 +12,7 @@
 .report-section-heading h2{margin:0}
 .report-section-heading p{margin-bottom:8px;font-size:13px}
 .report-count{border:1px solid #d3dce5;border-radius:10px;padding:4px 12px;font-size:18px;font-weight:700}
+.print-only{display:none}
 .report-entry{padding:19px 0;border-top:1px solid #e9eef4;break-inside:avoid-page}
 .report-entry h3{font-size:17px;margin:0 0 8px}
 .report-entry-heading p{margin:0 0 12px;font-size:13px;color:#526174}
@@ -33,6 +34,7 @@
 @media(max-width:1050px){.report-metrics{grid-template-columns:repeat(3,minmax(0,1fr))}}
 @media(max-width:760px){.report-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.report-entry-heading{flex-wrap:wrap}}
 @media print{
+ .print-only{display:block}
  @page{size:A4;margin:15mm}
  body{background:white;color:#151f2d;font-size:11pt}
  .app{display:block}

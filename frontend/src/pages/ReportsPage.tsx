@@ -2,7 +2,7 @@ import {useEffect,useState} from 'react'
 import {useSearchParams} from 'react-router-dom'
 import {Document,Finding,Project,request,json} from '../api/client'
 
-type Quote={fragment_id:string;page:number;quote:string;context:string|null}
+type Quote={fragment_id:string;page:number|null;pagination_kind?:string;quote:string;context:string|null}
 type Review={id:string;review_status:'pending'|'accepted'|'rejected';severity:string;explanation:string;suggested_action:string|null}
 type Standard={
  document_id:string;document_name:string;code:string;reference_kind:string
@@ -18,6 +18,15 @@ type NormativeReport={
  generated_at:string;total:number;requires_attention:number;informative:number
  unverified:number;active:number;items:Standard[]
 }
+type Pair={tu_document_id:string;znp_document_id:string;tu_filename:string;znp_filename:string;completed_at:string}
+type RequirementResult={
+ id:string;status:string;automatic_status:string|null;reasoning:string|null;historical_reasoning?:string|null;is_confirmed_by_human:boolean;human_comment:string|null
+ requirement:{id:string;clause_number:string;text:string};tu_quote:string|null;tu_page:number|null
+ matched_clause:{clause_number:string;text:string}|null;znp_quote:string|null;znp_page:number|null
+ validation_details?:{model_reasoning?:string;items?:Array<{item_id:number;text:string;status:string;evidence:Array<{fragment_id?:string;clause_number:string;quote:string;page:number|null}>}>}|null
+}
+type RequirementsReport={available_pairs:Pair[];pair:Pair|null;complete:boolean;stats:{total:number;fulfilled:number;missing:number;needs_review:number}|null;confirmed:number;items:RequirementResult[]}
+type ExpertReport={requirements:RequirementsReport;normatives:NormativeReport}
 
 const date=(value:string|null)=>value?new Date(value).toLocaleString('ru-RU',{dateStyle:'short',timeStyle:'short'}):'—'
 const reviewLabel=(value:string)=>{
@@ -53,7 +62,7 @@ function QuoteExcerpt({source,quote}:{source:string;quote:string}){
 function EvidenceQuote({item}:{item:Quote}){
  return <blockquote className="report-source-quote">
   <QuoteExcerpt source={item.context||item.quote} quote={item.quote}/>
-  <small>Исходный PDF, стр. {item.page}{item.context?' · Контекст упоминания':' · Короткая цитата'}</small>
+  <small>{item.page != null ? `Исходный PDF, стр. ${item.page}` : 'Физическая страница не определена'}{item.context?' · Контекст упоминания':' · Короткая цитата'}</small>
  </blockquote>
 }
 function guidanceFor(item:Standard):string{
@@ -72,6 +81,8 @@ export function ReportsPage(){
  const [refreshKey,setRefreshKey]=useState(0)
  const [findings,setFindings]=useState<Finding[]>([])
  const [report,setReport]=useState<NormativeReport|null>(null)
+ const [requirements,setRequirements]=useState<RequirementsReport|null>(null)
+ const [pairSelection,setPairSelection]=useState('')
  const [error,setError]=useState('')
  const [busy,setBusy]=useState(false)
  const [state,setState]=useState('draft')
@@ -83,6 +94,7 @@ export function ReportsPage(){
 
  function changeProject(id:string){
   setProject(id)
+  setPairSelection('')
   setDocumentSelection('latest')
   setSearchParams(id?{project_id:id,document_id:'latest'}:{})
  }
@@ -94,12 +106,12 @@ export function ReportsPage(){
 
  useEffect(()=>{
   if(!project){
-   setReport(null);setFindings([]);setDocuments([]);setActiveDocumentId(null)
+   setReport(null);setRequirements(null);setFindings([]);setDocuments([]);setActiveDocumentId(null)
    return
   }
   let cancelled=false
   async function load(){
-   setLoading(true);setError('');setReport(null)
+   setLoading(true);setError('');setReport(null);setRequirements(null)
    try{
     const path=`/projects/${encodeURIComponent(project)}`
     const [nextFindings,nextProject,nextDocuments]=await Promise.all([
@@ -117,18 +129,20 @@ export function ReportsPage(){
      if(!sorted.some(item=>item.id===documentSelection))throw new Error('Документ не принадлежит выбранному проекту')
      selectedId=documentSelection
     }
-    const url=`${path}/normative-report${selectedId?`?document_id=${encodeURIComponent(selectedId)}`:''}`
-    const nextReport=await request<NormativeReport>(url)
+    const params=new URLSearchParams()
+    if(selectedId)params.set('document_id',selectedId)
+    if(pairSelection){const [tu,znp]=pairSelection.split('|');params.set('tu_document_id',tu);params.set('znp_document_id',znp)}
+    const nextReport=await request<ExpertReport>(`${path}/expert-report?${params.toString()}`)
     if(cancelled)return
     setDocuments(sorted);setFindings(nextFindings);setState(nextProject.state)
-    setActiveDocumentId(selectedId);setReport(nextReport)
+    setActiveDocumentId(selectedId);setReport(nextReport.normatives);setRequirements(nextReport.requirements)
    }catch(e){
     if(!cancelled){setError(String(e));setReport(null);setActiveDocumentId(null)}
    }finally{if(!cancelled)setLoading(false)}
   }
   load()
   return ()=>{cancelled=true}
- },[project,documentSelection,refreshKey])
+ },[project,documentSelection,pairSelection,refreshKey])
 
  async function review(item:Review,value:'accepted'|'rejected'){
   if(!project||busy)return
@@ -155,7 +169,10 @@ export function ReportsPage(){
  }
  function downloadExpert(){
   if(!report||loading)return
-  saveJson(report,`expert-normatives-${project}-${report.selected_document_id||'all'}.json`)
+  const exportFindings=otherFindings.map(f=>({...f,evidence:f.evidence.map(e=>
+   documents.find(d=>d.id===e.document_id)?.pagination_kind==='physical' ? e :
+    {...e,logical_page:e.page??null,page:null})}))
+  saveJson({requirements,normatives:report,other_findings:exportFindings},`expert-report-${project}-${report.selected_document_id||'all'}.json`)
  }
  async function downloadTechnical(){
   if(!project)return
@@ -168,7 +185,10 @@ export function ReportsPage(){
   `${documents.find(d=>d.id===activeDocumentId)?.filename||'Документ'} · ${activeDocumentId.slice(0,8)}…`:
   'Весь проект'
  
+ const requirementIds=new Set(requirements?.items.map(item=>item.requirement.id)??[])
  const otherFindings=findings.filter(f=>
+  !(f.module==='requirements'&&requirements?.pair&&f.evidence.some(e=>
+   e.requirement_id&&requirementIds.has(e.requirement_id)&&e.znp_document_id===requirements?.pair?.znp_document_id))&&
   !(f.module==='normatives'&&f.type==='obsolete_normative')&&
   (!activeDocumentId||f.evidence.some(e=>e.document_id===activeDocumentId))
  )
@@ -176,7 +196,7 @@ export function ReportsPage(){
  return <div className="expert-report">
   <header className="report-header">
    <h1>Экспертный отчёт</h1>
-   <p className="muted">Актуальность ГОСТ, исходные цитаты, официальные источники и решения эксперта. Статусы взяты из сохранённых проверок.</p>
+   <p className="muted">Результаты сопоставления ТУ и ЗнП, нормативные ссылки, исходные цитаты и решения эксперта.</p>
   </header>
   <section className="panel stack no-print">
    <label>Проект
@@ -195,7 +215,7 @@ export function ReportsPage(){
       </option>)}
      </select>
     </label>
-    <p className="muted">Выбранный документ определяет статистику, печатный отчёт и экспертный JSON. Все загрузки остаются в проекте.</p>
+    <p className="muted">Выбранный документ определяет область проверки нормативов и прочих замечаний. Результат ТУ/ЗнП относится к выбранной паре документов.</p>
     <div className="horizontal">
      <span>Статус проекта: <b>{state==='approved'?'Утверждён':'В работе'}</b></span>
      <button className="secondary" onClick={reload} disabled={loading}>Обновить отчёт</button>
@@ -210,6 +230,40 @@ export function ReportsPage(){
   {error&&<p className="error no-print">{error}</p>}
   {loading&&<p className="muted no-print">Загружаем отчёт…</p>}
   {report&&<>
+   {requirements&&<section className="panel report-section">
+    <h2>Сопоставление ТУ и ЗнП</h2>
+    {requirements.available_pairs.length>1&&<label className="no-print">Пара документов
+     <select value={pairSelection} onChange={e=>setPairSelection(e.target.value)}>
+      <option value="">Выберите пару</option>
+      {requirements.available_pairs.map(pair=><option key={pair.tu_document_id+'|'+pair.znp_document_id} value={pair.tu_document_id+'|'+pair.znp_document_id}>
+       {pair.tu_filename} / {pair.znp_filename}
+      </option>)}
+     </select>
+    </label>}
+    {!requirements.pair&&<p>{requirements.available_pairs.length?'Выберите пару документов.':'Сохранённых проверок ТУ и ЗнП нет.'}</p>}
+    {requirements.pair&&requirements.stats&&<>
+     <p><b>ТУ:</b> {requirements.pair.tu_filename} · <b>ЗнП:</b> {requirements.pair.znp_filename}</p>
+     <p>Проверка завершена: {date(requirements.pair.completed_at)}. {requirements.complete?'Результат полный.':'Сохранённый результат неполный — требуется проверка.'}</p>
+     <p>Всего: {requirements.stats.total} · Отражено: {requirements.stats.fulfilled} · Требуют проверки: {requirements.stats.needs_review} · Пропущено: {requirements.stats.missing} · Решений инженера: {requirements.confirmed}</p>
+     <p className="no-print"><a href="/requirements">Перейти к решениям инженера</a></p>
+     {requirements.items.map(item=><article className="report-entry" key={item.id}>
+      <h3>Требование ТУ {item.requirement.clause_number}</h3>
+      <p>Автоматический результат: {item.automatic_status==='fulfilled'?'отражено':item.automatic_status==='missing'?'не найдено':'требует проверки'}</p>
+      <p>{item.requirement.text}</p>
+      {item.tu_quote&&<blockquote>ТУ: «{item.tu_quote}» {item.tu_page!=null?`(стр. ${item.tu_page})`:'(физическая страница не определена)'}</blockquote>}
+      {item.validation_details?.items?.map(part=><div key={part.item_id}><b>{part.text}</b> — {part.status==='fulfilled'?'подтверждено':'требует проверки'}
+       {part.evidence.map((e,index)=><blockquote key={index}>ЗнП {e.clause_number}: «{e.quote}» {e.page!=null?`(стр. ${e.page})`:'(физическая страница не определена)'} {e.fragment_id&&`· фрагмент ${e.fragment_id.slice(0,8)}`}</blockquote>)}
+      </div>)}
+      {!item.validation_details?.items&&item.znp_quote&&<blockquote>ЗнП {item.matched_clause?.clause_number}: «{item.znp_quote}» {item.znp_page!=null?`(стр. ${item.znp_page})`:'(физическая страница не определена)'}</blockquote>}
+      <p>{item.reasoning}</p>
+      {item.historical_reasoning&&<><details className="no-print"><summary>Исходное пояснение прежней проверки</summary><p>{item.historical_reasoning}</p></details>
+       <p className="print-only"><b>Исходное пояснение прежней проверки:</b> {item.historical_reasoning}</p></>}
+      {item.validation_details?.model_reasoning&&<><details className="no-print"><summary>Предварительный вывод модели</summary><p>{item.validation_details.model_reasoning}</p></details>
+       <p className="print-only"><b>Предварительный вывод модели:</b> {item.validation_details.model_reasoning}</p></>}
+      <p>Решение инженера: {item.is_confirmed_by_human?(item.status==='fulfilled'?'подтверждено':item.status==='missing'?'зафиксирован пропуск':'на уточнение'):'ожидается'}{item.human_comment&&` · ${item.human_comment}`}</p>
+     </article>)}
+    </>}
+   </section>}
    <section className="report-cover panel">
     <p className="report-overline">Результаты проверки нормативных ссылок</p>
     <h2>{report.project_name}</h2>
@@ -224,7 +278,9 @@ export function ReportsPage(){
     </div>
    </section>
    {report.items.length===0&&<section className="panel">
-    <p>Нормативные ссылки пока не извлечены. Сначала обработайте документ в разделе «ГОСТ и НТД».</p>
+    <p>{documents.length>0 && (activeDocumentId ? documents.filter(d=>d.id===activeDocumentId) : documents).every(d=>d.normative_extraction_completed)
+     ? 'Извлечение нормативных ссылок завершено; ссылки не найдены.'
+     : 'Для части выбранных документов извлечение нормативных ссылок не завершено.'}</p>
    </section>}
    <nav className="report-jump-nav no-print" aria-label="Разделы отчёта">
     {groups.map(group=><a key={group.key} href={`#report-group-${group.key}`}>
@@ -246,7 +302,7 @@ export function ReportsPage(){
        </div>
        <div className="report-details">
         <span><b>Документ:</b> {item.document_name}</span>
-        <span><b>Страницы PDF:</b> {Array.from(new Set(item.evidence.map(e=>e.page))).sort((a,b)=>a-b).join(', ')||'—'}</span>
+        <span><b>Страницы PDF:</b> {Array.from(new Set(item.evidence.flatMap(e=>e.page == null ? [] : [e.page]))).sort((a,b)=>a-b).join(', ')||'не определены'}</span>
         <span><b>Тип упоминания:</b> {item.reference_kind==='informative'?'Справочное':'Нормативное'}</span>
         <span><b>Дата официального подтверждения:</b> {date(item.checked_at)}</span>
         <span><b>Источник статуса:</b> {sourceLabel(item)}</span>
@@ -289,7 +345,7 @@ export function ReportsPage(){
     <h2>Другие замечания проекта</h2>
     {otherFindings.map(item=><article className="report-entry" key={item.id}>
      <h3>{item.type}</h3><p>{item.explanation}</p>
-     {item.evidence.map((e,i)=><blockquote key={i}>«{e.quote}» (стр. {e.page??'—'})</blockquote>)}
+     {item.evidence.map((e,i)=><blockquote key={i}>«{e.quote}» {documents.find(d=>d.id===e.document_id)?.pagination_kind==='physical' && e.page != null ? `(стр. ${e.page})` : '(физическая страница не определена)'}</blockquote>)}
      <p><b>Решение эксперта:</b> {reviewLabel(item.review_status)}</p>
      {state!=='approved'&&<div className="horizontal no-print">
       <button disabled={busy} onClick={()=>review({id:item.id,review_status:item.review_status,severity:item.severity,explanation:item.explanation,suggested_action:item.suggested_action},'accepted')}>Подтвердить</button>

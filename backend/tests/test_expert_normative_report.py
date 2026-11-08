@@ -69,6 +69,23 @@ def responses(self, code, source_url=None):
     return RegistryResult(code=code, reason="unsupported_or_incomplete_designation")
 
 
+def test_docx_report_does_not_claim_a_physical_page(client, monkeypatch):
+    monkeypatch.setattr("app.documents.router.extract_blocks", lambda data, suffix: [
+        ExtractedBlock(1, 0, "ГОСТ 29322-92 используется в требованиях")])
+    project = client.post("/api/v1/projects", json={"name": "DOCX"}).json()
+    response = client.post(f"/api/v1/projects/{project['id']}/documents", data={"kind": "other"},
+        files={"file": ("test.docx", BytesIO(b"fake docx"), "application/vnd.openxmlformats-officedocument.wordprocessingml.document")})
+    doc_id = response.json()["id"]
+    fragment = client.get(f"/api/v1/documents/{doc_id}/fragments").json()[0]
+    fact = client.post(f"/api/v1/documents/{doc_id}/facts", json={
+        "fact_type": "normative_reference", "value": {"code": "ГОСТ 29322-92", "reference_kind": "normative"},
+        "evidence": [{"fragment_id": fragment["id"], "quote": "ГОСТ 29322-92"}]})
+    assert fact.status_code == 201, fact.text
+    evidence = client.get(f"/api/v1/projects/{project['id']}/normative-report").json()["items"][0]["evidence"][0]
+    assert evidence["page"] is None
+    assert evidence["pagination_kind"] == "logical"
+
+
 def test_report_grouping_persistence_provenance_and_review(client, monkeypatch):
     project_id, doc_id = prepare(client, monkeypatch)
     url = f"/api/v1/projects/{project_id}/normative-report"

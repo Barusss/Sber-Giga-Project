@@ -386,7 +386,8 @@ export function NormativesPage() {
                       <td><span className={'normative-status ' + item.status}>
                         {item.registry_status || statusLabel(item.status)}</span></td>
                       <td>{item.replacement || '—'}</td>
-                      <td>{item.pages.join(', ') || '—'}</td>
+                      <td>{documents.find(document => document.id === selectedDocId)?.pagination_kind === 'physical'
+                        ? item.pages.join(', ') || '—' : 'не определена'}</td>
                       <td>
                         {item.source_url ? (
                           <a href={item.source_url} target="_blank" rel="noopener noreferrer">

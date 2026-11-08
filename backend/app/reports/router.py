@@ -7,6 +7,7 @@ from app.core.models import Chunk, DocumentKind, Fact, NormativeVerification, Re
 from app.normatives.extraction import normalize_code
 from app.core.schemas import FindingCreate, FindingOut, FindingReview
 from app.reports.normative_report import NormativeReport, build_normative_report
+from app.reports.requirements_report import build_requirements_report
 
 router = APIRouter(tags=["reports"])
 
@@ -103,6 +104,24 @@ def normative_report(project_id: str, document_id: str | None = None,
         if document is None or document.project_id != project_id:
             raise HTTPException(404, "Document not found in this project")
     return build_normative_report(db, project, document_id=document_id)
+
+
+@router.get("/projects/{project_id}/expert-report")
+def expert_report(project_id: str, document_id: str | None = None, tu_document_id: str | None = None,
+                  znp_document_id: str | None = None, db: Session = Depends(get_db)):
+    project = project_or_404(db, project_id)
+    if document_id is not None:
+        document = db.get(Document, document_id)
+        if document is None or document.project_id != project_id:
+            raise HTTPException(404, "Document not found in this project")
+    if (tu_document_id is None) != (znp_document_id is None):
+        raise HTTPException(422, "Select both TU and ZNP documents")
+    try:
+        requirements = build_requirements_report(db, project_id, tu_document_id, znp_document_id)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    normatives = build_normative_report(db, project, document_id=document_id)
+    return {"requirements": requirements, "normatives": normatives}
 
 
 @router.get("/projects/{project_id}/report")
