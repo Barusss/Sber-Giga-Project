@@ -530,3 +530,69 @@ nav.documents-page-nav button.active { background:#ddf1f9; color:#077ca9; border
 .workspace-run-select small { color:#597282; }
 .workspace-status.queued { color:#506977; }
 .workspace-status.ready,.workspace-status.needs_review { color:#176e95; }
+
+/* Lists: search/filter stay on one row instead of stretching into blank space. */
+.projects-workspace > .panel .workspace-toolbar,
+.comparisons-workspace .workspace-toolbar { display:flex; justify-content:space-between; align-items:center; gap:12px; }
+.projects-workspace > .panel .workspace-toolbar input[type=search] { width:300px; max-width:360px; flex:0 1 300px; }
+.projects-workspace > .panel .workspace-toolbar select { width:190px; max-width:190px; flex:0 0 190px; }
+.comparisons-workspace .workspace-controls { display:flex; align-items:center; flex:0 1 auto; gap:9px; }
+.comparisons-workspace .workspace-controls input[type=search] { width:250px; max-width:280px; flex:0 1 250px; }
+.comparisons-workspace .workspace-controls select { width:165px; max-width:185px; flex:0 0 165px; }
+.workspace-verification .workspace-toolbar { justify-content:flex-start; }
+.workspace-verification .workspace-toolbar input[type=search] { width:310px; max-width:350px; flex:0 1 310px; }
+.workspace-verification .workspace-toolbar select { width:220px; max-width:230px; flex:0 0 220px; }
+
+/* Deletion is deliberately available, but not repeated as red text in every row. */
+.comparisons-workspace .workspace-table-scroll { overflow:visible; }
+.workspace-row-menu { display:inline-block; position:relative; flex:0 0 auto; }
+.workspace-row-menu summary { display:flex; align-items:center; justify-content:center; list-style:none; cursor:pointer; border:1px solid #d6e3e9; background:white; color:#617b8d; border-radius:5px; width:33px; height:33px; }
+.workspace-row-menu summary::-webkit-details-marker { display:none; }
+.workspace-row-menu summary:hover,.workspace-row-menu[open] summary { background:#f0f7fa; border-color:#bcd9e7; color:#28769a; }
+.workspace-row-menu-content { position:absolute; right:0; top:calc(100% + 5px); z-index:40; min-width:156px; padding:5px; background:white; border:1px solid var(--line); box-shadow:0 8px 24px rgba(35,68,89,.12); border-radius:6px; }
+.workspace-row-menu-content button { width:100%; min-height:36px; justify-content:flex-start; border:0; text-align:left; font-size:12px; }
+.workspace-status.ready,.workspace-status.needs_review { background:#e5f3fb; color:#176e95; }
+.workspace-row-actions { flex-wrap:nowrap; gap:8px; }
+.workspace-row-actions .workspace-link { white-space:nowrap; margin-right:2px; }
+
+.report-actions { display:flex; flex-wrap:wrap; align-items:center; gap:10px; }
+.report-actions .report-state { margin-right:auto; white-space:nowrap; font-size:12px; color:#5d7585; }
+.report-export-menu { position:relative; z-index:5; }
+.report-export-menu summary { list-style:none; display:flex; align-items:center; min-height:38px; padding:8px 13px; border:1px solid var(--line-strong); background:white; border-radius:5px; color:#4a6b7f; font-size:12px; font-weight:650; cursor:pointer; }
+.report-export-menu summary::-webkit-details-marker { display:none; }
+.report-export-menu summary:hover,.report-export-menu[open] summary { background:#f0f7fa; color:#1579a3; }
+.report-export-menu > div { position:absolute; right:0; top:calc(100% + 5px); z-index:6; min-width:225px; display:grid; gap:4px; padding:9px; border:1px solid var(--line); border-radius:6px; background:white; box-shadow:0 8px 24px rgba(35,68,89,.12); }
+.report-export-menu button { justify-content:flex-start; }
+
+@media (max-width:760px) {
+  .projects-workspace > .panel .workspace-toolbar input[type=search] { width:100%; max-width:none; flex:1 1 100%; }
+  .projects-workspace > .panel .workspace-toolbar select { width:100%; max-width:none; flex:1 1 100%; }
+  .comparisons-workspace .workspace-toolbar { display:grid; grid-template-columns:minmax(0,1fr); }
+  .comparisons-workspace .workspace-controls { width:100%; display:grid; grid-template-columns:1fr 1fr; }
+  .comparisons-workspace .workspace-controls input[type=search],
+  .comparisons-workspace .workspace-controls select { width:100%; min-width:0; max-width:none; flex:auto; }
+  .workspace-verification .workspace-toolbar input[type=search],
+  .workspace-verification .workspace-toolbar select { flex:1 1 100%; width:100%; max-width:none; }
+
+  /* A phone shows readable comparison cards, not a clipped five-column table. */
+  .comparisons-workspace .workspace-table { min-width:0; width:100%; border:0; }
+  .comparisons-workspace .workspace-table thead { display:none; }
+  .comparisons-workspace .workspace-table tbody { display:grid; gap:11px; }
+  .comparisons-workspace .workspace-table tr { display:grid; background:white; border:1px solid var(--line); border-radius:6px; overflow:visible; }
+  .comparisons-workspace .workspace-table td {
+    display:flex; align-items:flex-start; justify-content:space-between; min-width:0;
+    gap:9px; padding:8px 12px; border:0; background:transparent;
+    color:var(--text); font-size:12px; overflow-wrap:anywhere;
+  }
+  .comparisons-workspace .workspace-table td:first-child { padding-top:13px; }
+  .comparisons-workspace .workspace-table td:last-child { padding:12px; border-top:1px solid #eef2f4; }
+  .comparisons-workspace .workspace-table td::before { content:attr(data-label); flex:0 0 58px; font-size:11px; color:#5e7687; font-weight:650; }
+  .comparisons-workspace .workspace-table .workspace-doc-name { font-weight:620; text-align:right; }
+  .comparisons-workspace .workspace-table td .workspace-status { margin-left:auto; }
+  .comparisons-workspace .workspace-table td:last-child::before { display:none; }
+  .comparisons-workspace .workspace-table .workspace-row-actions { width:100%; justify-content:flex-end; }
+  .workspace-row-menu-content { right:0; }
+  .report-actions { gap:8px; }
+  .report-actions .report-state { flex:0 0 100%; }
+  .report-export-menu > div { right:auto; left:0; }
+}
