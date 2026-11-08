@@ -50,6 +50,7 @@ export function ComparisonReviewPage({projectId, approved}: {projectId: string; 
   const [decisions, setDecisions] = useState<Record<string,Status>>({})
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const [view, setView] = useState<'remarks'|'history'>('remarks')
   const base = `/projects/${projectId}/comparisons`
   const root = `${base}/${pairId}`
   const requestedRun = searchParams.get('run') || ''
@@ -167,26 +168,42 @@ export function ComparisonReviewPage({projectId, approved}: {projectId: string; 
 
   if (!pairId) return <p className="error">Сверка не выбрана.</p>
   return <div className="workspace-comparison-review">
-    <div className="workspace-section-heading">
-      <div>
-        <Link to={base} className="workspace-back">Все сверки</Link>
-        <h2>Сверка документов</h2>
-        {pair && <p>{pair.tu_filename} / {pair.znp_filename}</p>}
+    <section className="panel workspace-review-header">
+      <div className="workspace-section-heading">
+        <div>
+          <Link to={base} className="workspace-back">Все сверки</Link>
+          <h2>Сверка документов</h2>
+        </div>
+        {pair && !approved && <button disabled={busy} onClick={rerun}>
+          {busy ? 'Выполняется…' : runs.length ? 'Повторить проверку' : 'Запустить проверку'}
+        </button>}
       </div>
-      {pair && !approved && <button disabled={busy} onClick={rerun}>
-        {busy ? 'Сохраняем…' : 'Повторить проверку'}
-      </button>}
-    </div>
+      {pair && <div className="workspace-review-files">
+        <div><small>Технические условия</small><strong>{pair.tu_filename}</strong></div>
+        <div><small>Задание на проектирование</small><strong>{pair.znp_filename}</strong></div>
+      </div>}
+    </section>
     {error && <p role="alert" className="error">{error}</p>}
     {!pair ? <p className="muted">Загружаем сверку…</p> :
       <>
-        <section className="panel workspace-history">
+        <div className="workspace-review-tabs" role="tablist" aria-label="Данные сверки">
+          <button type="button" role="tab" aria-selected={view === 'remarks'}
+            className={view === 'remarks' ? 'active' : ''}
+            onClick={() => setView('remarks')}>Замечания</button>
+          <button type="button" role="tab" aria-selected={view === 'history'}
+            className={view === 'history' ? 'active' : ''}
+            onClick={() => setView('history')}>История запусков <span>{runs.length}</span></button>
+        </div>
+        {view === 'history' && <section className="panel workspace-history">
           <div className="workspace-section-heading">
             <h3>История запусков</h3><span className="panel-counter">{runs.length}</span>
           </div>
           {runs.length ? <div className="workspace-run-list">
             {runs.map(run => <div key={run.id} className={'workspace-run-row '+(requestedRun === run.id ? 'active' : '')}>
-              <button type="button" className="workspace-run-select" onClick={() => setSearchParams({run:run.id})}>
+              <button type="button" className="workspace-run-select" onClick={() => {
+                setSearchParams({run:run.id})
+                setView('remarks')
+              }}>
                 <strong>{date(run.created_at)}</strong>
                 <small>{run.is_current ? 'Текущий результат' : 'Исторический снимок'} ·
                   {run.stats.total || 0} требований · {run.confirmed} решений инженера
@@ -196,9 +213,12 @@ export function ComparisonReviewPage({projectId, approved}: {projectId: string; 
                 onClick={() => deleteRun(run)}>Удалить запуск</button>}
             </div>)}
           </div> : <p className="muted">Запусков пока нет. Выполните сверку, чтобы получить результаты.</p>}
-        </section>
+        </section>}
 
-        {detail && <div className="workspace-verification">
+        {view === 'remarks' && !detail && !runs.length &&
+          <section className="panel workspace-empty"><p>Проверка ещё не запускалась.</p></section>}
+
+        {view === 'remarks' && detail && <div className="workspace-verification">
           <div className="workspace-section-heading">
             <div><h3>Замечания и соответствия</h3><p>Результат от {date(detail.run.created_at)}</p></div>
             {!detail.run.is_current && <span className="workspace-status queued">Исторический результат, только чтение</span>}
