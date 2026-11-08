@@ -104,11 +104,13 @@ button {
 }
 button:hover:not(:disabled) { background: #06648e; border-color: #06648e; transform: none; box-shadow: none; filter: none; }
 button:active:not(:disabled) { background: #05577c; transform: none; }
-button:disabled { opacity: .55; cursor: not-allowed; filter: none; }
+button:disabled { opacity: 1; cursor: not-allowed; filter: none; color: #8b9da8; background: #f3f6f8; border-color: #e0e8ed; box-shadow: none; }
 button.secondary,.secondary,.expert-report .report-more-button {
   color: #375d73; background: #fff; border: 1px solid #d5e0e7; box-shadow: none; text-shadow: none;
 }
 button.secondary:hover:not(:disabled),.expert-report .report-more-button:hover:not(:disabled) { background: #eff5f8; color: #305d74; }
+button.secondary:disabled { opacity:1; background:#f7f9fa; border-color:#e1e8ec; color:#92a0aa; }
+
 button.danger,button.delete,.normative-actions .delete-action { color: #b64848; background: #fff1ef; border-color: #f0cfcc; }
 button.danger:hover:not(:disabled),.normative-actions .delete-action:hover:not(:disabled) { color: #9b3333; background: #ffe6e4; }
 input,select,textarea {
