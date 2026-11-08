@@ -1,6 +1,6 @@
 import {useEffect, useMemo, useRef, useState} from 'react'
 import {Document, Fragment, Project, request} from '../api/client'
-import {useOperations} from '../operations/OperationsPanel'
+import {useOptionalOperations} from '../operations/OperationsPanel'
 
 type PageGroup = {
   number: number
@@ -43,7 +43,8 @@ function humanError(error: unknown) {
 }
 
 export function DocumentsPage({projectId}: {projectId?: string} = {}) {
-  const {operations, upload: startUpload} = useOperations()
+  const operationContext = useOptionalOperations()
+  const operations = operationContext?.operations ?? []
   const processedJobs = useRef(new Set<string>())
   const [projects, setProjects] = useState<Project[]>([])
   const [project, setProject] = useState(projectId ?? '')
@@ -164,7 +165,8 @@ export function DocumentsPage({projectId}: {projectId?: string} = {}) {
       const form = new FormData()
       form.append('kind', kind)
       form.append('file', file)
-      await startUpload(form)
+      if (operationContext) await operationContext.upload(form)
+      else await request(`/projects/${project}/operations/upload`, {method:'POST', body:form})
       setFile(null)
       if (fileInput.current) fileInput.current.value = ''
     } catch (err) {
