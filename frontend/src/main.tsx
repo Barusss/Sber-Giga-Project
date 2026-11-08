@@ -9,8 +9,6 @@ import {RequirementsPage} from './pages/RequirementsPage'
 import {ReportsPage} from './pages/ReportsPage'
 import {DebugPanel} from './debug/DebugPanel'
 import './styles.css'
-import './theme-bitrix24.css'
-import './theme-workspace.css'
 import './project-workspace.css'
 
 function App() {
