@@ -468,3 +468,46 @@ nav.documents-page-nav button.active { background:#ddf1f9; color:#077ca9; border
   .workspace-evidence-grid { grid-template-columns:1fr 1fr; }
 }
 
+
+/* Review modes occupy one work area. History never obscures the findings. */
+.workspace-review-toolbar {
+  display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap;
+  gap:14px; margin:0 0 19px; padding:0; border-bottom:1px solid var(--line);
+}
+.workspace-view-tabs { display:flex; gap:22px; align-items:center; }
+.workspace-view-tabs button {
+  min-height:43px; padding:10px 1px 11px; background:transparent; border:0;
+  border-bottom:2px solid transparent; border-radius:0; color:#617f91;
+  box-shadow:none; font-size:13px; font-weight:650;
+}
+.workspace-view-tabs button:hover:not(:disabled) {
+  background:transparent; border-color:transparent; color:var(--accent-hover);
+}
+.workspace-view-tabs button.active,
+.workspace-view-tabs button.active:hover:not(:disabled) {
+  background:transparent; border-color:var(--accent); color:var(--accent-hover);
+}
+.workspace-run-note { font-size:12px; color:var(--subtle); }
+.workspace-history { padding:0 19px; }
+.workspace-run-row { padding:13px 3px; }
+.workspace-run-row.active { background:#f5fafd; }
+.workspace-verification > .workspace-section-heading { margin-top:0; }
+.workspace-requirement .workspace-engineer h4 { margin:0 0 11px; }
+.workspace-requirement .workspace-engineer-fields button { white-space:nowrap; }
+.workspace-requirement .workspace-engineer-fields textarea { max-height:220px; }
+.workspace-verification .workspace-summary { margin-bottom:16px; }
+.workspace-verification .workspace-toolbar { border-top:1px solid var(--line); padding-top:15px; }
+
+/* Consistent readable grey text; color is reserved for statuses and actions. */
+.workspace-run-row small,.workspace-section-heading p,.workspace-doc-name,
+.documents-file-info small,.workspace-help { line-height:1.45; }
+.workspace-requirement .workspace-evidence-grid p { color:var(--text); }
+.workspace-requirement .workspace-analysis-note p { color:#486275; }
+.workspace-requirement-head .workspace-status { font-size:11px; }
+@media (max-width:760px) {
+  .workspace-review-toolbar { align-items:flex-start; }
+  .workspace-view-tabs { gap:16px; }
+  .workspace-view-tabs button { font-size:12px; min-height:43px; }
+  .workspace-run-note { padding-bottom:10px; }
+  .workspace-history { padding:0 13px; }
+}
