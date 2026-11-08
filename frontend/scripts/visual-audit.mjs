@@ -40,7 +40,18 @@ const checkItems = [
 ]
 const result = {checked_requirements:checkItems,stats:{total:3,fulfilled:1,missing:1,needs_review:1},trace_info:null}
 const report = {project_id:PROJECT,project_name:project.name,project_state:'draft',selected_document_id:null,
-  generated_at:now,total:2,requires_attention:1,informative:0,unverified:1,active:0,items:[]}
+  generated_at:now,total:2,requires_attention:1,informative:0,unverified:1,active:0,items:[
+  {document_id:'tu-1',document_name:docs[0].filename,code:'ГОСТ 29322-92',reference_kind:'normative',
+   status:'obsolete',registry_status:'Заменён',title:'Стандартные напряжения',
+   replacement:'ГОСТ 29322-2014',source_url:null,checked_at:now,attempted_at:now,reason:null,source:'local',
+   section:'requires_attention',evidence:[{fragment_id:'fragment-1',page:2,pagination_kind:'physical',
+      quote:'ГОСТ 29322-92',context:'При проектировании учитывать ГОСТ 29322-92.'}],finding:null},
+  {document_id:'tu-1',document_name:docs[0].filename,code:'ГОСТ 32144-2013',reference_kind:'normative',
+   status:'unknown',registry_status:null,title:null,replacement:null,source_url:null,
+   checked_at:null,attempted_at:now,reason:'not_yet_verified',source:null,
+   section:'unverified',evidence:[{fragment_id:'fragment-2',page:4,pagination_kind:'physical',
+      quote:'ГОСТ 32144-2013',context:'Качество электроэнергии должно отвечать ГОСТ 32144-2013.'}],finding:null}
+]}
 const requirementsReport = {available_pairs:pairs.filter(p=>p.current_run_id).map(p=>({
   tu_document_id:p.tu_document_id,znp_document_id:p.znp_document_id,tu_filename:p.tu_filename,znp_filename:p.znp_filename,completed_at:now
 })),pair:null,complete:false,stats:null,confirmed:0,items:[]}
@@ -51,6 +62,11 @@ function mock(path,method) {
   if (path === `/api/v1/projects/${PROJECT}/documents`) return docs
   if (path === `/api/v1/projects/${PROJECT}/comparisons`) return pairs
   if (path === `/api/v1/projects/${PROJECT}/findings`) return []
+  if (path.startsWith('/api/v1/documents/tu-1/facts')) return [
+    {id:'fact-01',value:{code:'ГОСТ 29322-92',reference_kind:'normative'}},
+    {id:'fact-02',value:{code:'ГОСТ 32144-2013',reference_kind:'normative'}},
+    {id:'fact-03',value:{code:'СП 256.1325800.2016',reference_kind:'informative'}}
+  ]
   if (path.startsWith(`/api/v1/projects/${PROJECT}/expert-report`)) return {normatives:report,requirements:requirementsReport}
   if (path === '/api/v1/normatives') return []
   if (path.startsWith('/api/v1/normatives?')) return []
