@@ -19,6 +19,7 @@ function App() {
     <header className="app-topbar">
       <div className="app-topbar-inner">
         <Link className="brand" to="/" aria-label="Экспертиза — к проектам">
+          <span className="brand-symbol" aria-hidden="true">Э</span>
           <span className="brand-name">Экспертиза</span>
         </Link>
         <nav className="app-nav" aria-label="Основная навигация">
