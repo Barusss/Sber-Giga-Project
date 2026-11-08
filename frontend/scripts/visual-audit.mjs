@@ -140,14 +140,48 @@ async function inspect(viewport,label) {
     evaluations.push({view:label,page:item.name,...observed})
     console.log('Visual page:',label,item.name,'width:',observed.containerWidth,'overflow:',observed.scrollWidth>viewport.width)
     if(viewport.width>=1024||['comparisons','review','documents'].includes(item.name)) {
-      const shot = await page.screenshot({path:`visual-artifacts/${label}-${item.name}.png`,fullPage:true,animations:'disabled'})
-      // Temporary review evidence: emit small base64 chunks for screenshot inspection.
-      if(label==='desktop' && ['comparisons','review','documents','report'].includes(item.name)){
-        const encoded=shot.toString('base64')
-        for(let index=0,offset=0;offset<encoded.length;index++,offset+=6000){
-          console.log(`UI_SHOT_CHUNK:${item.name}:${index}:${encoded.slice(offset,offset+6000)}`)
-        }
+      await page.screenshot({path:`visual-artifacts/${label}-${item.name}.png`,fullPage:true,animations:'disabled'})
+    }
+    if(label === 'desktop' && item.name === 'comparisons') {
+      await page.getByRole('button',{name:'Матрица'}).click()
+      const rows = await page.locator('.workspace-matrix tbody tr').count()
+      if(rows !== 4)problems.push('Matrix: expected 4 TU rows, got '+rows)
+      const check=page.locator('.workspace-matrix-cell.new input[type=checkbox]').first()
+      if(await check.count()) {
+        await check.check()
+        if(!await page.getByRole('button',{name:'Добавить в очередь'}).isEnabled())
+          problems.push('Matrix: selected combination did not enable queue action')
+      }else problems.push('Matrix: no free combinations')
+      await page.getByRole('button',{name:'Список'}).click()
+      const menu=page.locator('.workspace-row-menu summary').first()
+      if(await menu.count()) {
+        await menu.click()
+        if(!await page.getByRole('button',{name:'Удалить сверку'}).first().isVisible())
+          problems.push('Comparison row: removal action missing from menu')
+      } else problems.push('Comparison row: action menu missing')
+    }
+    if(label === 'desktop' && item.name === 'prepare') {
+      const count=await page.locator('.prepare-document-option').count()
+      if(count!==9)problems.push('Preparation: expected 9 document selections, got '+count)
+      if(count>1) {
+        await page.locator('.prepare-document-option').nth(1).click()
+        if(!await page.locator('.prepare-document-option').nth(1).evaluate(el=>el.classList.contains('active')))
+          problems.push('Preparation: document selection did not update')
       }
+    }
+    if(label === 'desktop' && item.name === 'review') {
+      await page.getByRole('button',{name:/История запусков/}).click()
+      if(!await page.locator('.workspace-run-row').count()) problems.push('Review: history list not visible')
+      const first=page.locator('.workspace-run-select').first()
+      if(await first.count()) {
+        await first.click()
+        if(!await page.locator('.workspace-requirement').count())
+          problems.push('Review: cannot return from history to findings')
+      }
+    }
+    if(item.name === 'report') {
+      const emptyGroups=await page.locator('.report-section').filter({hasText:'Нет записей в этой категории.'}).count()
+      if(emptyGroups)problems.push('Report: redundant empty sections rendered')
     }
   }
   await page.close()
