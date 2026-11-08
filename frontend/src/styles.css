@@ -108,6 +108,13 @@ main:has(.documents-workspace){max-width:none}
 .documents-upload{overflow:visible}
 .documents-upload-grid{display:grid;grid-template-columns:minmax(170px,1fr) minmax(190px,1fr) minmax(220px,1.5fr) auto;gap:14px;align-items:end}
 .documents-upload-grid label{font-size:13px;font-weight:600;color:#41546b;min-width:0}
+.documents-file-picker{position:relative;display:flex;align-items:center;gap:10px;width:100%;min-height:39px;padding:4px 7px;background:#fff;border:1px solid #cedbe3;border-radius:5px;overflow:hidden}
+.documents-file-picker:focus-within{outline:2px solid #087eab;outline-offset:1px}
+.documents-file-button{display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;min-height:27px;padding:4px 9px;border-radius:4px;background:#edf5f8;color:#087eab;border:1px solid #d4e4ec;font-size:12px;font-weight:650}
+.documents-file-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#607487;font-size:12px;font-weight:400}
+.documents-upload-grid .documents-file-native{position:absolute;inset:0;z-index:1;width:100%;height:100%;min-height:0;max-width:none;padding:0;margin:0;border:0;background:transparent;opacity:0;cursor:pointer}
+.documents-upload-grid .documents-file-native:disabled{cursor:not-allowed}
+
 .documents-upload-grid input,.documents-upload-grid select{width:100%;min-width:0;font-weight:400}
 .documents-upload-grid button{min-height:44px;white-space:nowrap}
 .documents-upload-progress{margin-top:18px;display:flex;align-items:center;gap:13px;padding:13px 16px;background:#eef6f4;border-radius:10px;color:#204d43}
