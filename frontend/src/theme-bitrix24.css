@@ -1,6 +1,5 @@
-/* Bitrix24-inspired enterprise workspace.
-   Visual-only theme: no changes to page behavior, data or API.
-   Own palette and icons; no third-party assets or dependencies. */
+/* Shared visual tokens and component primitives.
+   Navigation layout is owned by theme-workspace.css. */
 :root {
   font-family: "Segoe UI", Inter, Arial, sans-serif;
   font-synthesis: none;
@@ -10,9 +9,9 @@
   --bx-text: #27394a;
   --bx-muted: #718397;
   --bx-border: #dfe7ed;
-  --bx-blue: #0da8e7;
-  --bx-blue-deep: #0789c5;
-  --bx-lime: #bbed21;
+  --bx-blue: #1599c7;
+  --bx-blue-deep: #0b81aa;
+  --bx-primary: #1599c7;
   --bx-shadow: 0 2px 12px rgba(35,64,85,.055);
   color: var(--bx-text);
   background: var(--bx-bg);
@@ -38,54 +37,7 @@ blockquote { margin: 12px 0; padding: 11px 14px; background: #f4f9fb; border-lef
 .skip-link { position: fixed; top: -90px; left: 12px; z-index: 100; padding: 10px 14px; border-radius: 8px; color: #1b4055; background: white; }
 .skip-link:focus { top: 12px; }
 
-/* Product shell: bright blue navigation + light operational workspace. */
-.app { display: grid; grid-template-columns: 240px minmax(0,1fr); min-height: 100vh; }
-.app-sidebar {
-  position: sticky; top: 0; align-self: start; height: 100vh; min-width: 0;
-  display: flex; flex-direction: column; gap: 0; overflow-y: auto;
-  padding: 23px 12px 17px; background: linear-gradient(180deg,#36b5e4 0%,#159bd1 70%,#0987c0 100%);
-  color: white; box-shadow: 3px 0 12px rgba(21,98,143,.09); scrollbar-width: thin;
-}
-.brand { display: flex; align-items: center; gap: 11px; padding: 4px 10px 28px; color: white; text-decoration: none; }
-.brand:hover,.brand:focus { color: white; }
-.brand-mark {
-  width: 38px; height: 38px; flex: 0 0 38px;
-  display: grid; grid-template-columns: repeat(2,9px); grid-template-rows: repeat(2,9px);
-  justify-content: center; align-content: center; gap: 3px;
-  border: 1px solid rgba(255,255,255,.7); border-radius: 10px; background: rgba(255,255,255,.16);
-}
-.brand-mark i { display: block; border-radius: 2px; background: #fff; }
-.brand-copy { display: grid; gap: 1px; min-width: 0; }
-.brand-copy strong { font-size: 19px; font-weight: 720; line-height: 1.12; color: white; letter-spacing: -.025em; }
-.brand-copy small { font-size: 11px; font-weight: 450; color: #e7f8ff; white-space: normal; }
-.sidebar-overline { padding: 0 13px 11px; font-size: 10px; font-weight: 750; letter-spacing: .065em; color: #e1f6ff; }
-.app-nav { display: grid; align-content: start; gap: 3px; }
-.app-nav .sidebar-group { padding: 16px 13px 5px; font-size: 10px; font-weight: 700; letter-spacing: .075em; text-transform: uppercase; color: #d2f2fc; }
-.app-nav a {
-  display: flex; align-items: center; gap: 12px; min-height: 42px; padding: 9px 12px;
-  border-radius: 8px; color: #f5fdff; background: transparent; border: 1px solid transparent;
-  font-size: 14px; font-weight: 550; text-decoration: none;
-  transition: background .15s ease,color .15s ease;
-}
-.app-nav a:hover { background: rgba(255,255,255,.15); color: white; }
-.app-nav a.active { color: #087eaf; background: #fff; border-color: white; box-shadow: 0 2px 6px rgba(12,76,115,.08); font-weight: 680; }
-.app-nav .nav-icon { width: 20px; height: 20px; display: inline-flex; flex: 0 0 20px; align-items: center; justify-content: center; }
-.app-nav .nav-title { min-width: 0; }
-.sidebar-bottom { display: grid; gap: 11px; margin-top: auto; padding: 20px 4px 0; }
-.sidebar-footer { color: #e0f6ff; font-size: 11px; padding: 9px 8px 0; border-top: 1px solid rgba(255,255,255,.25); }
-.app-main { min-width: 0; }
-.app-topbar {
-  display: flex; justify-content: space-between; align-items: center; gap: 14px;
-  position: sticky; top: 0; z-index: 20; min-height: 62px; padding: 12px clamp(19px,2.6vw,38px);
-  background: #fff; border-bottom: 1px solid #e1e8ed; box-shadow: 0 1px 3px rgba(23,63,82,.03);
-}
-.app-breadcrumb { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; color: #81909f; font-size: 13px; }
-.app-breadcrumb strong { color: #304b5e; font-size: 14px; font-weight: 660; }
-.breadcrumb-divider { color: #b8c5cc; }
-.topbar-workspace-label { color: #8293a0; font-size: 12px; }
-.app-content { width: 100%; min-width: 0; padding: clamp(18px,2.1vw,30px); }
-.content-frame { max-width: 1540px; min-width: 0; margin: 0 auto; }
-.content-frame>h1 { margin-top: 0; }
+/* App shell and navigation are defined only by theme-workspace.css. */
 
 /* Page titles deliberately avoid decorative counters and oversized hero art. */
 .page-heading,.documents-heading,.report-header {
@@ -145,13 +97,13 @@ tbody tr:hover td { background: #f7fbfd; }
 /* Familiar Bitrix24-like compact controls; avoid animated glass buttons. */
 button,input,select,textarea { font-family: inherit; }
 button {
-  min-height: 38px; padding: 9px 15px; border: 1px solid #b7e21e; border-radius: 5px;
-  background: var(--bx-lime); color: #314250; box-shadow: none;
+  min-height: 38px; padding: 9px 15px; border: 1px solid var(--bx-primary); border-radius: 5px;
+  background: var(--bx-primary); color: #fff; box-shadow: none;
   font-weight: 670; font-size: 13px; line-height: 1.35; cursor: pointer;
   text-shadow: none; transition: background .14s ease,border-color .14s ease;
 }
-button:hover:not(:disabled) { background: #cafa3d; border-color: #b2dd20; transform: none; box-shadow: none; filter: none; }
-button:active:not(:disabled) { background: #aadd18; transform: none; }
+button:hover:not(:disabled) { background: #0b81aa; border-color: #0b81aa; transform: none; box-shadow: none; filter: none; }
+button:active:not(:disabled) { background: #086e94; transform: none; }
 button:disabled { opacity: .55; cursor: not-allowed; filter: none; }
 button.secondary,.secondary,.expert-report .report-more-button {
   color: #596f7e; background: #eef3f5; border: 1px solid #dce6ed; box-shadow: none; text-shadow: none;
@@ -235,58 +187,32 @@ nav.documents-page-nav button.active { background: #dff4fd; border-color: #c7e9f
 .diagnostics-event.error { border-left-color: #e57f7f; background: #fff8f7; }
 .diagnostics-footer,.diagnostics-history { background: #f7f9fa; }
 
-/* Tablet and mobile: navigation remains available without clipping controls. */
+/* Content-specific responsive rules. Shell breakpoints live in theme-workspace.css. */
 @media(max-width:1100px) {
-  .app { grid-template-columns: 216px minmax(0,1fr); }
-  .app-content { padding: 20px; }
-  .panel { padding: 20px; }
-  .documents-upload-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .panel { padding:20px; }
+  .documents-upload-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
 }
 @media(max-width:760px) {
-  .app { display: block; }
-  .app-sidebar { position: relative; height: auto; padding: 11px 13px; gap: 10px; }
-  .brand { padding: 4px 4px 9px; }
-  .brand-mark { width: 32px; height: 32px; flex-basis: 32px; }
-  .brand-copy strong { font-size: 17px; }
-  .sidebar-overline,.app-nav .sidebar-group,.sidebar-footer { display: none; }
-  .app-nav { display: flex; gap: 5px; max-width: 100%; overflow-x: auto; padding-bottom: 3px; }
-  .app-nav a { flex: 0 0 auto; min-height: 37px; padding: 7px 9px; font-size: 12px; white-space: nowrap; }
-  .app-nav .nav-icon { width: 17px; height: 17px; flex-basis: 17px; }
-  .app-nav .nav-icon svg { width: 17px; height: 17px; }
-  .sidebar-bottom { padding: 0; margin: 0; }
-  .diagnostics-toggle { min-height: 32px; padding: 6px 10px; font-size: 12px; }
-  .app-topbar { position: relative; min-height: 47px; padding: 10px 15px; }
-  .topbar-workspace-label { display: none; }
-  .app-content { padding: 16px 12px; }
-  .page-heading,.documents-heading,.report-header { margin-bottom: 13px; }
-  .page-heading h1,.documents-heading h1,.report-header h1 { font-size: 25px; }
-  .panel,.expert-report .panel { padding: 17px; border-radius: 8px; }
-  .projects-stats { grid-template-columns: repeat(2,minmax(0,1fr)); }
-  .stat-card { padding: 14px; }
-  .stat-card>strong { font-size: 25px; }
-  .documents-upload-grid,.normative-chooser,.project-create-form { grid-template-columns: 1fr; }
-  nav.documents-page-nav { display: flex; flex-wrap: wrap; padding: 11px; }
-  .documents-reader-content { padding: 13px; }
-  .documents-paper { padding: 18px 14px; }
-  .report-metrics { grid-template-columns: repeat(2,minmax(0,1fr)); }
-  .report-entry-heading { flex-wrap: wrap; }
-  .horizontal>button { flex: 0 1 auto; }
+  .page-heading,.documents-heading,.report-header { margin-bottom:13px; }
+  .page-heading h1,.documents-heading h1,.report-header h1 { font-size:25px; }
+  .panel,.expert-report .panel { padding:17px; border-radius:8px; }
+  .documents-upload-grid,.normative-chooser,.project-create-form { grid-template-columns:1fr; }
+  nav.documents-page-nav { display:flex; flex-wrap:wrap; padding:11px; }
+  .documents-reader-content { padding:13px; }
+  .documents-paper { padding:18px 14px; }
+  .report-metrics { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .report-entry-heading { flex-wrap:wrap; }
 }
 @media(max-width:420px) {
-  .projects-stats { grid-template-columns: 1fr; }
-  .app-nav a { gap: 6px; font-size: 12px; }
-  .brand-copy small { font-size: 10px; }
-  .panel { padding: 14px; }
+  .panel { padding:14px; }
 }
 @media(prefers-reduced-motion:reduce) {
   *,*::before,*::after { scroll-behavior: auto !important; animation-duration: .01ms !important; transition-duration: .01ms !important; }
 }
 @media print {
   :root,body { background: white !important; color: #1c2f3e !important; }
-  .app { display: block; }
-  .app-sidebar,.app-topbar,.skip-link,.diagnostics-backdrop,.diagnostics-toggle,.no-print { display: none !important; }
+  .app-topbar,.skip-link,.diagnostics-backdrop,.diagnostics-toggle,.no-print { display: none !important; }
   .app-content { padding: 0; }
-  .content-frame { max-width: none; }
   .page-heading,.documents-heading,.report-header { background: white; box-shadow: none; padding: 0; }
   .panel,.expert-report .panel { border: 0; box-shadow: none; background: white; overflow: visible; break-inside: auto; }
   .report-status { border: 1px solid #aaa; background: transparent !important; color: #333 !important; }
