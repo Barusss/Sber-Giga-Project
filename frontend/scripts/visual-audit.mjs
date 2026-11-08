@@ -110,8 +110,9 @@ async function inspect(viewport,label) {
       headers:{'access-control-allow-origin':'*'},body:JSON.stringify(body)})
   })
   for(const item of paths) {
-    await page.goto(HOST+item.path,{waitUntil:'networkidle'})
-    await page.waitForTimeout(160)
+    await page.goto(HOST+item.path,{waitUntil:'domcontentloaded',timeout:15000})
+    await page.locator('main.app-content').waitFor({timeout:15000})
+    await page.waitForTimeout(350)
     const observed=await page.evaluate(()=>{
       const container=document.querySelector('.content-frame')
       const active=document.querySelector('nav.workspace-tabs a.workspace-tab.active')
@@ -137,6 +138,7 @@ async function inspect(viewport,label) {
       if(viewport.width>800 && (await table.count()) && (await table.locator('tbody tr').count())!==12)problems.push(label+': expected 12 comparison rows')
     }
     evaluations.push({view:label,page:item.name,...observed})
+    console.log('Visual page:',label,item.name,'width:',observed.containerWidth,'overflow:',observed.scrollWidth>viewport.width)
     if(viewport.width>=1024||['comparisons','review','documents'].includes(item.name)) {
       await page.screenshot({path:`visual-artifacts/${label}-${item.name}.png`,fullPage:true,animations:'disabled'})
     }
