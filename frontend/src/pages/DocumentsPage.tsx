@@ -310,8 +310,9 @@ export function DocumentsPage() {
             <div>
               <p className="documents-eyebrow">Распознанный документ</p>
               <h2>{selected.filename}</h2>
-              <p className="muted">{reading ? 'Получаем текст...' :
-                `${pages.length} стр. · ${fragments.length} фрагментов · OCR: ${ocrPages} стр.`}</p>
+              <p className="muted">{reading ? 'Получаем текст...' : selected.pagination_kind === 'physical' ?
+                `${pages.length} стр. · ${fragments.length} фрагментов · OCR: ${ocrPages} стр.` :
+                `Физические страницы не определены · ${fragments.length} фрагментов`}</p>
             </div>
             <button type="button" className="secondary" onClick={() => { setSelected(null); setFragments([]); viewRequest.current += 1 }}>
               Закрыть
@@ -339,14 +340,14 @@ export function DocumentsPage() {
               </div>
 
               <div className="documents-reader">
-                <nav className="documents-page-nav" aria-label="Страницы документа">
-                  <h3>Страницы {searchTerm && <small>Найдено: {matchingPages.length}</small>}</h3>
+                <nav className="documents-page-nav" aria-label={selected.pagination_kind === 'physical' ? 'Страницы документа' : 'Текст документа'}>
+                  <h3>{selected.pagination_kind === 'physical' ? 'Страницы' : 'Текст документа'} {searchTerm && <small>Найдено: {matchingPages.length}</small>}</h3>
                   {matchingPages.map(page => (
                     <button key={page.number} type="button"
                       className={currentPage?.number === page.number ? 'active' : ''}
                       onClick={() => setPageNumber(page.number)}
                       aria-current={currentPage?.number === page.number ? 'page' : undefined}>
-                      <span>Страница {page.number}</span>
+                      <span>{selected.pagination_kind === 'physical' ? `Страница ${page.number}` : 'Текст документа'}</span>
                       {page.hasOcr && <small>OCR</small>}
                     </button>
                   ))}
@@ -358,10 +359,10 @@ export function DocumentsPage() {
                     <>
                       <div className="documents-page-header">
                         <div>
-                          <h3>Страница {currentPage.number}</h3>
+                          <h3>{selected.pagination_kind === 'physical' ? `Страница ${currentPage.number}` : 'Текст документа'}</h3>
                           <small>{currentPage.hasOcr ? 'Распознано со скана' : 'Текст документа'}</small>
                         </div>
-                        <button className="secondary" type="button" onClick={copyPage}>Копировать страницу</button>
+                        <button className="secondary" type="button" onClick={copyPage}>{selected.pagination_kind === 'physical' ? 'Копировать страницу' : 'Копировать текст'}</button>
                       </div>
                       <article className="documents-paper" style={{fontSize: `${fontSize}px`}}>
                         {currentPage.blocks.map(block => (

@@ -1,6 +1,6 @@
 from datetime import datetime
 from typing import Literal
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator, model_validator
 from app.core.models import DocumentKind, ReviewState, ReviewStatus
 
 class Schema(BaseModel):
@@ -33,7 +33,17 @@ class DocumentOut(Schema):
     filename: str
     mime_type: str
     extraction_version: str
+    normative_extraction_completed: bool = False
     created_at: datetime
+
+    @computed_field
+    @property
+    def pagination_kind(self) -> Literal["physical", "logical", "unknown"]:
+        if self.filename.lower().endswith(".pdf"):
+            return "physical"
+        if self.filename.lower().endswith(".docx"):
+            return "logical"
+        return "unknown"
 
 class Evidence(BaseModel):
     znp_document_id: str | None = None

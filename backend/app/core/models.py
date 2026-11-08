@@ -236,6 +236,7 @@ class RequirementVerification(Base):
     tu_quote: Mapped[str | None] = mapped_column(Text, nullable=True)
     znp_quote: Mapped[str | None] = mapped_column(Text, nullable=True)
     reasoning: Mapped[str | None] = mapped_column(Text, nullable=True)
+    validation_details: Mapped[dict | None] = mapped_column(JSON().with_variant(JSONB(), "postgresql"), nullable=True)
     is_confirmed_by_human: Mapped[bool] = mapped_column(Boolean, default=False)
     human_override_status: Mapped[RequirementStatus | None] = mapped_column(Enum(RequirementStatus), nullable=True)
     human_comment: Mapped[str | None] = mapped_column(Text, nullable=True)

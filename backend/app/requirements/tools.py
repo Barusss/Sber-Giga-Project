@@ -1040,7 +1040,7 @@ def tool_verify_engineering_params(tu_text: str, znp_text: str) -> dict[str, Any
     mismatch_types: list[str] = []
 
     # 1. Мощность (кВт, МВт, кВА, МВА)
-    power_re = r"(\d+(?:[.,]\d+)?)\s*(кВт|МВт|кВА|МВА)\b(?![·*x×]\s*ч)"
+    power_re = r"(\d+(?:[.,]\d+)?)\s*(кВт|МВт|кВА|МВА)\b(?!\s*[·*x×]\s*ч)"
     tu_power = {
         (_normalize_number(m[0]), m[1].lower())
         for m in re.findall(power_re, tu_text, re.IGNORECASE)
@@ -1049,6 +1049,14 @@ def tool_verify_engineering_params(tu_text: str, znp_text: str) -> dict[str, Any
         (_normalize_number(m[0]), m[1].lower())
         for m in re.findall(power_re, znp_text, re.IGNORECASE)
     }
+    shared_power_re = (
+        r"\b(?:с|от)\s+(\d+(?:[.,]\d+)?)\s+до\s+"
+        r"\d+(?:[.,]\d+)?\s*(кВт|МВт|кВА|МВА)\b(?!\s*[·*x×]\s*ч)"
+    )
+    for value, unit in re.findall(shared_power_re, tu_text, re.IGNORECASE):
+        tu_power.add((_normalize_number(value), unit.lower()))
+    for value, unit in re.findall(shared_power_re, znp_text, re.IGNORECASE):
+        znp_power.add((_normalize_number(value), unit.lower()))
     if tu_power and znp_power and tu_power != znp_power:
         mismatches.append(f"Несовпадение мощности: ТУ={tu_power}, ЗнП={znp_power}")
         mismatch_types.append("mismatch")
