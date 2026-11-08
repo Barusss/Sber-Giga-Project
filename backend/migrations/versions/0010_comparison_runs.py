@@ -4,6 +4,7 @@ Existing requirement_verifications continue to provide the current working
 state; a separate run snapshot stores the actual result of each execution.
 """
 import sqlalchemy as sa
+from sqlalchemy.dialects.postgresql import JSONB
 from alembic import op
 
 revision = "0010"
@@ -30,7 +31,7 @@ def upgrade():
         sa.Column("id", sa.String(length=36), primary_key=True),
         sa.Column("pair_id", sa.String(length=36), sa.ForeignKey("comparison_pairs.id", ondelete="CASCADE"), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("result", sa.JSON().with_variant(sa.dialects.postgresql.JSONB(), "postgresql"), nullable=False),
+        sa.Column("result", sa.JSON().with_variant(JSONB(), "postgresql"), nullable=False),
         sa.Column("is_current", sa.Boolean(), nullable=False),
     )
     op.create_index("ix_comparison_runs_pair_id", "comparison_runs", ["pair_id"])
