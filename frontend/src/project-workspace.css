@@ -229,6 +229,8 @@
 .expert-report .report-more-button:hover:not(:disabled) { color:#087ca9; background:#edf7fc; }
 /* Real process feedback. The operation state comes from the server, not an animation timer. */
 .operations-panel { display:grid; gap:10px; margin:0 0 22px; }
+.operation-uploading { display:flex; align-items:center; gap:11px; font-size:12px; }
+.operation-uploading .operation-spinner { margin-top:0; }
 .operation-row { display:flex; align-items:flex-start; gap:12px; min-width:0; padding:14px 17px; border:1px solid #d5e6ee; border-radius:7px; background:#f5fbfe; color:#35586b; }
 .operation-row.completed { background:#f6faf8; border-color:#dcebe3; }
 .operation-row.failed { background:#fff7f5; border-color:#f0dad7; }
