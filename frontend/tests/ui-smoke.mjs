@@ -1,10 +1,9 @@
 // Real Chromium rendering checks against the Vite app with deterministic API data.
 // The test deliberately exercises the same navigation and classes as production.
 import assert from 'node:assert/strict'
-import {spawn} from 'node:child_process'
 import {mkdir} from 'node:fs/promises'
-import {setTimeout as pause} from 'node:timers/promises'
 import {chromium} from 'playwright'
+import {createServer} from 'vite'
 
 const root = 'http://127.0.0.1:4173'
 const output = new URL('../ui-artifacts/', import.meta.url).pathname
@@ -107,17 +106,6 @@ function respond(method,url){
   throw new Error(`No API fixture for ${method} ${path}`)
 }
 
-async function waitForServer() {
-  for (let i=0;i<100;i++) {
-    try {
-      const response = await fetch(root)
-      if (response.ok) return
-    } catch {}
-    await pause(150)
-  }
-  throw new Error('Vite server did not start')
-}
-
 async function screenshot(page,name,print=false) {
   const data = await page.screenshot({fullPage:true,path:`${output}/${name}.png`})
   if (print && process.env.UI_SCREENSHOT_LOG==='1') {
@@ -197,13 +185,10 @@ async function review(page,width,errors) {
 
 async function main(){
   await mkdir(output,{recursive:true})
-  const server=spawn('npm',['run','dev','--','--host','127.0.0.1','--port','4173','--strictPort'],
-    {stdio:['ignore','pipe','pipe'],env:{...process.env,VITE_API_URL:'http://127.0.0.1:8000/api/v1'}})
-  let stderr=''
-  server.stderr.on('data',chunk=>{stderr+=String(chunk)})
+  const vite=await createServer({server:{host:'127.0.0.1',port:4173,strictPort:true}})
+  await vite.listen()
   const browser=await chromium.launch({headless:true,args:['--no-sandbox']})
   try{
-    await waitForServer()
     for(const width of [390,768,1440,1920]){
       const context=await browser.newContext({viewport:{width,height:900}})
       const page=await context.newPage()
@@ -226,8 +211,7 @@ async function main(){
     console.log('UI_PASS all pages, responsive widths and active tab styling')
   }finally{
     await browser.close()
-    server.kill('SIGTERM')
-    if(server.exitCode!==null && server.exitCode!==0 && stderr)console.error(stderr)
+    await vite.close()
   }
 }
 
