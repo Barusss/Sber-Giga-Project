@@ -312,7 +312,6 @@ export function DocumentsPage({projectId}: {projectId?: string} = {}) {
         <section className="panel documents-viewer">
           <div className="documents-viewer-head">
             <div>
-              <p className="documents-eyebrow">Распознанный документ</p>
               <h2>{selected.filename}</h2>
               <p className="muted">{reading ? 'Получаем текст...' : selected.pagination_kind === 'physical' ?
                 `${pages.length} стр. · ${fragments.length} фрагментов · OCR: ${ocrPages} стр.` :
