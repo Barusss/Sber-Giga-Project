@@ -174,6 +174,14 @@ nav.workspace-tabs a.workspace-tab.active,nav.workspace-tabs a.workspace-tab.act
 .documents-upload { padding:20px 22px; }
 .documents-upload-grid { display:grid; grid-template-columns:minmax(160px,.8fr) minmax(230px,1.6fr) auto; align-items:end; gap:13px; }
 .documents-upload-grid label { min-width:0; }
+
+.documents-file-picker { position:relative; display:flex; align-items:center; gap:10px; min-height:39px; padding:4px 8px; border:1px solid var(--line-strong); border-radius:5px; background:white; overflow:hidden; }
+.documents-file-picker:focus-within { outline:2px solid var(--accent-hover); outline-offset:1px; }
+.documents-file-button { display:inline-flex; align-items:center; justify-content:center; min-height:27px; flex:0 0 auto; padding:4px 9px; border:1px solid var(--line-strong); background:#edf5f8; color:var(--accent-hover); border-radius:4px; font-size:12px; font-weight:650; }
+.documents-file-name { min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:var(--subtle); font-size:12px; font-weight:400; }
+.documents-upload-grid .documents-file-native { position:absolute; z-index:1; inset:0; display:block; width:100%; height:100%; min-height:0; max-width:none; margin:0; padding:0; opacity:0; border:0; cursor:pointer; }
+.documents-upload-grid .documents-file-native:disabled { cursor:not-allowed; }
+
 .documents-upload-grid button { min-height:39px; white-space:nowrap; }
 .documents-files { padding:4px 21px 3px; }
 .documents-section-title { padding:14px 0 7px; }
