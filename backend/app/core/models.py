@@ -253,3 +253,33 @@ class RequirementAnalysis(Base):
     znp_document_id: Mapped[str] = mapped_column(ForeignKey("documents.id"), primary_key=True)
     requirement_ids: Mapped[list] = mapped_column(JSON)
     completed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
+class ComparisonPair(Base):
+    """A requested TU/ZnP pair, independent of the number of analysis runs."""
+    __tablename__ = "comparison_pairs"
+    __table_args__ = (
+        UniqueConstraint("project_id", "tu_document_id", "znp_document_id", name="uq_comparison_project_pair"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    tu_document_id: Mapped[str] = mapped_column(ForeignKey("documents.id"), index=True)
+    znp_document_id: Mapped[str] = mapped_column(ForeignKey("documents.id"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    runs: Mapped[list["ComparisonRun"]] = relationship(
+        back_populates="pair", cascade="all, delete-orphan",
+        order_by="ComparisonRun.created_at",
+    )
+
+
+class ComparisonRun(Base):
+    """Snapshot of a completed analysis; earlier snapshots are not overwritten."""
+    __tablename__ = "comparison_runs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    pair_id: Mapped[str] = mapped_column(ForeignKey("comparison_pairs.id", ondelete="CASCADE"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    result: Mapped[dict] = mapped_column(JSON().with_variant(JSONB(), "postgresql"))
+    is_current: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    pair: Mapped[ComparisonPair] = relationship(back_populates="runs")
