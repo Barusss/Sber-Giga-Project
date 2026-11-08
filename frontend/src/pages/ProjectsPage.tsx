@@ -13,8 +13,10 @@ export function ProjectsPage() {
   const [creating, setCreating] = useState(false)
 
   useEffect(() => {
-    request<Project[]>('/projects').then(setItems)
-      .catch(e => setError(e instanceof Error ? e.message : String(e)))
+    request<Project[]>('/projects').then(result => {
+      setItems(result)
+      if (!result.length) setShowCreate(true)
+    }).catch(e => setError(e instanceof Error ? e.message : String(e)))
   }, [])
 
   const filtered = useMemo(() => items.filter(project =>
@@ -39,7 +41,7 @@ export function ProjectsPage() {
   return <div className="projects-workspace">
     <div className="workspace-section-heading">
       <h1>Проекты</h1>
-      <button onClick={() => setShowCreate(true)}>Создать проект</button>
+      <button className="primary-cta" onClick={() => setShowCreate(true)}>Создать проект</button>
     </div>
     {showCreate && <section className="panel workspace-create">
       <div className="workspace-section-heading"><h2>Новый проект</h2>
@@ -50,7 +52,7 @@ export function ProjectsPage() {
           <input autoFocus required maxLength={180} value={name} placeholder="Название проекта"
             onChange={e => setName(e.target.value)}/>
         </label>
-        <button disabled={creating || !name.trim()} type="submit">
+        <button className="primary-cta" disabled={creating || !name.trim()} type="submit">
           {creating ? 'Создаём…' : 'Создать и открыть'}
         </button>
       </form>
