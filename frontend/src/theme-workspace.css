@@ -26,7 +26,9 @@ body { background: var(--workspace-bg); color: var(--workspace-ink); }
   display: flex; align-items: center; flex: 0 0 auto;
   padding: 0; text-decoration: none; color: #294758;
 }
-.brand-name { color: #294758; font-size: 19px; font-weight: 760; line-height: 1.1; letter-spacing: -.025em; }
+.brand-symbol { display:inline-flex; width:30px; height:30px; flex:0 0 30px; align-items:center; justify-content:center; background:#1199ca; border-radius:7px; color:#fff; font-size:16px; font-weight:750; }
+.brand { gap:10px; }
+.brand-name { color: #294758; font-size: 17px; font-weight: 740; line-height: 1.1; letter-spacing: -.025em; }
 .brand:hover .brand-name { color: #087eab; }
 .app-nav {
   display: flex; flex: 1 1 auto; align-items: center; gap: 4px;
@@ -171,5 +173,7 @@ nav.documents-page-nav { background: #f7f9fa; }
 /* Explicitly defeat legacy max-width and one-off green button styles. */
 main.app-content, main.app-content:has(.documents-workspace), main.app-content:has(.expert-report) { width: 100%; max-width: none; }
 .content-frame > *, .workspace, .comparisons-workspace, .workspace-body { min-width: 0; max-width: none; }
-.app-content .panel button:not(.secondary):not(.danger):not(.delete):not(.delete-action):not(.workspace-danger):not(.workspace-run-select):not(.workspace-matrix-cell):not(.workspace-switch button):not(.documents-page-nav button) { box-shadow:none; }
 button:active:not(:disabled) { filter: none; }
+
+/* Document navigation and segmented controls do not inherit the primary hover fill. */
+nav.documents-page-nav button:hover:not(:disabled) { background:#eaf4f9; border-color:transparent; color:#34667c; }
