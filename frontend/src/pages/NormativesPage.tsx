@@ -95,7 +95,10 @@ export function NormativesPage({projectId}: {projectId?: string} = {}) {
   useEffect(() => {
     if (selectedProjectId) {
       request<Document[]>(`/projects/${selectedProjectId}/documents`)
-        .then(setDocuments)
+        .then(loaded => {
+          setDocuments(loaded)
+          if (projectId) setSelectedDocId(loaded[0]?.id || '')
+        })
         .catch(() => setDocuments([]))
       setSelectedDocId('')
       setReport(null)
@@ -270,46 +273,65 @@ export function NormativesPage({projectId}: {projectId?: string} = {}) {
     return 'Не подтверждено'
   }
 
+  const currentDoc = documents.find(document => document.id === selectedDocId)
+
   return (
     <div className="normatives-workspace">
       <header className="page-heading">
         <div className="eyebrow">МОДУЛЬ 02 / НОРМАТИВНЫЙ КОНТРОЛЬ</div>
         <h1>{projectId ? 'Подготовка документов' : 'ГОСТ и НТД'}</h1>
-        <p className="muted">Извлечение ссылок и проверка по локальному реестру с возможностью
-          обновления из Росстандарта. Источник и дата официального подтверждения показываются отдельно.</p>
+        <p className="muted">{projectId
+          ? 'Проверка нормативных ссылок в загруженных документах.'
+          : 'Проверка нормативных документов и обновление сведений из Росстандарта.'}</p>
       </header>
 
       {/* СЕКЦИЯ АНАЛИЗА ДОКУМЕНТА */}
       <section className="panel stack normative-analysis">
         <div className="panel-heading">
           <div><div className="eyebrow">01 / ДОКУМЕНТ</div><h2>Анализ нормативных ссылок</h2></div>
-          <span className="panel-counter">По 5 нормативов за запрос</span>
+          <span className="panel-counter">{projectId ? documents.length + ' документов' : 'Пакетная проверка'}</span>
         </div>
         
-        <div className="normative-chooser">
-          {!projectId && <label>Проект
-          <select
-            value={selectedProjectId}
-            onChange={e => setSelectedProjectId(e.target.value)}
-            disabled={isExtracting || isChecking}
-          >
-            <option value="">Выберите проект...</option>
-            {projects.map(p => (
-              <option key={p.id} value={p.id}>{p.name}</option>
-            ))}
-          </select></label>}
-          <label>Документ
-          <select 
-            value={selectedDocId} 
-            onChange={e => setSelectedDocId(e.target.value)} 
-            disabled={!selectedProjectId || isExtracting || isChecking}
-          >
-            <option value="">Выберите документ...</option>
-            {documents.map(d => (
-              <option key={d.id} value={d.id}>{d.filename}</option>
-            ))}
-          </select></label>
-        </div>
+        <div className={projectId ? 'prepare-workarea' : ''}>
+          {projectId && <div className="prepare-document-list">
+            <h3>Документы проекта</h3>
+            <div className="prepare-document-buttons">
+              {documents.map(document => <button key={document.id} type="button"
+                className={'prepare-document-option' + (selectedDocId === document.id ? ' active' : '')}
+                disabled={isExtracting || isChecking}
+                onClick={() => setSelectedDocId(document.id)}>
+                <strong>{document.filename}</strong>
+                <small>{document.kind === 'tu' ? 'Технические условия' :
+                  document.kind === 'znp' ? 'Задание на проектирование' : 'Другой документ'}</small>
+              </button>)}
+            </div>
+            {!documents.length && <p className="muted">Сначала загрузите документы в проект.</p>}
+          </div>}
+          <div className={projectId ? 'prepare-check' : ''}>
+            {projectId && <div className="prepare-selected">
+              <h3>Проверка нормативных ссылок</h3>
+              <p>{currentDoc?.filename || 'Выберите документ слева'}</p>
+              {currentDoc?.normative_extraction_completed &&
+                <small>Нормативные ссылки ранее извлекались из документа</small>}
+            </div>}
+            {!projectId && <div className="normative-chooser">
+              <label>Проект
+                <select value={selectedProjectId}
+                  onChange={e => setSelectedProjectId(e.target.value)}
+                  disabled={isExtracting || isChecking}>
+                  <option value="">Выберите проект...</option>
+                  {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                </select>
+              </label>
+              <label>Документ
+                <select value={selectedDocId}
+                  onChange={e => setSelectedDocId(e.target.value)}
+                  disabled={!selectedProjectId || isExtracting || isChecking}>
+                  <option value="">Выберите документ...</option>
+                  {documents.map(d => <option key={d.id} value={d.id}>{d.filename}</option>)}
+                </select>
+              </label>
+            </div>}
 
         <div className="normative-actions">
           <button 
@@ -343,6 +365,9 @@ export function NormativesPage({projectId}: {projectId?: string} = {}) {
             Остановить после текущей порции
           </button>
         )}
+
+          </div>
+        </div>
 
         {checkProgress && (
           <div className="normative-progress" role="status" aria-live="polite">
