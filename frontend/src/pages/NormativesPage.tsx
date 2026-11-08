@@ -1,6 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import { Normative, Project, Document, json, request } from '../api/client'
 
+type ExtractedReference = {
+  id: string
+  value: {code?: string; reference_kind?: string}
+}
+
 type CheckedStandard = {
   code: string
   reference_kind: string
@@ -55,6 +60,11 @@ export function NormativesPage({projectId}: {projectId?: string} = {}) {
   const [documents, setDocuments] = useState<Document[]>([])
   const [selectedProjectId, setSelectedProjectId] = useState(projectId ?? '')
   const [selectedDocId, setSelectedDocId] = useState('')
+  const [references, setReferences] = useState<ExtractedReference[]>([])
+  const [referencesLoading, setReferencesLoading] = useState(false)
+  const [referencesError, setReferencesError] = useState('')
+  const [factsRefresh, setFactsRefresh] = useState(0)
+  const [extractMessage, setExtractMessage] = useState('')
   
   const [isExtracting, setIsExtracting] = useState(false)
   const [isChecking, setIsChecking] = useState(false)
@@ -71,7 +81,21 @@ export function NormativesPage({projectId}: {projectId?: string} = {}) {
     checkResume.current = null
     setCheckProgress(null)
     setReport(null)
+    setExtractMessage('')
   }, [selectedDocId])
+
+  useEffect(() => {
+    if (!selectedDocId || !projectId) {setReferences([]);return}
+    let active = true
+    setReferencesLoading(true)
+    setReferencesError('')
+    setReferences([])
+    request<ExtractedReference[]>(`/documents/${selectedDocId}/facts?fact_type=normative_reference`)
+      .then(result => {if(active) setReferences(result)})
+      .catch(error => {if(active) setReferencesError(error instanceof Error ? error.message : String(error))})
+      .finally(() => {if(active) setReferencesLoading(false)})
+    return () => {active = false}
+  }, [selectedDocId, projectId, factsRefresh])
 
   const loadNormatives = () => {
     const params = new URLSearchParams()
@@ -170,7 +194,8 @@ export function NormativesPage({projectId}: {projectId?: string} = {}) {
     checkResume.current = null
     try {
       await request(`/documents/${selectedDocId}/extract-facts`, json('POST', {}))
-      alert('Ссылки извлечены! Теперь можно проверить актуальность.')
+      setFactsRefresh(previous => previous + 1)
+      setExtractMessage('Нормативные ссылки обновлены.')
     } catch (e: any) {
       setError(e.message || 'Ошибка при извлечении')
     } finally {
@@ -368,6 +393,25 @@ export function NormativesPage({projectId}: {projectId?: string} = {}) {
 
           </div>
         </div>
+
+        {extractMessage && <p className="prepare-success" role="status">{extractMessage}</p>}
+        {projectId && selectedDocId && <section className="prepare-reference-results">
+          <div className="workspace-section-heading">
+            <h3>Найденные нормативные ссылки</h3>
+            {!referencesLoading && <span className="panel-counter">{references.length}</span>}
+          </div>
+          {referencesLoading ? <p className="muted">Загружаем список…</p> :
+            referencesError ? <p className="error" role="alert">{referencesError}</p> :
+            references.length ? <ul>
+              {references.map(reference => <li key={reference.id}>
+                <strong>{reference.value.code || 'Обозначение не указано'}</strong>
+                <small>{reference.value.reference_kind === 'informative'
+                  ? 'Справочная ссылка' : 'Нормативная ссылка'}</small>
+              </li>)}
+            </ul> : <p className="muted">{currentDoc?.normative_extraction_completed
+              ? 'В документе не найдено нормативных ссылок.'
+              : 'Для этого документа ещё нет сохранённых нормативных ссылок.'}</p>}
+        </section>}
 
         {checkProgress && (
           <div className="normative-progress" role="status" aria-live="polite">
