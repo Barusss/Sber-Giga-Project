@@ -17,6 +17,8 @@
   --subtle: #576f80;
   --accent: #009bd3;
   --accent-hover: #0b78a4;
+  --primary: #0b78a4;
+  --primary-hover: #08688f;
   --accent-soft: #e9f6fc;
   --success: #27805a;
   --success-soft: #eaf6ef;
@@ -56,7 +58,7 @@ blockquote { background:#f4f9fb; border-left:3px solid #76c1de; color:var(--text
 .app-topbar { position:sticky; top:0; z-index:80; background:white; border-bottom:1px solid var(--line); padding:0 clamp(18px,3.4vw,52px); }
 .app-topbar-inner { min-height:62px; width:100%; display:flex; align-items:center; gap:20px; }
 .app .brand { display:inline-flex; align-items:center; gap:10px; flex:0 0 auto; color:var(--ink); text-decoration:none; }
-.app .brand-symbol { width:32px; height:32px; display:grid; place-items:center; background:var(--accent); border-radius:7px; color:white; font-weight:740; font-size:16px; }
+.app .brand-symbol { width:32px; height:32px; display:grid; place-items:center; background:var(--primary); border-radius:7px; color:white; font-weight:740; font-size:16px; }
 .app .brand-name { color:var(--ink); font-size:17px; font-weight:730; letter-spacing:-.025em; }
 .app .brand:hover .brand-name { color:var(--accent-hover); }
 nav.app-nav { display:flex; flex:1 1 auto; align-items:center; gap:4px; min-width:0; overflow-x:auto; scrollbar-width:thin; padding:0; }
@@ -74,8 +76,8 @@ main.app-content:has(.documents-workspace), main.app-content:has(.expert-report)
 
 /* Buttons: one language, clear hierarchy, no ornamental effects. */
 button,input,select,textarea { font:inherit; }
-button { display:inline-flex; align-items:center; justify-content:center; gap:7px; min-height:38px; padding:8px 15px; border:1px solid var(--accent); border-radius:5px; color:white; background:var(--accent); font-weight:650; font-size:12px; line-height:1.25; cursor:pointer; transition:background .12s ease,border-color .12s ease; box-shadow:none; text-shadow:none; }
-button:hover:not(:disabled) { background:var(--accent-hover); border-color:var(--accent-hover); color:white; box-shadow:none; filter:none; transform:none; }
+button { display:inline-flex; align-items:center; justify-content:center; gap:7px; min-height:38px; padding:8px 15px; border:1px solid var(--primary); border-radius:5px; color:white; background:var(--primary); font-weight:650; font-size:12px; line-height:1.25; cursor:pointer; transition:background .12s ease,border-color .12s ease; box-shadow:none; text-shadow:none; }
+button:hover:not(:disabled) { background:var(--primary-hover); border-color:var(--primary-hover); color:white; box-shadow:none; filter:none; transform:none; }
 button:disabled { opacity:.54; cursor:not-allowed; }
 button.secondary,.secondary,.expert-report .report-more-button { color:#4b7186; background:#fff; border:1px solid #d2e1e9; box-shadow:none; }
 button.secondary:hover:not(:disabled),.expert-report .report-more-button:hover:not(:disabled) { background:#f1f8fb; color:#176c97; border-color:#bedbe8; }
