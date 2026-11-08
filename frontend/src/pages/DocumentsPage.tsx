@@ -219,9 +219,10 @@ export function DocumentsPage({projectId}: {projectId?: string} = {}) {
             {busy ? 'Передаём файл…' : uploadRunning ? 'Идёт обработка' : 'Загрузить и распознать'}
           </button>
         </div>
-        {busy && <p className="workspace-progress" role="status">
-          Файл передаётся на сервер. После передачи распознавание продолжится независимо от страницы.
-        </p>}
+        {busy && <div className="workspace-progress operation-uploading" role="status">
+          <span className="operation-spinner" aria-hidden="true"/>
+          <span>Файл передаётся на сервер. После передачи распознавание продолжится независимо от страницы.</span>
+        </div>}
       </form>
 
       {error && <p className="error" role="alert">{error}</p>}
