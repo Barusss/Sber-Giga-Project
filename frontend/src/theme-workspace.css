@@ -1,9 +1,9 @@
 /* Unified, full-width workspace. Visual-only CSS. */
 :root {
-  --workspace-accent: #0c9ed0;
-  --workspace-accent-dark: #087eab;
+  --workspace-accent: #087eab;
+  --workspace-accent-dark: #06648e;
   --workspace-ink: #2c4150;
-  --workspace-muted: #728694;
+  --workspace-muted: #607487;
   --workspace-border: #dde5ea;
   --workspace-bg: #f3f5f6;
   background: var(--workspace-bg);
@@ -24,7 +24,6 @@ body { background: var(--workspace-bg); color: var(--workspace-ink); }
   display:flex; align-items:center; gap:10px; flex:0 0 auto;
   padding:0; text-decoration:none; color:#294758;
 }
-.brand-symbol { display:inline-flex; width:30px; height:30px; flex:0 0 30px; align-items:center; justify-content:center; background:#1199ca; border-radius:7px; color:#fff; font-size:16px; font-weight:750; }
 .brand-name { color: #294758; font-size: 17px; font-weight: 740; line-height: 1.1; letter-spacing: -.025em; }
 .brand:hover .brand-name { color: #087eab; }
 .app-nav {
@@ -36,12 +35,12 @@ body { background: var(--workspace-bg); color: var(--workspace-ink); }
   flex: 0 0 auto; min-height: 35px;
   padding: 0 13px; border: 1px solid transparent;
   border-radius: 6px; background: transparent;
-  color: #647f90; font-weight: 600; font-size: 13px;
+  color: #607487; font-weight: 600; font-size: 13px;
   white-space: nowrap; text-decoration: none; box-shadow: none;
 }
-.app-nav a:hover { color: #0b82aa; background: #f1f7fa; }
+.app-nav a:hover { color: #087eab; background: #f1f7fa; }
 .app-nav a.active {
-  color: #0b82aa; background: #eaf6fb;
+  color: #087eab; background: #eaf6fb;
   border: 1px solid transparent;
   border-radius: 6px; box-shadow: none;
 }
@@ -84,7 +83,7 @@ p { line-height: 1.55; }
 .panel-heading h2 { font-size: 20px; font-weight: 700; margin: 0; }
 .panel-counter,.documents-muted-count {
   border: 0; border-radius: 4px; background: #f0f4f6;
-  color: #6e8493; font-size: 11px; padding: 5px 8px;
+  color: #607487; font-size: 11px; padding: 5px 8px;
 }
 .project-create-form { align-items: end; }
 .projects-workspace .project-create-form button { min-height: 39px; }
