@@ -78,11 +78,10 @@ main.app-content:has(.documents-workspace), main.app-content:has(.expert-report)
 button,input,select,textarea { font:inherit; }
 button { display:inline-flex; align-items:center; justify-content:center; gap:7px; min-height:38px; padding:8px 15px; border:1px solid var(--primary); border-radius:5px; color:white; background:var(--primary); font-weight:650; font-size:12px; line-height:1.25; cursor:pointer; transition:background .12s ease,border-color .12s ease; box-shadow:none; text-shadow:none; }
 button:hover:not(:disabled) { background:var(--primary-hover); border-color:var(--primary-hover); color:white; box-shadow:none; filter:none; transform:none; }
-button:disabled { opacity:.54; cursor:not-allowed; }
+button:disabled { opacity:1; cursor:not-allowed; background:#f2f5f7; border-color:#e0e7eb; color:#8c9eaa; box-shadow:none; }
+button.secondary:disabled { background:#f6f8f9; border-color:#e2e8eb; color:#91a0aa; }
 button.secondary,.secondary,.expert-report .report-more-button { color:#4b7186; background:#fff; border:1px solid #d2e1e9; box-shadow:none; }
 button.secondary:hover:not(:disabled),.expert-report .report-more-button:hover:not(:disabled) { background:#f1f8fb; color:#176c97; border-color:#bedbe8; }
-button.primary-cta { background:#b9ec27; color:#344a2b; border-color:#b2df20; }
-button.primary-cta:hover:not(:disabled) { color:#283d20; background:#c8f448; border-color:#b2df20; }
 button.danger,button.delete,.normative-actions .delete-action,button.workspace-danger { color:var(--danger); background:transparent; border-color:transparent; }
 button.danger:hover:not(:disabled),button.delete:hover:not(:disabled),.normative-actions .delete-action:hover:not(:disabled),button.workspace-danger:hover:not(:disabled) { color:#9c3c3c; background:#fff4f3; border-color:#efd4d0; }
 input:not([type=checkbox]):not([type=radio]),select,textarea { display:block; width:100%; max-width:100%; min-width:0; min-height:39px; padding:8px 11px; color:var(--ink); background:#fff; border:1px solid #d3e0e7; border-radius:5px; font-size:13px; font-weight:400; box-shadow:none; }
