@@ -1,4 +1,5 @@
-import {useEffect, useMemo, useState} from 'react'
+import {useEffect, useMemo, useRef, useState} from 'react'
+import {useOperations} from '../operations/OperationsPanel'
 import {Link} from 'react-router-dom'
 import {Document, json, request} from '../api/client'
 
@@ -31,6 +32,8 @@ const statusLabels: Record<ComparisonPair['status'], string> = {
 }
 
 export function ComparisonsPage({projectId, approved}: {projectId: string; approved: boolean}) {
+  const {operations, start} = useOperations()
+  const seenFinished = useRef(new Set<string>())
   const [documents, setDocuments] = useState<Document[]>([])
   const [pairs, setPairs] = useState<ComparisonPair[]>([])
   const [layout, setLayout] = useState<'list'|'matrix'>('list')
@@ -61,6 +64,21 @@ export function ComparisonsPage({projectId, approved}: {projectId: string; appro
     }).catch(e => {if (active) setError(e instanceof Error ? e.message : String(e))})
     return () => {active = false}
   }, [projectId])
+
+  useEffect(() => {
+    const finished = operations.filter(job =>
+      (job.kind === 'comparison' || job.kind === 'comparison_batch') &&
+      (job.status === 'completed' || job.status === 'failed' ||
+       job.status === 'cancelled') && !seenFinished.current.has(job.id))
+    if (!finished.length) return
+    finished.forEach(job => seenFinished.current.add(job.id))
+    void reload().catch(e => setError(e instanceof Error ? e.message : String(e)))
+  }, [operations])
+
+  const runningPairs = new Set(operations
+    .filter(job => (job.kind === 'comparison' || job.kind === 'comparison_batch') &&
+      (job.status === 'queued' || job.status === 'running'))
+    .flatMap(job => job.pair_ids))
 
   const tuDocs = documents.filter(doc => doc.kind === 'tu')
   const znpDocs = documents.filter(doc => doc.kind === 'znp')
@@ -101,23 +119,25 @@ export function ComparisonsPage({projectId, approved}: {projectId: string; appro
   }
 
   async function run(ids: string[]) {
-    if (!ids.length || busy) return
-    setBusy(true); setError('')
-    for (let index = 0; index < ids.length; index++) {
-      setProgress(`Сверка ${index + 1} из ${ids.length}`)
-      try {
-        await request(`${base}/${ids[index]}/runs`, {method:'POST'})
-        await reload()
-      } catch (e) {
-        setError(`Ошибка в сверке ${index + 1}: ${e instanceof Error ? e.message : String(e)}`)
-        break
-      }
+    if (!ids.length || busy || ids.some(id => runningPairs.has(id))) return
+    setBusy(true)
+    setError('')
+    setProgress('Создаём задачу проверки…')
+    try {
+      await start({
+        kind: ids.length === 1 ? 'comparison' : 'comparison_batch',
+        pair_ids: ids,
+      })
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+      setProgress('')
     }
-    setBusy(false);setProgress('')
   }
 
   async function remove(pair: ComparisonPair) {
-    if (busy || !window.confirm(
+    if (busy || runningPairs.has(pair.id) || !window.confirm(
       `Удалить сверку «${pair.tu_filename} / ${pair.znp_filename}» и всю её историю запусков? Исходные документы останутся.`
     )) return
     setBusy(true);setError('')
@@ -147,7 +167,7 @@ export function ComparisonsPage({projectId, approved}: {projectId: string; appro
         <strong>{waiting.length} сверок ожидают запуска</strong>
         <p>Запустите все ожидающие проверки или выберите нужную пару в списке.</p>
       </div>
-      <button type="button" className="secondary" disabled={busy}
+      <button type="button" className="secondary" disabled={busy || waiting.some(pair => runningPairs.has(pair.id))}
         onClick={() => run(waiting.map(pair => pair.id))}>
         Запустить все
       </button>
@@ -193,8 +213,8 @@ export function ComparisonsPage({projectId, approved}: {projectId: string; appro
                   {pair.status === 'queued' ? 'Открыть' : 'Замечания и история'}
                 </Link>
                 {pair.status === 'queued' && !approved &&
-                  <button type="button" className="secondary" disabled={busy} onClick={() => run([pair.id])}>Запустить</button>}
-                {!approved && <button type="button" className="workspace-danger" disabled={busy}
+                  <button type="button" className="secondary" disabled={busy || runningPairs.has(pair.id)} onClick={() => run([pair.id])}>Запустить</button>}
+                {!approved && <button type="button" className="workspace-danger" disabled={busy || runningPairs.has(pair.id)}
                   onClick={() => remove(pair)}>Удалить</button>}
               </div></td>
             </tr>)}</tbody>
