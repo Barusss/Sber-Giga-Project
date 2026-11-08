@@ -132,7 +132,7 @@ export function ComparisonsPage({projectId, approved}: {projectId: string; appro
     <div className="workspace-section-heading">
       <div><h2>Сверки</h2><p>Одна пара документов может проверяться многократно. Результаты запусков сохраняются.</p></div>
       {tuDocs.length > 0 && znpDocs.length > 0 &&
-        <button onClick={() => setLayout('matrix')} className="secondary">Создать сверки</button>}
+        <button onClick={() => setLayout('matrix')} className="primary-cta">Создать сверки</button>}
     </div>
     {error && <p className="error" role="alert">{error}</p>}
     {busy && <p role="status" className="workspace-progress">{progress || 'Сохраняем изменения…'}</p>}
@@ -226,7 +226,7 @@ export function ComparisonsPage({projectId, approved}: {projectId: string; appro
           </table></div>
           <div className="workspace-footer">
             <span>Выбрано комбинаций: {selected.length}</span>
-            <button disabled={!selected.length || busy || approved} onClick={addSelected}>
+            <button className="primary-cta" disabled={!selected.length || busy || approved} onClick={addSelected}>
               Добавить в очередь
             </button>
           </div>
