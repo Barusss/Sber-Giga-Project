@@ -273,7 +273,6 @@ export function NormativesPage({projectId}: {projectId?: string} = {}) {
   return (
     <div className="normatives-workspace">
       <header className="page-heading">
-        <div className="eyebrow">МОДУЛЬ 02 / НОРМАТИВНЫЙ КОНТРОЛЬ</div>
         <h1>{projectId ? 'Подготовка документов' : 'ГОСТ и НТД'}</h1>
         <p className="muted">Извлечение ссылок и проверка по локальному реестру с возможностью
           обновления из Росстандарта. Источник и дата официального подтверждения показываются отдельно.</p>
@@ -282,8 +281,7 @@ export function NormativesPage({projectId}: {projectId?: string} = {}) {
       {/* СЕКЦИЯ АНАЛИЗА ДОКУМЕНТА */}
       <section className="panel stack normative-analysis">
         <div className="panel-heading">
-          <div><div className="eyebrow">01 / ДОКУМЕНТ</div><h2>Анализ нормативных ссылок</h2></div>
-          <span className="panel-counter">По 5 нормативов за запрос</span>
+          <h2>Анализ нормативных ссылок</h2>
         </div>
         
         <div className="normative-chooser">
@@ -420,7 +418,6 @@ export function NormativesPage({projectId}: {projectId?: string} = {}) {
 
       {!projectId && <>
       <section className="panel stack" id="normative-editor">
-        <div className="eyebrow">02 / ЛОКАЛЬНЫЙ СПРАВОЧНИК</div>
         <h2>{editId ? 'Редактирование норматива' : 'Добавить норматив вручную'}</h2>
         
         <form onSubmit={handleSubmit} className="normative-edit-form">
@@ -466,7 +463,7 @@ export function NormativesPage({projectId}: {projectId?: string} = {}) {
       {/* ТАБЛИЦА РЕЕСТРА */}
       <section className="panel">
         <div className="normative-registry-head">
-          <div><div className="eyebrow">03 / РЕЕСТР</div>
+          <div>
             <h2>Локальный реестр</h2>
             <p className="muted">Справочные статусы не считаются проверенными без даты Росстандарта.</p>
           </div>
