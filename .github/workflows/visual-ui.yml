@@ -1,0 +1,41 @@
+name: Visual UI audit
+on:
+  pull_request:
+    paths:
+      - 'frontend/**'
+      - '.github/workflows/visual-ui.yml'
+  push:
+    branches: [dev]
+    paths:
+      - 'frontend/**'
+      - '.github/workflows/visual-ui.yml'
+  workflow_dispatch:
+
+jobs:
+  browser-layout:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install app dependencies
+        run: npm install
+      - name: Install browser test runner (not a runtime dependency)
+        run: npm install --no-save playwright
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Build application
+        run: npm run build
+      - name: Test all pages at desktop, tablet and mobile widths
+        run: node scripts/visual-audit.mjs
+      - name: Save screenshot evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-visual-review
+          path: frontend/visual-artifacts/
+          retention-days: 7
