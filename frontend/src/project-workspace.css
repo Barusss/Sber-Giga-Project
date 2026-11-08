@@ -139,8 +139,8 @@
 .workspace-engineer-fields textarea { display:block; }
 .workspace-confirmed { display:block; margin-top:10px; color:#338657; font-size:11px; }
 /* Documents: the project is already selected, so the form has three inputs. */
-.documents-workspace .documents-upload-grid { grid-template-columns:minmax(170px,.85fr) minmax(230px,1.35fr) auto; align-items:end; }
-.documents-workspace .documents-upload-grid label { min-width:0; }
+.workspace .documents-workspace .documents-upload-grid { grid-template-columns:minmax(170px,.85fr) minmax(230px,1.35fr) auto; align-items:end; }
+.workspace .documents-workspace .documents-upload-grid label { min-width:0; }
 .documents-workspace .documents-heading h1 { font-size:20px; }
 .documents-upload-progress { background:#eff8fc; border:1px solid #d6eaf2; border-radius:6px; color:#406d84; }
 .documents-upload-progress small { color:#66879a; }
@@ -175,6 +175,40 @@
 .normative-status.active,.project-status.is-approved,.status-active { color:#328159; background:#e8f5ed; }
 .normative-status.obsolete,.status-obsolete { color:#a84949; background:#fff0ee; }
 .normative-status.unknown,.project-status.is-draft,.status-unknown { color:#6d8291; background:#f0f3f5; }
+/* Reference registry and normative preparation have their own compact forms. */
+.normatives-workspace .page-heading { margin-bottom:20px; }
+.normatives-workspace .panel-heading { align-items:center; }
+.normative-chooser { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; margin:0 0 15px; }
+.workspace .normative-chooser { grid-template-columns:minmax(0,1fr); }
+.normative-chooser label { min-width:0; }
+.normative-metrics { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; margin:20px 0; }
+.normative-metrics .stat-card { display:grid; gap:6px; padding:15px 17px; }
+.normative-metrics .stat-card span { color:#7c8e9b; font-size:11px; font-weight:630; }
+.normative-metrics .stat-card strong { color:#2c4c61; font-size:24px; line-height:1.2; }
+.normative-progress { padding:14px 16px; margin:8px 0 15px; }
+.normative-progress-top { display:flex; justify-content:space-between; gap:12px; margin-bottom:10px; color:#50758b; font-size:12px; }
+.normative-progress-bar { width:100%; height:8px; overflow:hidden; border-radius:20px; background:#deebf1; }
+.normative-progress-bar span { display:block; height:100%; border-radius:20px; background:#16a1ce; }
+.normative-note { padding:11px 13px; font-size:12px; line-height:1.55; }
+.normative-table-wrap { margin:15px 0; }
+.normative-table-wrap table { min-width:670px; }
+.normative-row-obsolete td { background:#fffaf9; }
+.normative-row-unknown td { background:#fcfcfd; }
+.normative-edit-form { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; }
+.normative-edit-form .full-width { grid-column:1/-1; }
+.normative-registry-head { display:flex; align-items:end; justify-content:space-between; flex-wrap:wrap; gap:16px; margin-bottom:17px; }
+.normative-registry-head h2 { margin-bottom:5px; }
+.normative-registry-head p { margin:0; font-size:12px; }
+.normative-registry-search { display:flex; gap:10px; align-items:end; flex-wrap:wrap; }
+.normative-registry-search label { flex:1 1 160px; }
+.normative-mini-buttons { display:flex; flex-wrap:wrap; gap:7px; }
+.normative-mini-buttons button { min-height:32px; padding:6px 10px; font-size:12px; }
+.normative-actions.full-width { grid-column:1/-1; }
+.requirements-busy { margin:16px 0; padding:16px; border:1px solid #cfe7f1; border-radius:6px; background:#f0f9fc; }
+.requirements-busy-top { display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap; font-size:12px; margin-bottom:10px; }
+.requirements-busy-bar { height:7px; background:#dcecf2; border-radius:7px; overflow:hidden; }
+.requirements-busy-bar span { display:block; height:100%; width:30%; background:#1aa5d5; border-radius:7px; }
+.requirements-busy p { margin:10px 0 0; color:#628093; font-size:12px; }
 /* Reports keep long evidence and print support. */
 .expert-report { color:var(--ui-text); font-size:14px; }
 .expert-report .panel { padding:23px 25px; }
@@ -205,8 +239,8 @@
   .app-content { padding:23px 23px 50px; }
   .workspace-engineer-fields { grid-template-columns:minmax(170px,215px) minmax(210px,1fr); }
   .workspace-engineer-fields button { grid-column:2; justify-self:start; }
-  .documents-workspace .documents-upload-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
-  .documents-workspace .documents-upload-grid button { justify-self:start; }
+  .workspace .documents-workspace .documents-upload-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .workspace .documents-workspace .documents-upload-grid button { justify-self:start; }
 }
 @media (max-width:760px) {
   .app-topbar { position:relative; padding:0 13px; }
@@ -235,8 +269,11 @@
   .workspace-engineer-fields button { grid-column:1; }
   .workspace-run-row { gap:9px; flex-wrap:wrap; }
   .workspace-history { margin-bottom:16px; }
-  .documents-workspace .documents-upload-grid { grid-template-columns:1fr; }
-  .documents-workspace .documents-upload-grid button { justify-self:stretch; }
+  .workspace .documents-workspace .documents-upload-grid { grid-template-columns:1fr; }
+  .normative-chooser,.normative-edit-form { grid-template-columns:1fr; }
+  .normative-metrics { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .normative-registry-search { width:100%; }
+  .workspace .documents-workspace .documents-upload-grid button { justify-self:stretch; }
   .report-metrics { grid-template-columns:repeat(2,minmax(0,1fr)); }
   .expert-report .report-header h1 { font-size:22px; }
 }
