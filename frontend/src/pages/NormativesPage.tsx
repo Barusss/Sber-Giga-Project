@@ -306,14 +306,14 @@ export function NormativesPage({projectId}: {projectId?: string} = {}) {
         <div className="eyebrow">МОДУЛЬ 02 / НОРМАТИВНЫЙ КОНТРОЛЬ</div>
         <h1>{projectId ? 'Подготовка документов' : 'ГОСТ и НТД'}</h1>
         <p className="muted">{projectId
-          ? 'Проверка нормативных ссылок в загруженных документах.'
+          ? 'Проверяйте нормативные ссылки в документах проекта.'
           : 'Проверка нормативных документов и обновление сведений из Росстандарта.'}</p>
       </header>
 
       {/* СЕКЦИЯ АНАЛИЗА ДОКУМЕНТА */}
       <section className="panel stack normative-analysis">
         <div className="panel-heading">
-          <div><div className="eyebrow">01 / ДОКУМЕНТ</div><h2>Анализ нормативных ссылок</h2></div>
+          <div><div className="eyebrow">01 / ДОКУМЕНТ</div><h2>{projectId ? 'Нормативные ссылки' : 'Анализ нормативных ссылок'}</h2></div>
           <span className="panel-counter">{projectId ? documents.length + ' документов' : 'Пакетная проверка'}</span>
         </div>
         
@@ -334,8 +334,7 @@ export function NormativesPage({projectId}: {projectId?: string} = {}) {
           </div>}
           <div className={projectId ? 'prepare-check' : ''}>
             {projectId && <div className="prepare-selected">
-              <h3>Проверка нормативных ссылок</h3>
-              <p>{currentDoc?.filename || 'Выберите документ слева'}</p>
+              <h3>{currentDoc?.filename || 'Выберите документ слева'}</h3>
               {currentDoc?.normative_extraction_completed &&
                 <small>Нормативные ссылки ранее извлекались из документа</small>}
             </div>}
