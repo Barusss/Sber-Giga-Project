@@ -28,35 +28,20 @@ export function ProjectsPage() {
     }
   }
 
-  const inProgress = items.filter(item => item.state === 'draft').length
-  const approved = items.length - inProgress
-
   return <div className="projects-workspace">
     <header className="page-heading">
-      <div className="eyebrow">ПАНЕЛЬ УПРАВЛЕНИЯ / ПРОЕКТЫ</div>
-      <h1>Рабочие проекты<span className="heading-dot">.</span></h1>
-      <p className="muted">Создайте проект, загрузите технические условия и задание на проектирование.
-        Результаты проверки будут доступны в соответствующих разделах.</p>
+      <h1>Проекты</h1>
     </header>
 
-    <section className="projects-stats" aria-label="Статистика проектов">
-      <div className="stat-card"><span>ВСЕГО ПРОЕКТОВ</span><strong>{items.length}</strong><small>Записей в системе</small></div>
-      <div className="stat-card"><span>В РАБОТЕ</span><strong>{inProgress}</strong><small>Доступны для изменений</small></div>
-      <div className="stat-card"><span>УТВЕРЖДЕНО</span><strong>{approved}</strong><small>Завершённые решения</small></div>
-    </section>
-
     <section className="panel project-create">
-      <div className="panel-heading">
-        <div><span className="eyebrow">01 / НОВАЯ ПРОВЕРКА</span><h2>Создать проект</h2></div>
-        <span className="panel-ornament" aria-hidden="true">✳</span>
-      </div>
+      <div className="panel-heading"><h2>Создать проект</h2></div>
       <form onSubmit={create} className="project-create-form">
         <label htmlFor="new-project-name">Название проекта
           <input id="new-project-name" value={name} onChange={e => setName(e.target.value)}
-            placeholder="Например, реконструкция электроснабжения" required maxLength={180}/>
+            placeholder="Название проекта" required maxLength={180}/>
         </label>
         <button type="submit" disabled={creating || !name.trim()}>
-          {creating ? 'Создание…' : 'Создать проект'} <span aria-hidden="true">↗</span>
+          {creating ? 'Создание…' : 'Создать проект'}
         </button>
       </form>
     </section>
@@ -65,11 +50,11 @@ export function ProjectsPage() {
 
     <section className="panel project-list">
       <div className="panel-heading">
-        <div><span className="eyebrow">02 / РЕЕСТР</span><h2>Список проектов</h2></div>
-        <span className="panel-counter">{items.length} записей</span>
+        <h2>Список проектов</h2>
+        <span className="panel-counter">{items.length}</span>
       </div>
-      {!items.length ? <div className="empty-state"><span aria-hidden="true">＋</span>
-        <h3>Список пока пуст</h3><p>Создайте первый проект через форму выше.</p>
+      {!items.length ? <div className="empty-state">
+        <h3>Проектов пока нет</h3><p>Создайте проект через форму выше.</p>
       </div> : <div className="table-scroll">
         <table><thead><tr><th>Название</th><th>Идентификатор</th><th>Состояние</th></tr></thead>
           <tbody>{items.map(item => <tr key={item.id}>
