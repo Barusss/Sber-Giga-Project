@@ -1,6 +1,6 @@
 import {createContext, useContext, useEffect, useMemo, useRef, useState} from 'react'
 import type {ReactNode} from 'react'
-import {json, request} from '../api/client'
+import {API, json, request} from '../api/client'
 
 export type Operation = {
   id: string
@@ -37,6 +37,13 @@ type ContextValue = {
   cancel: (id: string) => Promise<void>
 }
 
+async function listJobs(base: string): Promise<Operation[]> {
+  // Progress polling is intentionally silent in the debug log.
+  const response = await fetch(`${API}${base}`, {cache:'no-store'})
+  if (!response.ok) throw new Error(`Не удалось получить статус: ${response.status}`)
+  return response.json() as Promise<Operation[]>
+}
+
 const OperationsContext = createContext<ContextValue|null>(null)
 const active = (job: Operation) => job.status === 'queued' || job.status === 'running'
 
@@ -61,7 +68,7 @@ export function OperationsProvider({projectId, children}: {
   const base = `/projects/${projectId}/operations`
 
   const reload = async () => {
-    const jobs = await request<Operation[]>(base)
+    const jobs = await listJobs(base)
     if (mounted.current) {
       setOperations(jobs)
       setLoading(false)
@@ -78,7 +85,7 @@ export function OperationsProvider({projectId, children}: {
     async function poll() {
       let delay = 6000
       try {
-        const jobs = await request<Operation[]>(base)
+        const jobs = await listJobs(base)
         if (cancelled) return
         setOperations(jobs)
         setConnectionError(false)
