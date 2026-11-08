@@ -140,7 +140,6 @@ async function verifyTabs(page,active) {
         box:a.getBoundingClientRect().toJSON(),
       }
     }))
-  )
   assert.equal(tabs.length,4,'Four project stages visible')
   assert.equal(tabs.filter(tab=>tab.active).length,1,'Exactly one active project tab')
   assert.equal(tabs.find(tab=>tab.active)?.title,active)
