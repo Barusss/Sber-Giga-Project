@@ -227,6 +227,51 @@
 .report-jump-nav a span { color:#658395; background:#f0f5f7; }
 .expert-report .report-more-button { background:#fff; border:1px solid #d3e1e9; color:#266e91; border-radius:5px; }
 .expert-report .report-more-button:hover:not(:disabled) { color:#087ca9; background:#edf7fc; }
+/* Real process feedback. The operation state comes from the server, not an animation timer. */
+.operations-panel { display:grid; gap:10px; margin:0 0 22px; }
+.operation-uploading { display:flex; align-items:center; gap:11px; font-size:12px; }
+.operation-uploading .operation-spinner { margin-top:0; }
+.operation-row { display:flex; align-items:flex-start; gap:12px; min-width:0; padding:14px 17px; border:1px solid #d5e6ee; border-radius:7px; background:#f5fbfe; color:#35586b; }
+.operation-row.completed { background:#f6faf8; border-color:#dcebe3; }
+.operation-row.failed { background:#fff7f5; border-color:#f0dad7; }
+.operation-row.cancelled { background:#f7f8f9; border-color:#e4e8eb; }
+.operation-spinner { position:relative; display:block; width:19px; height:19px; margin-top:2px; flex:0 0 19px; border:2px solid #c8e4ee; border-top-color:#078fbe; border-radius:50%; animation:operation-spin .8s linear infinite; }
+.operation-result-dot { display:block; width:10px; height:10px; margin:6px 4px 0; flex:0 0 10px; border-radius:50%; background:#5caa7b; }
+.operation-result-dot.failed { background:#cd7370; }
+.operation-result-dot.cancelled { background:#9aabb4; }
+.operation-row-body { flex:1 1 auto; min-width:0; }
+.operation-row-title { display:flex; align-items:baseline; gap:9px; flex-wrap:wrap; }
+.operation-row-title strong { font-size:13px; font-weight:690; color:#2c536c; }
+.operation-row-title span { font-size:12px; color:#7591a3; overflow-wrap:anywhere; }
+.operation-row p { margin:4px 0 0; color:#6c8799; font-size:12px; }
+.operation-row.failed p { color:#b75350; }
+.operation-progress { position:relative; width:min(600px,100%); height:5px; margin-top:12px; border-radius:9px; background:#dcebf2; overflow:hidden; }
+.operation-progress-fill { display:block; height:100%; border-radius:9px; background:#159ccc; transition:width .35s ease-out; }
+.operation-progress-indeterminate { position:absolute; width:38%; height:100%; left:-38%; background:linear-gradient(90deg,#8bd1e8,#159bc8); border-radius:9px; animation:operation-sweep 1.55s ease-in-out infinite; }
+.operation-numbers { color:#528199; font-size:11px; font-variant-numeric:tabular-nums; flex:0 0 auto; margin:2px 0 0; }
+button.operation-cancel { min-height:30px; font-size:11px; padding:5px 10px; }
+.operation-finished { position:relative; }
+.operation-finished .operation-row { padding-right:105px; }
+button.operation-dismiss { position:absolute; right:11px; top:10px; border:0; background:transparent; min-height:30px; padding:5px 8px; color:#718b9b; font-size:11px; }
+button.operation-dismiss:hover:not(:disabled) { background:#edf3f6; border:0; color:#385d74; }
+.operation-connection { padding:10px 13px; border:1px solid #f0dcbb; border-radius:6px; background:#fff9ee; color:#8d6835; font-size:12px; }
+.operation-history-toggle { min-height:0; padding:0; border:0; background:transparent; color:#59839b; font-size:12px; font-weight:650; }
+.operation-history-toggle:hover:not(:disabled) { border:0; background:transparent; color:#087daa; text-decoration:underline; }
+.operation-history-items { display:grid; gap:8px; margin-top:11px; }
+.operation-history-items .operation-row { padding:10px 13px; }
+@keyframes operation-spin { to { transform:rotate(360deg); } }
+@keyframes operation-sweep { to { left:100%; } }
+@media (max-width:760px) {
+  .operation-row { padding:12px; gap:9px; flex-wrap:wrap; }
+  .operation-row-body { flex-basis:calc(100% - 30px); }
+  .operation-numbers { margin-left:30px; }
+  .operation-finished .operation-row { padding-right:80px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .operation-spinner,.operation-progress-indeterminate { animation:none; }
+  .operation-progress-fill { transition:none; }
+  .operation-progress-indeterminate { left:0; width:100%; opacity:.4; }
+}
 /* Diagnostics are a utility drawer, not a second visual system. */
 .diagnostics-toggle { background:#fff; color:#52748a; border:1px solid #d7e2e8; margin:0; }
 .diagnostics-count.running { background:#e6f5fb; color:#0b7fa9; }
