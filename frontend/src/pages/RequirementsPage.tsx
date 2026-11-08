@@ -878,7 +878,7 @@ export function RequirementsPage() {
                     fontWeight: item.is_confirmed_by_human ? 600 : 400,
                   }}
                 >
-                  {item.is_confirmed_by_human ? '✓ Проверено инженером' : 'Ожидает решения'}
+                  {item.is_confirmed_by_human ? 'Проверено инженером' : 'Ожидает решения'}
                 </small>
               </div>
             </div>

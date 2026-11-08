@@ -417,7 +417,7 @@ export function NormativesPage() {
       {/* СЕКЦИЯ УПРАВЛЕНИЯ РЕЕСТРОМ */}
       <section className="panel stack" id="normative-editor">
         <div className="eyebrow">02 / ЛОКАЛЬНЫЙ СПРАВОЧНИК</div>
-        <h2>{editId ? '✏️ Редактирование норматива' : '➕ Добавить норматив вручную'}</h2>
+        <h2>{editId ? 'Редактирование норматива' : 'Добавить норматив вручную'}</h2>
         
         <form onSubmit={handleSubmit} className="normative-edit-form">
           <label>Обозначение
