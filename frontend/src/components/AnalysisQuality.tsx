@@ -1,5 +1,3 @@
-import type {ReactNode} from 'react'
-
 export type AnalysisTrace = {
   degraded?: boolean
   agent_runs?: Array<{
@@ -117,7 +115,7 @@ export function AnalysisFallbackNotice({trace, items}: {
   </aside>
 }
 
-function ScoreHint({method}: {method?:string|null}): ReactNode {
+function scoreHint(method?:string|null): string {
   if (method === 'llm') return 'Это оценка модели, скорректированная автоматическими проверками. Не является вероятностью правильного заключения.'
   if (method === 'deterministic') return 'Это сходство найденного текста ЗнП с требованием ТУ. Оно не означает подтверждённого выполнения требования.'
   return 'Метод оценки не указан в сохранённом результате; показатель нельзя интерпретировать как уверенность ИИ.'
@@ -136,7 +134,7 @@ export function AnalysisConfidence({method, score}: {
     <span className={'workspace-analysis-method '+(isLLM ? 'llm' : 'local')}>
       {isLLM ? 'ИИ-агент' : isSearch ? 'Поиск и проверка правил' : 'Метод не указан'}
     </span>
-    <div className="workspace-score" title={String(ScoreHint({method}))}>
+    <div className="workspace-score" title={scoreHint(method)}>
       <span>{label}</span>
       <strong>{percent === null ? 'Нет данных' : `${percent}%`}</strong>
       {percent !== null && <div className={'workspace-score-track '+(isLLM ? 'llm':'local')}
