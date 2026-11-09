@@ -1,3 +1,4 @@
+from typing import Callable
 """Participant #3 TU/ZnP module: storage, human review and AI-assisted matching.
 
 Manual input and expert confirmations are always available. The automated
@@ -624,8 +625,11 @@ def _analyze_project_requirements(
     payload: AnalyzeProjectRequirementsRequest,
     db: Session,
     agent: RequirementsAgent,
+    progress_callback: Callable[[str, int, int, str | None], None] | None = None,
 ) -> CheckRequirementsResponse:
     project_id = payload.project_id
+    if progress_callback:
+        progress_callback("reading", 0, 0, None)
 
     docs = db.scalars(select(Document).where(Document.project_id == project_id)).all()
     docs_by_id = {document.id: document for document in docs}
@@ -659,6 +663,8 @@ def _analyze_project_requirements(
     znp_raw = _extract_clauses_from_doc(db, znp_doc)
     if not tu_raw or not znp_raw:
         raise HTTPException(422, "No useful TU requirements or ZNP clauses extracted; check OCR and document structure")
+    if progress_callback:
+        progress_callback("preparing", 0, len(tu_raw), None)
 
     fragment_ids = {
         fragment_id
@@ -823,7 +829,12 @@ def _analyze_project_requirements(
             )
         )
 
-    response = agent.verify_all(tu_schemas, znp_schemas)
+    response = (
+        agent.verify_all(tu_schemas, znp_schemas, progress_callback=progress_callback)
+        if progress_callback else agent.verify_all(tu_schemas, znp_schemas)
+    )
+    if progress_callback:
+        progress_callback("persisting", len(tu_schemas), len(tu_schemas), None)
     _attach_provenance(response.checked_requirements, tu_schemas, znp_schemas)
     _apply_quote_provenance(
         response.checked_requirements, tu_clauses, znp_clauses, fragments_by_id, znp_doc.id,
