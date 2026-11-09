@@ -200,8 +200,12 @@ def get_comparison(project_id: str, pair_id: str, db: Session = Depends(get_db))
 
 
 @router.post("/projects/{project_id}/comparisons/{pair_id}/runs", status_code=201)
-def execute_comparison(
-    project_id: str, pair_id: str, db: Session = Depends(get_db),
+def execute_comparison(project_id: str, pair_id: str, db: Session = Depends(get_db)):
+    return run_comparison(project_id, pair_id, db)
+
+
+def run_comparison(
+    project_id: str, pair_id: str, db: Session,
     progress_callback: Callable[[str, int, int, str | None], None] | None = None,
 ):
     pair = _pair(db, project_id, pair_id, edit=True)
