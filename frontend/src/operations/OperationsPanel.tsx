@@ -144,6 +144,117 @@ function StatusIcon({status}: {status: Operation['status']}) {
   return <span className={'operation-result-dot '+status} aria-hidden="true"/>
 }
 
+type ComparisonProgressData = {
+  pair_id: string
+  pair_index: number
+  pair_total: number
+  stage: string
+  requirements_current: number|null
+  requirements_total: number|null
+  current_clause: string|null
+  remaining_seconds: number|null
+}
+
+const comparisonSteps = [
+  {stage:'reading', label:'Разбор документов'},
+  {stage:'embedding', label:'Поиск соответствий'},
+  {stage:'verifying', label:'Проверка требований'},
+  {stage:'persisting', label:'Формирование замечаний'},
+  {stage:'snapshot', label:'Сохранение результата'},
+]
+
+function comparisonStageIndex(stage: string): number {
+  if (stage === 'reading' || stage === 'preparing') return 0
+  if (stage === 'embedding') return 1
+  if (stage === 'verifying') return 2
+  if (stage === 'persisting') return 3
+  if (stage === 'snapshot') return 4
+  if (stage === 'complete' || stage === 'comparing') return 5
+  return -1
+}
+
+function asComparisonProgress(job: Operation): ComparisonProgressData|null {
+  const value = job.result?.comparison_progress
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const detail = value as Record<string,unknown>
+  if (typeof detail.stage !== 'string' || typeof detail.pair_index !== 'number'
+      || typeof detail.pair_total !== 'number') return null
+  return {
+    pair_id: String(detail.pair_id || ''),
+    pair_index: detail.pair_index,
+    pair_total: detail.pair_total,
+    stage: detail.stage,
+    requirements_current: typeof detail.requirements_current === 'number'
+      ? detail.requirements_current : null,
+    requirements_total: typeof detail.requirements_total === 'number'
+      ? detail.requirements_total : null,
+    current_clause: typeof detail.current_clause === 'string' ? detail.current_clause : null,
+    remaining_seconds: typeof detail.remaining_seconds === 'number'
+      ? detail.remaining_seconds : null,
+  }
+}
+
+function formatRemaining(seconds: number): string {
+  const minutes = Math.max(1, Math.ceil(seconds / 60))
+  if (minutes < 60) return `около ${minutes} мин`
+  const hours = Math.floor(minutes / 60)
+  const rest = minutes % 60
+  return rest ? `около ${hours} ч ${rest} мин` : `около ${hours} ч`
+}
+
+function ComparisonProgress({job}: {job: Operation}) {
+  const data = asComparisonProgress(job)
+  if (!data) return <p className="operation-waiting-detail">
+    {job.status === 'queued' ? 'Ожидает свободного исполнителя' : 'Определяется состав документов и требований'}
+  </p>
+  const stage = comparisonStageIndex(data.stage)
+  const current = data.requirements_current
+  const total = data.requirements_total
+  const hasCount = current !== null && total !== null && total > 0
+  const percent = hasCount ? Math.min(100, Math.round(current / total * 100)) : null
+
+  return <div className="operation-comparison-detail">
+    <div className="operation-comparison-heading">
+      <strong>Пара {data.pair_index} из {data.pair_total}</strong>
+      {hasCount && <span>Требований ТУ: {total}</span>}
+    </div>
+    <ol className="operation-stage-list" aria-label="Этапы сверки">
+      {comparisonSteps.map((step,index) => <li key={step.stage}
+        className={'operation-stage-item '+(index < stage ? 'done' : index === stage ? 'current' : 'pending')}
+        aria-current={index === stage ? 'step' : undefined}>
+        <span className="operation-stage-marker" aria-hidden="true"/>
+        <span>{step.label}</span>
+      </li>)}
+    </ol>
+    {hasCount && stage >= 2 && <div className="operation-requirements-progress">
+      <div className="operation-requirements-head">
+        <strong>Обработано {current} из {total} требований</strong>
+        <span>{percent}%</span>
+      </div>
+      <div className="operation-progress" role="progressbar"
+        aria-label="Проверено требований в текущей паре"
+        aria-valuemin={0} aria-valuemax={total} aria-valuenow={current}>
+        <span className="operation-progress-fill" style={{width:`${percent}%`}}/>
+      </div>
+      <div className="operation-requirements-foot">
+        {data.current_clause && stage === 2
+          ? <span>Сейчас: пункт ТУ {data.current_clause}</span>
+          : <span>{stage === 2 ? `Осталось требований: ${total-current}` : 'Проверка требований завершена'}</span>}
+        {stage === 2 && data.remaining_seconds !== null &&
+          <span>Примерно осталось: {formatRemaining(data.remaining_seconds)}</span>}
+      </div>
+      {data.current_clause && stage === 2 && <p className="operation-remaining-note">
+        Осталось требований: {total-current}. Время оценивается по уже проверенным требованиям.
+      </p>}
+    </div>}
+    {!hasCount && stage >= 0 && stage < 2 &&
+      <p className="operation-waiting-detail">Число требований определяется по содержимому документов.</p>}
+    {hasCount && stage === 1 && <p className="operation-waiting-detail">
+      Найдено {total} требований. Подготавливается поиск соответствующих пунктов в ЗнП.
+    </p>}
+  </div>
+}
+
 function OperationRow({job, cancel}: {job: Operation; cancel: (id: string) => Promise<void>}) {
   const working = active(job)
   const knownProgress = job.progress_current !== null && job.progress_total !== null
@@ -151,6 +262,7 @@ function OperationRow({job, cancel}: {job: Operation; cancel: (id: string) => Pr
   const percentage = knownProgress
     ? Math.min(100, Math.round((job.progress_current! / job.progress_total!) * 100))
     : null
+  const isComparison = job.kind === 'comparison' || job.kind === 'comparison_batch'
   const description = job.filename || (job.kind === 'comparison_batch'
     ? `${job.pair_ids.length} сверок`
     : '')
@@ -162,7 +274,8 @@ function OperationRow({job, cancel}: {job: Operation; cancel: (id: string) => Pr
         {description && <span>{description}</span>}
       </div>
       <p>{job.error || job.message}</p>
-      {working && <div className="operation-progress" role="progressbar"
+      {working && isComparison && <ComparisonProgress job={job}/>}
+      {working && !isComparison && <div className="operation-progress" role="progressbar"
         aria-label={titles[job.kind]}
         aria-valuemin={percentage !== null ? 0 : undefined}
         aria-valuemax={percentage !== null ? 100 : undefined}
@@ -172,7 +285,7 @@ function OperationRow({job, cancel}: {job: Operation; cancel: (id: string) => Pr
           : <span className="operation-progress-indeterminate"/>}
       </div>}
     </div>
-    {knownProgress && working && <span className="operation-numbers">
+    {knownProgress && working && !isComparison && <span className="operation-numbers">
       {job.progress_current} / {job.progress_total}
     </span>}
     {working && job.kind === 'normative_check' &&

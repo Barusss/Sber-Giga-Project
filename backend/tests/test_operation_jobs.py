@@ -141,7 +141,7 @@ def test_batch_comparisons_complete_after_request_returns(ops_client, monkeypatc
     assert create.status_code == 201, create.text
     pair_ids = [p["id"] for p in create.json()]
 
-    def mock_run(pid, pair_id, db):
+    def mock_run(pid, pair_id, db, progress_callback=None):
         time.sleep(.09)
         return {"run": {"id": "saved-" + pair_id}}
 
@@ -292,3 +292,67 @@ def test_background_worker_queue_does_not_exhaust_db_pool(ops_client, monkeypatc
             ops_client, f"/api/v1/projects/{project_id}/operations/{job_id}"
         )
         assert finished["status"] == "completed"
+
+
+def test_comparison_details_are_persisted_while_running(ops_client, monkeypatch):
+    """A new browser request sees the current TU clause and stage, not a fake timer."""
+    project_id = create_project(ops_client)
+    tu = create_document(ops_client, project_id, "tu", monkeypatch)
+    znp = create_document(ops_client, project_id, "znp", monkeypatch)
+    response = ops_client.post(
+        f"/api/v1/projects/{project_id}/comparisons",
+        json={"pairs": [{"tu_document_id": tu, "znp_document_id": znp}]},
+    )
+    assert response.status_code == 201
+    pair_id = response.json()[0]["id"]
+    started = Event()
+    release = Event()
+
+    def fake_run(pid, comparison_id, db, progress_callback=None):
+        assert progress_callback is not None
+        for stage in ("reading", "preparing", "embedding"):
+            progress_callback(stage, 0, 4, None)
+        progress_callback("verifying", 2, 4, "4.3")
+        started.set()
+        if not release.wait(5):
+            raise AssertionError("The comparison worker was not released")
+        progress_callback("verifying", 3, 4, None)
+        progress_callback("verifying", 4, 4, None)
+        progress_callback("persisting", 4, 4, None)
+        progress_callback("snapshot", 4, 4, None)
+        return {"run": {"id": "saved-run"}}
+
+    monkeypatch.setattr("app.operations.execute_comparison", fake_run)
+    job = ops_client.post(
+        f"/api/v1/projects/{project_id}/operations",
+        json={"kind": "comparison", "pair_ids": [pair_id]},
+    )
+    assert job.status_code == 202, job.text
+    job_id = job.json()["id"]
+
+    try:
+        assert started.wait(4)
+        # Simulates refreshing the browser: a separate GET reads persisted progress.
+        snapshot = ops_client.get(f"/api/v1/projects/{project_id}/operations/{job_id}")
+        assert snapshot.status_code == 200, snapshot.text
+        state = snapshot.json()
+        assert state["status"] == "running"
+        assert state["stage"] == "verifying"
+        detail = state["result"]["comparison_progress"]
+        assert detail["pair_id"] == pair_id
+        assert detail["pair_index"] == detail["pair_total"] == 1
+        assert detail["requirements_current"] == 2
+        assert detail["requirements_total"] == 4
+        assert detail["current_clause"] == "4.3"
+        assert detail["remaining_seconds"] is None
+        assert ops_client.get(
+            f"/api/v1/projects/{project_id}/operations"
+        ).json()[0]["result"]["comparison_progress"] == detail
+    finally:
+        release.set()
+
+    completed = wait_for(
+        ops_client, f"/api/v1/projects/{project_id}/operations/{job_id}"
+    )
+    assert completed["result"]["runs"] == [{"pair_id": pair_id, "run_id": "saved-run"}]
+    assert completed["result"]["comparison_progress"]["stage"] == "snapshot"

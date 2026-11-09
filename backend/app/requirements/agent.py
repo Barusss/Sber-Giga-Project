@@ -2,7 +2,7 @@
 import json
 import re
 import time
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 
 from app.ai.deepseek import DeepSeekClient, DeepSeekError
@@ -105,8 +105,12 @@ class RequirementsAgent:
         self,
         tu_requirements: list[TURequirement],
         znp_clauses: list[ZNPClause],
+        progress_callback: Callable[[str, int, int, str | None], None] | None = None,
     ) -> CheckRequirementsResponse:
         started_at = time.perf_counter()
+        total = len(tu_requirements)
+        if progress_callback:
+            progress_callback("embedding", 0, total, None)
         checked_items: list[RequirementCheckItem] = []
         all_traces: list[dict[str, Any]] = []
 
@@ -119,7 +123,12 @@ class RequirementsAgent:
         if not clause_embeddings:
             clause_embeddings = None
 
-        for req in tu_requirements:
+        if progress_callback:
+            progress_callback("verifying", 0, total, None)
+
+        for index, req in enumerate(tu_requirements, start=1):
+            if progress_callback:
+                progress_callback("verifying", index - 1, total, req.clause_number)
             decision, req_trace = self._verify_single_requirement(
                 req, znp_clauses, znp_by_id, clause_embeddings,
             )
@@ -152,6 +161,8 @@ class RequirementsAgent:
                     channels=decision.channels,
                 )
             )
+            if progress_callback:
+                progress_callback("verifying", index, total, None)
 
         stats = {
             "fulfilled": sum(1 for i in checked_items if i.status == RequirementStatus.fulfilled),

@@ -259,6 +259,65 @@ button.operation-dismiss:hover:not(:disabled) { background:#edf3f6; border:0; co
 .operation-history-toggle:hover:not(:disabled) { border:0; background:transparent; color:#087daa; text-decoration:underline; }
 .operation-history-items { display:grid; gap:8px; margin-top:11px; }
 .operation-history-items .operation-row { padding:10px 13px; }
+/* Detailed comparison progress uses persisted API state, never a simulated timer. */
+.operation-comparison-detail {
+  margin-top:13px; padding-top:13px; border-top:1px solid #deebf0;
+}
+.operation-comparison-heading {
+  display:flex; flex-wrap:wrap; align-items:center; gap:8px 18px;
+  margin-bottom:13px; font-size:12px;
+}
+.operation-comparison-heading strong { font-weight:690; color:#31546a; }
+.operation-comparison-heading span { color:#7590a0; }
+.operation-stage-list {
+  list-style:none; display:grid; grid-template-columns:repeat(5,minmax(0,1fr));
+  gap:8px; margin:0; padding:0;
+}
+.operation-stage-item {
+  display:flex; align-items:flex-start; gap:7px; min-width:0;
+  font-size:11px; line-height:1.35; font-weight:540; color:#98aab4;
+}
+.operation-stage-marker {
+  display:block; flex:0 0 9px; width:9px; height:9px;
+  margin-top:3px; border:1.5px solid #b9c9d2; background:#fff; border-radius:50%;
+}
+.operation-stage-item.done { color:#557c91; }
+.operation-stage-item.done .operation-stage-marker { background:#5cad88; border-color:#5cad88; }
+.operation-stage-item.current { color:#187ca4; font-weight:690; }
+.operation-stage-item.current .operation-stage-marker {
+  background:#169bca; border-color:#169bca;
+  box-shadow:0 0 0 3px rgba(22,155,202,.13);
+  animation:operation-stage-pulse 1.8s ease-in-out infinite;
+}
+.operation-requirements-progress {
+  margin-top:15px; padding:12px 14px; border:1px solid #dce9ef;
+  border-radius:6px; background:#fff;
+}
+.operation-requirements-head,.operation-requirements-foot {
+  display:flex; align-items:center; justify-content:space-between;
+  flex-wrap:wrap; gap:6px 12px; font-size:12px;
+}
+.operation-requirements-head strong { color:#35566c; font-weight:680; }
+.operation-requirements-head span { color:#4e859f; font-variant-numeric:tabular-nums; font-weight:720; }
+.operation-requirements-progress .operation-progress { width:100%; max-width:none; height:7px; margin:10px 0 9px; }
+.operation-requirements-foot { color:#617d90; font-size:11px; }
+.operation-requirements-foot span:last-child { font-variant-numeric:tabular-nums; }
+.operation-row .operation-remaining-note,.operation-row .operation-waiting-detail {
+  margin:9px 0 0; color:#8196a2; font-size:11px;
+}
+@keyframes operation-stage-pulse {
+  50% { box-shadow:0 0 0 6px rgba(22,155,202,.04); }
+}
+@media (max-width:900px) {
+  .operation-stage-list { grid-template-columns:repeat(3,minmax(0,1fr)); row-gap:11px; }
+}
+@media (max-width:520px) {
+  .operation-stage-list { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .operation-requirements-progress { padding:11px 12px; }
+}
+@media (prefers-reduced-motion:reduce) {
+  .operation-stage-item.current .operation-stage-marker { animation:none; }
+}
 @keyframes operation-spin { to { transform:rotate(360deg); } }
 @keyframes operation-sweep { to { left:100%; } }
 @media (max-width:760px) {
