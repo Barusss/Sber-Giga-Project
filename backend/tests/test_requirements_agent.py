@@ -1110,3 +1110,36 @@ def test_validate_quotes_normalizes_typography_and_reports_atomicity():
     assert long_quote["znp_quote_valid"] is True
     assert long_quote["znp_quote_atomic"] is False
 
+
+
+def test_agent_reports_actual_requirement_counts_and_clause_numbers(monkeypatch):
+    from app.requirements.schemas import LLMVerificationDecision, RequirementStatus
+
+    agent = RequirementsAgent(embedder=EmbeddingService(enabled=False))
+    decision = LLMVerificationDecision(
+        status=RequirementStatus.fulfilled, similarity_score=1,
+        matched_znp_clause_id="znp-1", method="deterministic",
+    )
+    monkeypatch.setattr(agent, "_verify_single_requirement",
+                        lambda *args: (decision, []))
+    requirements = [
+        TURequirement(id=f"tu-{index}", clause_number=f"3.{index}",
+                      category=RequirementCategory.other, text=f"Требование {index}")
+        for index in range(1, 5)
+    ]
+    clauses = [ZNPClause(id="znp-1", clause_number="4.1", text="Требования выполнены")]
+    events = []
+
+    result = agent.verify_all(
+        requirements, clauses,
+        progress_callback=lambda stage, current, total, clause:
+            events.append((stage, current, total, clause)),
+    )
+
+    assert len(result.checked_requirements) == 4
+    assert events[0] == ("embedding", 0, 4, None)
+    assert ("verifying", 0, 4, "3.1") in events
+    assert ("verifying", 2, 4, "3.3") in events
+    assert events[-1] == ("verifying", 4, 4, None)
+    assert sum(stage == "verifying" and clause is not None
+               for stage, _, _, clause in events) == 4
