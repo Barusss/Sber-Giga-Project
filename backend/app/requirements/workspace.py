@@ -5,6 +5,7 @@ calculation. This module manages the requested pairs and snapshots each run.
 """
 from copy import deepcopy
 from datetime import datetime, timezone
+from typing import Callable
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -199,7 +200,10 @@ def get_comparison(project_id: str, pair_id: str, db: Session = Depends(get_db))
 
 
 @router.post("/projects/{project_id}/comparisons/{pair_id}/runs", status_code=201)
-def execute_comparison(project_id: str, pair_id: str, db: Session = Depends(get_db)):
+def execute_comparison(
+    project_id: str, pair_id: str, db: Session = Depends(get_db),
+    progress_callback: Callable[[str, int, int, str | None], None] | None = None,
+):
     pair = _pair(db, project_id, pair_id, edit=True)
     with _analysis_lock(project_id):
         _lock_project_for_analysis(db, project_id)
@@ -208,7 +212,9 @@ def execute_comparison(project_id: str, pair_id: str, db: Session = Depends(get_
             tu_document_id=pair.tu_document_id,
             znp_document_id=pair.znp_document_id,
             force=False,
-        ), db, RequirementsAgent())
+        ), db, RequirementsAgent(), progress_callback=progress_callback)
+        if progress_callback:
+            progress_callback("snapshot", 0, 0, None)
         persisted = get_project_requirements(project_id, pair.tu_document_id, pair.znp_document_id, db)
         persisted.trace_info = response.trace_info
         for old in db.scalars(select(ComparisonRun).where(
