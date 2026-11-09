@@ -5,6 +5,7 @@ is committed so the UI polls real state rather than a simulated timer. This
 supports browser disconnects; process restarts require a separate task queue.
 """
 import logging
+import time
 from copy import deepcopy
 from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
@@ -28,7 +29,7 @@ from app.documents.parser import extract_blocks
 from app.documents.router import _read_upload, _save_document
 from app.normatives.extraction import extract_normative_facts
 from app.normatives.verification import DEFAULT_STANDARDS_BATCH, check_document_standards
-from app.requirements.workspace import execute_comparison
+from app.requirements.workspace import run_comparison as execute_comparison
 
 router = APIRouter(tags=["operations"])
 logger = logging.getLogger(__name__)
@@ -175,22 +176,74 @@ def _run_check(db: Session, job: OperationJob) -> dict:
         offset = batch.next_offset
 
 
+COMPARISON_STAGES = {
+    "reading": "Чтение и разбор пунктов ТУ и ЗнП",
+    "preparing": "Формирование перечня требований ТУ",
+    "embedding": "Подготовка поиска соответствий в ЗнП",
+    "verifying": "Сопоставление требований ТУ с ЗнП",
+    "persisting": "Формирование и сохранение замечаний",
+    "snapshot": "Сохранение результата в историю",
+}
+
+
 def _run_comparisons(db: Session, job: OperationJob) -> dict:
     pair_ids = job.params["pair_ids"]
     results = []
+    last_progress = None
     for index, pair_id in enumerate(pair_ids):
         if _cancelled(db, job.id):
             raise _JobCancelled()
-        _update(db, job.id, stage="comparing",
-                message=f"Сверка {index + 1} из {len(pair_ids)}",
+        _update(db, job.id, stage="reading",
+                message=f"Подготовка пары {index + 1} из {len(pair_ids)}",
                 current=index, total=len(pair_ids))
-        result = execute_comparison(job.project_id, pair_id, db)
+        started_verifying = None
+        last_processed = 0
+
+        def report(stage: str, current: int, total: int, clause_number: str | None):
+            nonlocal started_verifying, last_processed, last_progress
+            if stage == "verifying" and started_verifying is None:
+                started_verifying = time.monotonic()
+            if stage == "verifying" and current > last_processed:
+                last_processed = current
+
+            elapsed = (
+                time.monotonic() - started_verifying
+                if started_verifying is not None else 0.0
+            )
+            estimate = (
+                int(elapsed / current * (total - current))
+                if stage == "verifying" and current >= 3 and elapsed >= 5
+                and 0 < current < total else None
+            )
+            last_progress = {
+                "pair_id": pair_id,
+                "pair_index": index + 1,
+                "pair_total": len(pair_ids),
+                "stage": stage,
+                "requirements_current": current if total > 0 else None,
+                "requirements_total": total if total > 0 else None,
+                "current_clause": clause_number,
+                "remaining_seconds": estimate,
+            }
+            message = COMPARISON_STAGES[stage]
+            if stage == "verifying" and clause_number:
+                message = f"Анализ пункта ТУ {clause_number}"
+            # Independent short transaction: the analysis session may hold a
+            # project lock and uncommitted findings. Never commit that session
+            # just to publish progress or silently persist partial analysis.
+            with SessionLocal() as progress_db:
+                _update(progress_db, job.id, stage=stage, message=message,
+                        result={"runs": list(results), "comparison_progress": last_progress})
+
+        result = execute_comparison(
+            job.project_id, pair_id, db, progress_callback=report,
+        )
         results.append({"pair_id": pair_id, "run_id": result["run"]["id"]})
         _update(db, job.id, stage="comparing",
                 message=f"Выполнено сверок: {index + 1} из {len(pair_ids)}",
                 current=index + 1, total=len(pair_ids),
-                result={"runs": results})
-    return {"runs": results}
+                result={"runs": results, "comparison_progress": last_progress})
+    return {"runs": results, "comparison_progress": last_progress}
 
 
 class _JobCancelled(Exception):
