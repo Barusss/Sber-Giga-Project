@@ -218,7 +218,7 @@ def run_comparison(
             force=False,
         ), db, RequirementsAgent(), progress_callback=progress_callback)
         if progress_callback:
-            progress_callback("snapshot", 0, 0, None)
+            progress_callback("snapshot", response.stats["total"], response.stats["total"], None)
         persisted = get_project_requirements(project_id, pair.tu_document_id, pair.znp_document_id, db)
         persisted.trace_info = response.trace_info
         for old in db.scalars(select(ComparisonRun).where(
