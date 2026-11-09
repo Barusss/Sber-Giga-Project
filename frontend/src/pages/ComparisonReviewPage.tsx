@@ -3,6 +3,8 @@ import {useOperations} from '../operations/OperationsPanel'
 import {Link, useParams, useSearchParams} from 'react-router-dom'
 import {json, request} from '../api/client'
 import {ComparisonPair, RunSummary} from './ComparisonsPage'
+import {AnalysisConfidence, AnalysisFallbackNotice, AnalysisScoreExplanation} from '../components/AnalysisQuality'
+import type {AnalysisTrace} from '../components/AnalysisQuality'
 
 type Status = 'fulfilled'|'missing'|'needs_review'
 type VerificationItem = {
@@ -21,12 +23,13 @@ type VerificationItem = {
   is_confirmed_by_human: boolean
   human_override_status?: Status|null
   human_comment?: string|null
-  confidence_score?: number
+  confidence_score?: number|null
+  method?: string|null
 }
 type AnalysisResult = {
   checked_requirements: VerificationItem[]
   stats: {total: number; fulfilled: number; missing: number; needs_review: number}
-  trace_info?: {degraded?: boolean}|null
+  trace_info?: AnalysisTrace|null
 }
 type RunDetail = {run: RunSummary; result: AnalysisResult}
 
@@ -243,9 +246,8 @@ export function ComparisonReviewPage({projectId, approved}: {projectId: string; 
             <div><strong>{detail.result.stats.missing}</strong><span>Не соответствуют</span></div>
             <div><strong>{detail.result.stats.needs_review}</strong><span>Требуют рассмотрения</span></div>
           </div>
-          {detail.result.trace_info?.degraded && <p className="error">
-            ИИ-анализ был недоступен или неполон. Выводы требуют ручного подтверждения.
-          </p>}
+          <AnalysisFallbackNotice trace={detail.result.trace_info} items={detail.result.checked_requirements}/>
+          <AnalysisScoreExplanation/>
           <div className="workspace-toolbar">
             <input type="search" value={search} onChange={e => setSearch(e.target.value)}
               placeholder="Поиск по требованиям" aria-label="Поиск по требованиям"/>
@@ -262,6 +264,7 @@ export function ComparisonReviewPage({projectId, approved}: {projectId: string; 
               <h3>Требование {item.requirement.clause_number}</h3>
               <span className={'workspace-status '+item.status}>{labels[item.status]}</span>
             </div>
+            <AnalysisConfidence method={item.method} score={item.confidence_score}/>
             <div className="workspace-evidence-grid">
               <section>
                 <h4>Технические условия</h4>
