@@ -300,6 +300,8 @@ class RequirementsAgent:
     ) -> Any:
         if tool_name == "search_znp":
             query = str(tool_args.get("query") or req.text)
+            if query != req.text and clause_embeddings is not None:
+                query_embedding = self.embedder.embed_query(query)
             return tool_search_znp_clauses(
                 query,
                 znp_clauses,

@@ -91,6 +91,23 @@ def test_long_clause_is_split_by_parts():
     assert all(len(clause.text) <= MAX_CLAUSE_CHARS for clause in clauses)
 
 
+def test_conservative_mode_keeps_long_condition_and_sources_together():
+    first = make_fragment(1, 0, "1.1. " + "Условие прокладки. " * 300, fragment_id="first")
+    second = make_fragment(2, 0, "Допускается только при наличии двух линий.", fragment_id="second")
+    clauses = extract_clauses([first, second], conservative=True)
+    assert len(clauses) == 1
+    assert clauses[0].text == first.text.strip() + "\n" + second.text.strip()
+    assert clauses[0].fragment_ids == ["first", "second"]
+
+
+def test_conservative_mode_keeps_repeated_clauses_as_distinct_sources():
+    fragments = [make_fragment(1, 0, "1.1. Установить кабель."),
+                 make_fragment(2, 0, "1.1. Установить кабель.")]
+    clauses = extract_clauses(fragments, conservative=True)
+    assert len(clauses) == 2
+    assert [clause.fragment_id for clause in clauses] == ["f-1-0", "f-2-0"]
+
+
 def test_duplicate_numbers_get_unique_suffix():
     clauses = extract_clauses([
         make_fragment(1, 0, "1.1. Первое требование по мощности"),

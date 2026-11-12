@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     deepseek_max_tokens: int = Field(default=3000, ge=1)
 
     # Optional local semantic channel; without the model the analysis uses lexical search.
-    embedding_enabled: bool = False
+    embedding_enabled: bool = True
     embedding_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
     embedding_batch_size: int = 32
 

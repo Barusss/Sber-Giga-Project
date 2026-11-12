@@ -36,6 +36,22 @@ class FakeProvider:
         return [_axis(0) for _ in texts]
 
 
+def test_reformulated_tool_query_uses_its_own_embedding():
+    calls = []
+    def provider(texts):
+        calls.extend(texts)
+        return [_axis(1) for _ in texts]
+
+    embedder = EmbeddingService(provider=provider, model="test")
+    agent = RequirementsAgent(embedder=embedder)
+    req = TURequirement(id="r", clause_number="1", category=RequirementCategory.other, text="Исходная формулировка")
+    clauses = [ZNPClause(id="a", clause_number="1", text="кабель")]
+    output = agent._execute_tool("search_znp", {"query": "Новая формулировка"}, req, clauses, {"a": clauses[0]},
+                                 query_embedding=_axis(0), clause_embeddings=[_axis(1)])
+    assert calls == ["Новая формулировка"]
+    assert output[0]["semantic_score"] == 1.0
+
+
 def test_embedding_service_prefixes_and_caches():
     provider = FakeProvider()
     service = EmbeddingService(
@@ -73,6 +89,11 @@ def test_embedding_service_disabled_without_package():
     assert service.embed_documents(["текст"]) == []
     assert service.embed_query("текст") is None
     assert service.status()["reason"] == "EMBEDDING_ENABLED=false"
+
+
+def test_embeddings_enabled_by_default_when_not_configured(monkeypatch):
+    monkeypatch.delenv("EMBEDDING_ENABLED", raising=False)
+    assert Settings(_env_file=None).embedding_enabled is True
 
 
 def test_hybrid_search_adds_semantic_channel_and_numbers_bonus():

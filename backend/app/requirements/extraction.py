@@ -134,7 +134,7 @@ def normalize_clause_text(text: str) -> str:
     return re.sub(r"\s+", " ", normalized).strip()
 
 
-def extract_clauses(fragments: Sequence[Fragment]) -> list[Clause]:
+def extract_clauses(fragments: Sequence[Fragment], *, conservative: bool = False) -> list[Clause]:
     """Group ordered fragments into atomic, deduplicated clauses.
 
     Numbered lines start clauses. Headings never become clauses by themselves:
@@ -142,6 +142,7 @@ def extract_clauses(fragments: Sequence[Fragment]) -> list[Clause]:
     below it. Headings also close the previous clause, so a heading between two
     points cannot glue the next text to the previous one. Table-of-contents and
     service headings are skipped together with their unnumbered content.
+    Conservative mode retains whole numbered groups and short preambles.
     """
     ordered = sorted(
         (fragment for fragment in fragments if (fragment.text or "").strip()),
@@ -198,6 +199,11 @@ def extract_clauses(fragments: Sequence[Fragment]) -> list[Clause]:
                 pending_heading = fragment
                 continue
 
+        if (conservative and current is not None
+                and re.match(r"^примечани", _heading_label(text), re.IGNORECASE)):
+            current.sections.append((fragment, text))
+            continue
+
         if block_type == "heading":
             current = None
             if _is_ignored_heading(text):
@@ -225,11 +231,16 @@ def extract_clauses(fragments: Sequence[Fragment]) -> list[Clause]:
                 pending_heading = None
                 continue
 
-        if clause_number is not None:
+        if (conservative and clause_number is not None and current is not None
+                and clause_number.startswith(current.clause_number + ".")):
+            current.sections.append((fragment, text))
+        elif clause_number is not None:
             current = _Draft(
                 clause_number=clause_number,
                 sections=[(fragment, text)],
-                section_path=fragment.section_path,
+                section_path=fragment.section_path or (
+                    pending_heading.section_path if conservative and pending_heading else None
+                ),
             )
             drafts.append(current)
             pending_heading = None
@@ -256,18 +267,18 @@ def extract_clauses(fragments: Sequence[Fragment]) -> list[Clause]:
             else:
                 preamble.sections.append((fragment, text))
 
-    if preamble is not None and _keep_preamble(preamble):
+    if preamble is not None and (conservative or _keep_preamble(preamble)):
         drafts.insert(0, preamble)
 
     clauses: list[Clause] = []
     for draft in drafts:
-        clauses.extend(_draft_to_clauses(draft))
+        clauses.extend(_draft_to_clauses(draft, conservative=conservative))
 
     deduplicated: list[Clause] = []
     seen: set[tuple] = set()
     for clause in clauses:
         key = (clause.section_path, clause.clause_number, normalize_clause_text(clause.text))
-        if not key[2] or key in seen:
+        if not key[2] or (not conservative and key in seen):
             continue
         seen.add(key)
         deduplicated.append(clause)
@@ -384,9 +395,9 @@ def _keep_preamble(draft: _Draft) -> bool:
     return bool(_PREAMBLE_RE.search(text)) or is_service_clause(text)
 
 
-def _draft_to_clauses(draft: _Draft) -> list[Clause]:
+def _draft_to_clauses(draft: _Draft, *, conservative: bool = False) -> list[Clause]:
     text = draft.text
-    if len(text) <= MAX_CLAUSE_CHARS:
+    if conservative or len(text) <= MAX_CLAUSE_CHARS:
         first_fragment, first_text = draft.sections[0]
         return [
             Clause(
