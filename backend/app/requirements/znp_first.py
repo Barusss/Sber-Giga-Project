@@ -284,7 +284,7 @@ class ZnPFirstAgent:
         targeted_calls = 0
 
         for requirement in tu_requirements:
-            entries = links.get(requirement.id, [])
+            entries = links[requirement.id]
             evidence = [x for x in entries if x["relation"] in {"supports", "partial"}
                         and "mismatch" not in x["param_check"]["mismatch_types"]]
             initial = [
