@@ -33,6 +33,7 @@ from app.core.models import (
 )
 from app.requirements.agent import RequirementsAgent
 from app.requirements.atomization import atomize_fragments
+from app.requirements.semantic_atomization import semantic_atomize
 from app.requirements.znp_first import ZnPFirstAgent
 from app.requirements.extraction import (
     Clause,
@@ -686,6 +687,7 @@ def _analyze_project_requirements(
     # The project-workspace comparison uses conservative ZnP atoms, not the
     # legacy numbered-clause splitting. Each atom retains exact source spans.
     conservative_atoms = []
+    atomization_trace = None
     if isinstance(agent, ZnPFirstAgent):
         znp_fragments = db.scalars(
             select(Fragment)
@@ -694,7 +696,10 @@ def _analyze_project_requirements(
         ).all()
         fragments_by_id.update({fragment.id: fragment for fragment in znp_fragments})
         if znp_fragments:
-            conservative_atoms = atomize_fragments(znp_doc.id, znp_fragments)
+            original_atoms = atomize_fragments(znp_doc.id, znp_fragments)
+            semantic_result = semantic_atomize(original_atoms, agent.ai)
+            conservative_atoms = semantic_result.atoms
+            atomization_trace = semantic_result.trace()
             znp_raw = [
                 Clause(
                     clause_number=atom.clause_number,
@@ -878,6 +883,10 @@ def _analyze_project_requirements(
         agent.verify_all(tu_schemas, znp_schemas, progress_callback=progress_callback)
         if progress_callback else agent.verify_all(tu_schemas, znp_schemas)
     )
+    if atomization_trace is not None:
+        if response.trace_info is None:
+            response.trace_info = {}
+        response.trace_info["atomization"] = atomization_trace
     if progress_callback:
         progress_callback("persisting", len(tu_schemas), len(tu_schemas), None)
     _attach_provenance(response.checked_requirements, tu_schemas, znp_schemas)
