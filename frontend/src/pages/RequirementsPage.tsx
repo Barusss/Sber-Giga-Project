@@ -51,7 +51,10 @@ type RequirementCheckItem = {
   znp_fragment_text?: string | null
   channels?: string[]
   method?: string | null
-  validation_details?: {version: number; model_status?: string; model_reasoning?: string; items?: Array<{
+  validation_details?: {version: number; pipeline?: string
+    matches?: Array<{atom_id: string; clause_number: string; relation: string; quote: string; reasoning?: string; page?: number|null; param_check?: {mismatches?: string[]}}>
+    candidate_limit_reached?: boolean; model_error?: string|null
+    model_status?: string; model_reasoning?: string; items?: Array<{
     item_id: number; text: string; status: string
     evidence: Array<{document_id?: string; fragment_id?: string; clause_number: string; quote: string; page?: number | null}>
   }>} | null
@@ -979,6 +982,23 @@ export function RequirementsPage() {
               {item.validation_details
                 ? item.reasoning || 'Нет дополнительного описания.'
                 : 'Результат прежнего формата; подробности автоматической проверки не сохранены.'}
+              {item.validation_details?.pipeline === 'znp_first_conservative' && (
+                <details open>
+                  <summary>Связанные положения ЗнП ({item.validation_details.matches?.length ?? 0})</summary>
+                  {item.validation_details.matches?.map((match, index) => (
+                    <div key={match.atom_id + '-' + index} style={{marginTop: 10}}>
+                      <b>Пункт {match.clause_number}</b> — {match.relation === 'supports' ?
+                        'подтверждает' : match.relation === 'conflicts' ? 'противоречит' : 'частично'}
+                      <blockquote>{match.quote}</blockquote>
+                      {match.reasoning && <p>{match.reasoning}</p>}
+                      {match.param_check?.mismatches?.length ?
+                        <p>{match.param_check.mismatches.join('; ')}</p> : null}
+                    </div>
+                  ))}
+                  {item.validation_details.candidate_limit_reached &&
+                    <p>Поисковый лимит достигнут, результат требует ручной проверки.</p>}
+                </details>
+              )}
               {item.validation_details?.items?.map(element => (
                 <div key={element.item_id} style={{marginTop: 12}}>
                   <b>{element.text}</b> — {element.status === 'fulfilled' ? 'подтверждено' : 'требует проверки'}

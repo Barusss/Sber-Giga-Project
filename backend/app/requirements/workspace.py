@@ -22,7 +22,7 @@ from app.requirements.router import (
     _analysis_lock, _confirm_requirement, _finding_in_pair,
     _lock_project_for_analysis, _analyze_project_requirements, get_project_requirements,
 )
-from app.requirements.agent import RequirementsAgent
+from app.requirements.znp_first import ZnPFirstAgent
 from app.requirements.schemas import (
     AnalyzeProjectRequirementsRequest, ConfirmRequirementRequest, RequirementStatus,
 )
@@ -216,7 +216,7 @@ def run_comparison(
             tu_document_id=pair.tu_document_id,
             znp_document_id=pair.znp_document_id,
             force=False,
-        ), db, RequirementsAgent(), progress_callback=progress_callback)
+        ), db, ZnPFirstAgent(), progress_callback=progress_callback)
         if progress_callback:
             progress_callback("snapshot", response.stats["total"], response.stats["total"], None)
         persisted = get_project_requirements(project_id, pair.tu_document_id, pair.znp_document_id, db)

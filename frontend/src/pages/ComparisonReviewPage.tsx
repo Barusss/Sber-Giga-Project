@@ -16,7 +16,16 @@ type VerificationItem = {
   tu_quote?: string|null
   znp_quote?: string|null
   matched_clause?: {clause_number: string; text: string}|null
-  validation_details?: {model_reasoning?: string; items?: Array<{
+  validation_details?: {
+    pipeline?: string
+    matches?: Array<{
+      atom_id: string; clause_number: string; relation: string; quote: string
+      reasoning?: string; page?: number|null; fragment_id?: string|null
+      confidence?: number; param_check?: {mismatches?: string[]}
+    }>
+    candidate_limit_reached?: boolean
+    model_error?: string|null
+    model_reasoning?: string; items?: Array<{
     item_id: number; text?: string; status?: string
     evidence?: Array<{clause_number?: string; quote: string}>
   }>}|null
@@ -279,6 +288,31 @@ export function ComparisonReviewPage({projectId, approved}: {projectId: string; 
                 </> : <p className="muted">Подтверждающий пункт не найден.</p>}
               </section>
             </div>
+            {item.validation_details?.pipeline === 'znp_first_conservative' && <>
+              <div className="workspace-analysis-note">
+                <strong>Сверка ЗнП → ТУ</strong>
+                <p>Положения ЗнП сопоставлены с требованиями ТУ; ниже сохранены все найденные
+                  связи. Отсутствие связи не доказывает отсутствие требования.</p>
+                {item.validation_details.candidate_limit_reached &&
+                  <p>Не все поисковые кандидаты были рассмотрены. Итог требует проверки инженера.</p>}
+                {item.validation_details.model_error &&
+                  <p>ИИ-анализ не завершён: {item.validation_details.model_error}</p>}
+              </div>
+              {item.validation_details.matches?.length ? <details className="workspace-evidence-details" open>
+                <summary>Все связанные положения ЗнП ({item.validation_details.matches.length})</summary>
+                {item.validation_details.matches.map((match, index) => <div key={match.atom_id + '-' + index}>
+                  <p><strong>Пункт {match.clause_number}</strong> — {
+                    match.relation === 'supports' ? 'подтверждение' :
+                    match.relation === 'conflicts' ? 'возможное противоречие' :
+                    'частичное соответствие'
+                  }</p>
+                  <blockquote>{match.quote}</blockquote>
+                  {match.reasoning && <p>{match.reasoning}</p>}
+                  {match.param_check?.mismatches?.length ?
+                    <p>Параметры: {match.param_check.mismatches.join('; ')}</p> : null}
+                </div>)}
+              </details> : <p className="muted">Подтверждающих связей не обнаружено.</p>}
+            </>}
             {item.validation_details?.items?.length ? <details className="workspace-evidence-details">
               <summary>Подтверждения по пунктам</summary>
               {item.validation_details.items.map(part => <div key={part.item_id}>

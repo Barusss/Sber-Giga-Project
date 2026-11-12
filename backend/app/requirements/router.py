@@ -1,3 +1,4 @@
+from dataclasses import asdict
 from typing import Callable
 """Participant #3 TU/ZnP module: storage, human review and AI-assisted matching.
 
@@ -31,6 +32,8 @@ from app.core.models import (
     TURequirement as DBTURequirement,
 )
 from app.requirements.agent import RequirementsAgent
+from app.requirements.atomization import atomize_fragments
+from app.requirements.znp_first import ZnPFirstAgent
 from app.requirements.extraction import (
     Clause,
     extract_clauses,
@@ -680,6 +683,35 @@ def _analyze_project_requirements(
         )
     }
 
+    # The project-workspace comparison uses conservative ZnP atoms, not the
+    # legacy numbered-clause splitting. Each atom retains exact source spans.
+    conservative_atoms = []
+    if isinstance(agent, ZnPFirstAgent):
+        znp_fragments = db.scalars(
+            select(Fragment)
+            .where(Fragment.document_id == znp_doc.id)
+            .order_by(Fragment.page, Fragment.position)
+        ).all()
+        fragments_by_id.update({fragment.id: fragment for fragment in znp_fragments})
+        if znp_fragments:
+            conservative_atoms = atomize_fragments(znp_doc.id, znp_fragments)
+            znp_raw = [
+                Clause(
+                    clause_number=atom.clause_number,
+                    text=atom.text,
+                    page=atom.sources[0].page,
+                    fragment_id=atom.sources[0].fragment_id,
+                    fragment_ids=[source.fragment_id for source in atom.sources],
+                    section_path=atom.section_path,
+                    fragment_text=atom.sources[0].text,
+                )
+                for atom in conservative_atoms
+            ]
+            if not znp_raw:
+                raise HTTPException(
+                    422, "No traceable ZnP statements extracted; check document structure"
+                )
+
     existing_requirements = db.scalars(
         select(DBTURequirement).where(DBTURequirement.project_id == project_id,
                                       DBTURequirement.document_id == tu_doc.id)
@@ -785,6 +817,12 @@ def _analyze_project_requirements(
                 fragment_id=clause.fragment_id,
                 page=clause.page,
                 fragment_text=clause.fragment_text,
+                section_path=clause.section_path,
+                sources=[
+                    {"fragment_id": fid, "page": fragments_by_id[fid].page,
+                     "text": fragments_by_id[fid].text.strip()}
+                    for fid in clause.fragment_ids if fid in fragments_by_id
+                ],
             )
         )
 
@@ -816,7 +854,8 @@ def _analyze_project_requirements(
     znp_schemas: list[ZNPClause] = []
     znp_clauses: dict[str, Clause] = {}
     for idx, clause in enumerate(znp_raw, start=1):
-        clause_id = f"znp-{idx}"
+        atom = conservative_atoms[idx - 1] if conservative_atoms else None
+        clause_id = atom.id if atom else f"znp-{idx}"
         znp_clauses[clause_id] = clause
         znp_schemas.append(
             ZNPClause(
@@ -826,6 +865,12 @@ def _analyze_project_requirements(
                 fragment_id=clause.fragment_id,
                 page=clause.page,
                 fragment_text=clause.fragment_text,
+                section_path=clause.section_path,
+                sources=[asdict(source) for source in atom.sources] if atom else [],
+                context_sources=(
+                    [asdict(source) for source in atom.context_sources] if atom else []
+                ),
+                warnings=list(atom.warnings) if atom else [],
             )
         )
 

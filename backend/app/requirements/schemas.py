@@ -30,6 +30,10 @@ class TURequirement(BaseModel):
     fragment_id: Optional[str] = None
     page: Optional[int] = None
     fragment_text: Optional[str] = None
+    section_path: Optional[str] = None
+    sources: List[dict] = Field(default_factory=list)
+    context_sources: List[dict] = Field(default_factory=list)
+    warnings: List[str] = Field(default_factory=list)
 
 
 class ZNPClause(BaseModel):
@@ -39,6 +43,10 @@ class ZNPClause(BaseModel):
     fragment_id: Optional[str] = None
     page: Optional[int] = None
     fragment_text: Optional[str] = None
+    section_path: Optional[str] = None
+    sources: List[dict] = Field(default_factory=list)
+    context_sources: List[dict] = Field(default_factory=list)
+    warnings: List[str] = Field(default_factory=list)
 
 
 class LLMVerificationDecision(BaseModel):
