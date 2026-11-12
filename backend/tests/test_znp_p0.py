@@ -45,7 +45,8 @@ class GroundedAI:
         if "candidates" in payload and "tu_candidates" not in payload:
             conflicts = []
             for candidate in payload["candidates"]:
-                if "6 кВ" in candidate["text"]:
+                if ("6 кВ" in candidate["text"]
+                        and "6 кВ" not in payload["requirement"]["text"]):
                     conflicts.append({
                         "atom_id": candidate["atom_id"],
                         "tu_quote": "10 кВ",
@@ -193,7 +194,7 @@ def test_distinct_list_conditions_can_be_proven_by_separate_znp_clauses():
         znp(2, "2.2. КЛ-2 напряжение 6 кВ."),
     ])
     item = result.checked_requirements[0]
-    assert item.status.value == "fulfilled"
+    assert item.status.value == "fulfilled", item.validation_details
     assert len(item.validation_details["obligation_coverage"]) == 2
     assert all(row["status"] == "fulfilled" for row in item.validation_details["obligation_coverage"])
     assert len({x["atom_id"] for x in item.validation_details["matches"]}) == 2
