@@ -508,7 +508,7 @@ def test_deterministic_fallback_requires_lexical_support_for_fulfilled():
 
     assert item.method == "deterministic"
     assert item.status.value == "needs_review"
-    assert "лексической опоры" in item.reasoning
+    assert "Смысловая проверка ИИ недоступна" in item.reasoning
 
 
 def test_agent_llm_path_reports_method_and_channels():
@@ -737,6 +737,161 @@ def test_list_coverage_requires_every_law():
     assert complete["uncovered_items"] == []
 
 
+def test_llm_list_evidence_can_come_from_separate_clauses():
+    tu = TURequirement(id="tu", clause_number="1.3.1", category=RequirementCategory.other, text=LAW_LIST_TU)
+    first = ZNPClause(id="znp-1", clause_number="1", text="Предусмотреть ГОСТ Р 12345-2020 и СП 31.13330.2021 по проектированию.")
+    second = ZNPClause(id="znp-2", clause_number="2", text="Предусмотреть Федеральный закон № 123-ФЗ по проектированию.")
+    reply = {
+        "action": "finish", "status": "fulfilled", "confidence_score": 0.95,
+        "matched_znp_clause_id": "znp-1", "tu_quote": "ГОСТ Р 12345-2020",
+        "znp_quote": "ГОСТ Р 12345-2020", "reasoning": "Все элементы подтверждены.",
+        "evidence_items": [
+            {"item_id": 1, "status": "fulfilled", "evidence": [{"clause_id": "znp-1", "quote": "ГОСТ Р 12345-2020"}]},
+            {"item_id": 2, "status": "fulfilled", "evidence": [{"clause_id": "znp-1", "quote": "СП 31.13330.2021"}]},
+            {"item_id": 3, "status": "fulfilled", "evidence": [{"clause_id": "znp-2", "quote": "Федеральный закон № 123-ФЗ"}]},
+        ],
+    }
+    item = _agent_with_replies([reply]).verify_all([tu], [first, second]).checked_requirements[0]
+    assert item.status.value == "fulfilled"
+    assert len(item.validation_details["items"]) == 3
+    assert item.validation_details["items"][2]["evidence"][0]["clause_number"] == "2"
+
+
+def test_llm_list_evidence_rejects_fabricated_quote():
+    tu = TURequirement(id="tu", clause_number="1.3.1", category=RequirementCategory.other, text=LAW_LIST_TU)
+    znp = ZNPClause(id="znp-1", clause_number="1", text="Предусмотреть ГОСТ Р 12345-2020 по проектированию.")
+    reply = {
+        "action": "finish", "status": "fulfilled", "confidence_score": 0.95,
+        "matched_znp_clause_id": "znp-1", "tu_quote": "ГОСТ Р 12345-2020",
+        "znp_quote": "ГОСТ Р 12345-2020", "reasoning": "Все элементы подтверждены.",
+        "evidence_items": [
+            {"item_id": 1, "status": "fulfilled", "evidence": [{"clause_id": "znp-1", "quote": "ГОСТ Р 12345-2020"}]},
+            {"item_id": 2, "status": "fulfilled", "evidence": [{"clause_id": "znp-1", "quote": "СП 31.13330.2021"}]},
+        ],
+    }
+    item = _agent_with_replies([reply]).verify_all([tu], [znp]).checked_requirements[0]
+    assert item.status.value == "needs_review"
+    assert item.validation_details["items"][1]["status"] == "needs_review"
+    assert not item.validation_details["items"][1]["evidence"]
+
+
+def test_list_evidence_quote_cannot_borrow_parameters_from_another_part_of_clause():
+    tu = TURequirement(id="tu", clause_number="1.3.1", category=RequirementCategory.other, text=LAW_LIST_TU)
+    znp = ZNPClause(id="znp-1", clause_number="1", text="ГОСТ Р 12345-2020 применяется для объекта А. Для объекта Б выполняют проектирование.")
+    reply = {
+        "action": "finish", "status": "fulfilled", "confidence_score": 0.95,
+        "matched_znp_clause_id": "znp-1", "tu_quote": "ГОСТ Р 12345-2020",
+        "znp_quote": "Для объекта Б выполняют проектирование", "reasoning": "Все элементы подтверждены.",
+        "evidence_items": [{"item_id": 1, "status": "fulfilled", "evidence": [
+            {"clause_id": "znp-1", "quote": "Для объекта Б выполняют проектирование"}]}],
+    }
+    item = _agent_with_replies([reply]).verify_all([tu], [znp]).checked_requirements[0]
+    assert not item.validation_details["items"][0]["evidence"]
+    assert item.status.value == "needs_review"
+
+
+def test_list_evidence_replaces_fabricated_tu_quote():
+    tu = TURequirement(id="tu", clause_number="1.3.1", category=RequirementCategory.other, text=LAW_LIST_TU)
+    znp = ZNPClause(id="znp-1", clause_number="1", text="Предусмотреть ГОСТ Р 12345-2020 по проектированию.")
+    reply = {"action": "finish", "status": "needs_review", "confidence_score": 0.8,
+        "tu_quote": "выдуманная цитата", "reasoning": "Проверить",
+        "evidence_items": [{"item_id": 1, "status": "fulfilled", "evidence": [
+            {"clause_id": "znp-1", "quote": "ГОСТ Р 12345-2020"}]}]}
+    item = _agent_with_replies([reply]).verify_all([tu], [znp]).checked_requirements[0]
+    assert item.tu_quote in tu.text
+
+
+def test_list_evidence_rejects_different_equipment_identifier():
+    tu = TURequirement(id="tu", clause_number="1", category=RequirementCategory.other,
+        text="Предусмотреть:\n- устройство АБ-123;\n- устройство ВГ-456;")
+    first = ZNPClause(id="znp-1", clause_number="1", text="Установить устройство АБ-456.")
+    second = ZNPClause(id="znp-2", clause_number="2", text="Установить устройство ВГ-456.")
+    reply = {"action": "finish", "status": "fulfilled", "confidence_score": 0.95,
+        "tu_quote": "устройство АБ-123", "reasoning": "Все элементы подтверждены.",
+        "evidence_items": [
+            {"item_id": 1, "status": "fulfilled", "evidence": [{"clause_id": "znp-1", "quote": "устройство АБ-456"}]},
+            {"item_id": 2, "status": "fulfilled", "evidence": [{"clause_id": "znp-2", "quote": "устройство ВГ-456"}]},
+        ]}
+    item = _agent_with_replies([reply]).verify_all([tu], [first, second]).checked_requirements[0]
+    assert item.status.value == "needs_review"
+    assert item.validation_details["items"][0]["status"] == "needs_review"
+
+
+def test_list_evidence_rejects_unrelated_text_without_identifiers():
+    tu = TURequirement(id="tu", clause_number="1", category=RequirementCategory.other,
+        text="Предусмотреть:\n- выполнить огнезащиту кабельных линий;\n- установить защитное заземление;")
+    first = ZNPClause(id="znp-1", clause_number="1", text="Выполнить заземление электроустановки.")
+    second = ZNPClause(id="znp-2", clause_number="2", text="Установить защитное заземление.")
+    reply = {"action": "finish", "status": "fulfilled", "confidence_score": 0.95,
+        "tu_quote": "выполнить огнезащиту кабельных линий", "reasoning": "Все элементы подтверждены.",
+        "evidence_items": [
+            {"item_id": 1, "status": "fulfilled", "evidence": [{"clause_id": "znp-1", "quote": "Выполнить заземление электроустановки"}]},
+            {"item_id": 2, "status": "fulfilled", "evidence": [{"clause_id": "znp-2", "quote": "Установить защитное заземление"}]},
+        ]}
+    item = _agent_with_replies([reply]).verify_all([tu], [first, second]).checked_requirements[0]
+    assert item.status.value == "needs_review"
+    assert item.validation_details["items"][0]["status"] == "needs_review"
+
+
+def test_list_evidence_conflicting_model_status_requires_review():
+    tu = TURequirement(id="tu", clause_number="1", category=RequirementCategory.other,
+        text="Предусмотреть:\n- устройство АБ-123;\n- устройство ВГ-456;")
+    first = ZNPClause(id="znp-1", clause_number="1", text="Установить устройство АБ-123.")
+    second = ZNPClause(id="znp-2", clause_number="2", text="Установить устройство ВГ-456.")
+    reply = {"action": "finish", "status": "missing", "confidence_score": 0.95,
+        "tu_quote": "устройство АБ-123", "reasoning": "Требование отсутствует.",
+        "evidence_items": [
+            {"item_id": 1, "status": "fulfilled", "evidence": [{"clause_id": "znp-1", "quote": "устройство АБ-123"}]},
+            {"item_id": 2, "status": "fulfilled", "evidence": [{"clause_id": "znp-2", "quote": "устройство ВГ-456"}]},
+        ]}
+    item = _agent_with_replies([reply]).verify_all([tu], [first, second]).checked_requirements[0]
+    assert item.status.value == "needs_review"
+    assert "противореч" in item.reasoning.lower()
+
+
+def test_list_item_separate_citations_with_same_model_require_review():
+    tu = TURequirement(id="tu", clause_number="1", category=RequirementCategory.other,
+        text="Предусмотреть:\n- устройство АБ-123 мощностью 150 кВт и напряжением 110 кВ;\n- устройство ВГ-456;")
+    clauses = [
+        ZNPClause(id="znp-1", clause_number="1", text="Устройство АБ-123 имеет мощность 150 кВт."),
+        ZNPClause(id="znp-2", clause_number="2", text="Устройство АБ-123 имеет напряжение 110 кВ."),
+        ZNPClause(id="znp-3", clause_number="3", text="Установить устройство ВГ-456."),
+    ]
+    reply = {"action": "finish", "status": "fulfilled", "confidence_score": 0.95,
+        "tu_quote": "устройство АБ-123", "reasoning": "Все элементы подтверждены.",
+        "evidence_items": [
+            {"item_id": 1, "status": "fulfilled", "evidence": [
+                {"clause_id": "znp-1", "quote": "Устройство АБ-123 имеет мощность 150 кВт."},
+                {"clause_id": "znp-2", "quote": "Устройство АБ-123 имеет напряжение 110 кВ."}]},
+            {"item_id": 2, "status": "fulfilled", "evidence": [{"clause_id": "znp-3", "quote": "устройство ВГ-456"}]},
+        ]}
+    item = _agent_with_replies([reply]).verify_all([tu], clauses).checked_requirements[0]
+    assert item.status.value == "needs_review"
+    assert item.validation_details["items"][0]["status"] == "needs_review"
+    assert len(item.validation_details["items"][0]["evidence"]) == 2
+
+
+def test_list_item_does_not_combine_parameters_from_different_equipment():
+    tu = TURequirement(id="tu", clause_number="1", category=RequirementCategory.other,
+        text="Предусмотреть:\n- устройство АБ-123 мощностью 150 кВт и напряжением 110 кВ;\n- устройство ВГ-456;")
+    clauses = [
+        ZNPClause(id="znp-1", clause_number="1", text="Устройство АБ-123 имеет мощность 150 кВт."),
+        ZNPClause(id="znp-2", clause_number="2", text="Устройство АБ-999 имеет напряжение 110 кВ."),
+        ZNPClause(id="znp-3", clause_number="3", text="Установить устройство ВГ-456."),
+    ]
+    reply = {"action": "finish", "status": "fulfilled", "confidence_score": 0.95,
+        "tu_quote": "устройство АБ-123", "reasoning": "Все элементы подтверждены.",
+        "evidence_items": [
+            {"item_id": 1, "status": "fulfilled", "evidence": [
+                {"clause_id": "znp-1", "quote": "Устройство АБ-123 имеет мощность 150 кВт."},
+                {"clause_id": "znp-2", "quote": "Устройство АБ-999 имеет напряжение 110 кВ."}]},
+            {"item_id": 2, "status": "fulfilled", "evidence": [{"clause_id": "znp-3", "quote": "устройство ВГ-456"}]},
+        ]}
+    item = _agent_with_replies([reply]).verify_all([tu], clauses).checked_requirements[0]
+    assert item.status.value == "needs_review"
+    assert item.validation_details["items"][0]["status"] == "needs_review"
+
+
 def test_list_coverage_detects_inline_numbered_items():
     tu_text = (
         "Выполнить: 1) разработать проектную документацию; "
@@ -878,6 +1033,8 @@ def test_agent_llm_fulfilled_is_downgraded_when_list_is_partially_covered():
     assert item.confidence_score <= 0.65
     assert "Перечень подтверждён не полностью" in item.reasoning
     assert "1 из 3" in item.reasoning
+    assert "Модель считает требование выполненным" not in item.reasoning
+    assert item.validation_details["model_reasoning"] == "Модель считает требование выполненным."
     finish_step = next(
         step for step in response.trace_info["agent_runs"][0]["steps"]
         if step["tool"] == "finish_and_validate"
@@ -885,6 +1042,19 @@ def test_agent_llm_fulfilled_is_downgraded_when_list_is_partially_covered():
     assert finish_step["coverage_check"]["is_list"] is True
     assert finish_step["coverage_check"]["covered"] is False
     assert finish_step["evidence_check"]["final_quote_atomic"] is True
+
+
+def test_agent_review_status_does_not_present_model_reasoning_as_verdict():
+    tu = TURequirement(id="tu", clause_number="1", category=RequirementCategory.other, text="Обеспечить мощность 150 кВт.")
+    znp = ZNPClause(id="znp", clause_number="1", text="Обеспечить мощность 150 кВт.")
+    agent = _agent_with_replies([{
+        "action": "finish", "status": "needs_review", "confidence_score": 0.8,
+        "matched_znp_clause_id": "znp", "tu_quote": "мощность 150 кВт",
+        "znp_quote": "мощность 150 кВт", "reasoning": "Требование полностью выполнено.",
+    }])
+    item = agent.verify_all([tu], [znp]).checked_requirements[0]
+    assert "полностью выполнено" not in item.reasoning
+    assert item.validation_details["model_reasoning"] == "Требование полностью выполнено."
 
 
 def test_agent_llm_fulfilled_without_znp_quote_is_downgraded():
@@ -940,3 +1110,36 @@ def test_validate_quotes_normalizes_typography_and_reports_atomicity():
     assert long_quote["znp_quote_valid"] is True
     assert long_quote["znp_quote_atomic"] is False
 
+
+
+def test_agent_reports_actual_requirement_counts_and_clause_numbers(monkeypatch):
+    from app.requirements.schemas import LLMVerificationDecision, RequirementStatus
+
+    agent = RequirementsAgent(embedder=EmbeddingService(enabled=False))
+    decision = LLMVerificationDecision(
+        status=RequirementStatus.fulfilled, similarity_score=1,
+        matched_znp_clause_id="znp-1", method="deterministic",
+    )
+    monkeypatch.setattr(agent, "_verify_single_requirement",
+                        lambda *args: (decision, []))
+    requirements = [
+        TURequirement(id=f"tu-{index}", clause_number=f"3.{index}",
+                      category=RequirementCategory.other, text=f"Требование {index}")
+        for index in range(1, 5)
+    ]
+    clauses = [ZNPClause(id="znp-1", clause_number="4.1", text="Требования выполнены")]
+    events = []
+
+    result = agent.verify_all(
+        requirements, clauses,
+        progress_callback=lambda stage, current, total, clause:
+            events.append((stage, current, total, clause)),
+    )
+
+    assert len(result.checked_requirements) == 4
+    assert events[0] == ("embedding", 0, 4, None)
+    assert ("verifying", 0, 4, "3.1") in events
+    assert ("verifying", 2, 4, "3.3") in events
+    assert events[-1] == ("verifying", 4, 4, None)
+    assert sum(stage == "verifying" and clause is not None
+               for stage, _, _, clause in events) == 4

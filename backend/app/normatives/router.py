@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.core.db import get_db
 from app.core.models import Normative, Document, Project, ReviewState, NormativeVerification, Finding
-from app.normatives.extraction import ExtractionResult, extract_normative_facts
+from app.normatives.extraction import ExtractionResult, extract_normative_facts, normalize_code
 from app.normatives.verification import (
     DEFAULT_STANDARDS_BATCH, MAX_STANDARDS_BATCH, VerificationReport, check_document_standards,
 )
@@ -46,7 +46,10 @@ def list_normatives(
 @router.post("", response_model=NormativeOut, status_code=201)
 def add_normative(payload: NormativeCreate, db: Session = Depends(get_db)):
     """Добавить новый норматив в реестр."""
-    normative = Normative(**payload.model_dump())
+    code = normalize_code(payload.code)
+    if any(normalize_code(item) == code for item in db.scalars(select(Normative.code))):
+        raise HTTPException(409, "Норматив с таким обозначением уже существует")
+    normative = Normative(**{**payload.model_dump(), "code": code})
     db.add(normative)
     try:
         db.commit()
@@ -120,7 +123,8 @@ def delete_normative(normative_id: str, db: Session = Depends(get_db)):
 @router.get("/{code}", response_model=NormativeOut)
 def get_normative(code: str, db: Session = Depends(get_db)):
     """Получить норматив по его обозначению."""
-    normative = db.scalar(select(Normative).where(Normative.code == code))
+    normative = next((row for row in db.scalars(select(Normative))
+                      if normalize_code(row.code) == normalize_code(code)), None)
     if normative is None:
         raise HTTPException(404, "Normative not found")
     return normative
@@ -146,12 +150,13 @@ def check_normatives(
     document_id: str,
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=DEFAULT_STANDARDS_BATCH, ge=1, le=MAX_STANDARDS_BATCH),
+    refresh: bool = Query(default=False),
     db: Session = Depends(get_db),
 ):
-    """Проверить одну порцию нормативов. next_offset указывает следующую порцию."""
+    """Проверить порцию по локальному реестру; refresh принудительно проверяет Росстандарт."""
     document = db.get(Document, document_id)
     if document is None:
         raise HTTPException(404, "Document not found")
     if db.get(Project, document.project_id).state == ReviewState.approved:
         raise HTTPException(409, "Approved project cannot be modified")
-    return check_document_standards(db, document, offset=offset, limit=limit)
+    return check_document_standards(db, document, offset=offset, limit=limit, refresh=refresh)

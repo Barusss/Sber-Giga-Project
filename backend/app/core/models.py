@@ -52,6 +52,7 @@ class Document(Base):
     filename: Mapped[str] = mapped_column(String(255))
     stored_path: Mapped[str] = mapped_column(Text)
     mime_type: Mapped[str] = mapped_column(String(128))
+    normative_extraction_completed: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     extraction_version: Mapped[str] = mapped_column(String(32), default="ocr-v2", server_default="ocr-v1")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     project: Mapped[Project] = relationship(back_populates="documents")
@@ -224,7 +225,9 @@ class RequirementVerification(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
     requirement_id: Mapped[str] = mapped_column(ForeignKey("tu_requirements.id"), index=True)
+    znp_document_id: Mapped[str | None] = mapped_column(ForeignKey("documents.id"), index=True, nullable=True)
     status: Mapped[RequirementStatus] = mapped_column(Enum(RequirementStatus))
+    method: Mapped[str | None] = mapped_column(String(32), nullable=True)
     confidence_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     matched_znp_clause_number: Mapped[str | None] = mapped_column(String(32), nullable=True)
     matched_znp_text: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -233,6 +236,7 @@ class RequirementVerification(Base):
     tu_quote: Mapped[str | None] = mapped_column(Text, nullable=True)
     znp_quote: Mapped[str | None] = mapped_column(Text, nullable=True)
     reasoning: Mapped[str | None] = mapped_column(Text, nullable=True)
+    validation_details: Mapped[dict | None] = mapped_column(JSON().with_variant(JSONB(), "postgresql"), nullable=True)
     is_confirmed_by_human: Mapped[bool] = mapped_column(Boolean, default=False)
     human_override_status: Mapped[RequirementStatus | None] = mapped_column(Enum(RequirementStatus), nullable=True)
     human_comment: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -240,3 +244,63 @@ class RequirementVerification(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 
 
+
+
+class RequirementAnalysis(Base):
+    """Completed nonempty comparison of immutable uploaded documents."""
+    __tablename__ = "requirement_analyses"
+    tu_document_id: Mapped[str] = mapped_column(ForeignKey("documents.id"), primary_key=True)
+    znp_document_id: Mapped[str] = mapped_column(ForeignKey("documents.id"), primary_key=True)
+    requirement_ids: Mapped[list] = mapped_column(JSON)
+    completed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
+class ComparisonPair(Base):
+    """A requested TU/ZnP pair, independent of the number of analysis runs."""
+    __tablename__ = "comparison_pairs"
+    __table_args__ = (
+        UniqueConstraint("project_id", "tu_document_id", "znp_document_id", name="uq_comparison_project_pair"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    tu_document_id: Mapped[str] = mapped_column(ForeignKey("documents.id"), index=True)
+    znp_document_id: Mapped[str] = mapped_column(ForeignKey("documents.id"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    runs: Mapped[list["ComparisonRun"]] = relationship(
+        back_populates="pair", cascade="all, delete-orphan",
+        order_by="ComparisonRun.created_at",
+    )
+
+
+class ComparisonRun(Base):
+    """Snapshot of a completed analysis; earlier snapshots are not overwritten."""
+    __tablename__ = "comparison_runs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    pair_id: Mapped[str] = mapped_column(ForeignKey("comparison_pairs.id", ondelete="CASCADE"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    result: Mapped[dict] = mapped_column(JSON().with_variant(JSONB(), "postgresql"))
+    is_current: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    pair: Mapped[ComparisonPair] = relationship(back_populates="runs")
+
+
+class OperationJob(Base):
+    """Server-side progress for operations that outlive the browser request."""
+    __tablename__ = "operation_jobs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    kind: Mapped[str] = mapped_column(String(32))
+    status: Mapped[str] = mapped_column(String(16), default="queued", index=True)
+    stage: Mapped[str] = mapped_column(String(64), default="queued")
+    message: Mapped[str] = mapped_column(String(255), default="Ожидает выполнения")
+    params: Mapped[dict] = mapped_column(JSON().with_variant(JSONB(), "postgresql"), default=dict)
+    result: Mapped[dict | None] = mapped_column(JSON().with_variant(JSONB(), "postgresql"), nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    progress_current: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    progress_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

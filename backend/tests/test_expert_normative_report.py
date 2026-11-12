@@ -69,6 +69,23 @@ def responses(self, code, source_url=None):
     return RegistryResult(code=code, reason="unsupported_or_incomplete_designation")
 
 
+def test_docx_report_does_not_claim_a_physical_page(client, monkeypatch):
+    monkeypatch.setattr("app.documents.router.extract_blocks", lambda data, suffix: [
+        ExtractedBlock(1, 0, "ГОСТ 29322-92 используется в требованиях")])
+    project = client.post("/api/v1/projects", json={"name": "DOCX"}).json()
+    response = client.post(f"/api/v1/projects/{project['id']}/documents", data={"kind": "other"},
+        files={"file": ("test.docx", BytesIO(b"fake docx"), "application/vnd.openxmlformats-officedocument.wordprocessingml.document")})
+    doc_id = response.json()["id"]
+    fragment = client.get(f"/api/v1/documents/{doc_id}/fragments").json()[0]
+    fact = client.post(f"/api/v1/documents/{doc_id}/facts", json={
+        "fact_type": "normative_reference", "value": {"code": "ГОСТ 29322-92", "reference_kind": "normative"},
+        "evidence": [{"fragment_id": fragment["id"], "quote": "ГОСТ 29322-92"}]})
+    assert fact.status_code == 201, fact.text
+    evidence = client.get(f"/api/v1/projects/{project['id']}/normative-report").json()["items"][0]["evidence"][0]
+    assert evidence["page"] is None
+    assert evidence["pagination_kind"] == "logical"
+
+
 def test_report_grouping_persistence_provenance_and_review(client, monkeypatch):
     project_id, doc_id = prepare(client, monkeypatch)
     url = f"/api/v1/projects/{project_id}/normative-report"
@@ -128,29 +145,43 @@ def test_report_grouping_persistence_provenance_and_review(client, monkeypatch):
     assert next(i for i in persisted["items"] if i["code"] == "ГОСТ 29322-92")["finding"]["review_status"] == "accepted"
 
 
-def test_unknown_refresh_overrides_earlier_success_without_forging_status(client, monkeypatch):
+def test_offline_local_first_and_forced_refresh_preserve_source(client, monkeypatch):
     project_id, doc_id = prepare(client, monkeypatch)
     monkeypatch.setattr("app.normatives.registry.RosstandartClient.lookup", responses)
-    assert client.post(f"/api/v1/documents/{doc_id}/check-normatives").status_code == 200
+    url = f"/api/v1/documents/{doc_id}/check-normatives"
+    assert client.post(url).status_code == 200
 
     def inaccessible(self, code, source_url=None):
         return RegistryResult(code=code, reason="official_verification_unavailable")
 
     monkeypatch.setattr("app.normatives.registry.RosstandartClient.lookup", inaccessible)
-    assert client.post(f"/api/v1/documents/{doc_id}/check-normatives").status_code == 200
+    ordinary = client.post(url)
+    assert ordinary.status_code == 200
+    assert ordinary.json()["findings_created"] == 0
     report = client.get(f"/api/v1/projects/{project_id}/normative-report").json()
-    assert report["unverified"] == 4
-    assert report["requires_attention"] == 0
-    assert report["active"] == 0
+    assert (report["active"], report["requires_attention"],
+            report["informative"], report["unverified"]) == (1, 1, 1, 1)
     for item in report["items"]:
-        assert item["status"] == "unknown"
-        assert item["checked_at"] is None
-        assert item["source_url"] is None
-        assert item["reason"] == "official_verification_unavailable"
+        if item["status"] == "unknown":
+            assert item["checked_at"] is None
+            assert item["source"] == "unknown"
+        else:
+            assert item["source"] == "local"
+            assert item["checked_at"] is not None
+            assert item["reason"] == "local_registry_hit"
 
-    # Findings remain in the audit trail, even if the live registry is offline.
-    findings = client.get(f"/api/v1/projects/{project_id}/findings").json()
-    assert len(findings) == 2
+    refreshed = client.post(url + "?refresh=true")
+    assert refreshed.status_code == 200, refreshed.text
+    report = client.get(f"/api/v1/projects/{project_id}/normative-report").json()
+    for item in report["items"]:
+        if item["status"] == "unknown":
+            assert item["source"] == "unknown"
+            assert item["reason"] == "official_verification_unavailable"
+        else:
+            assert item["source"] == "local"
+            assert item["reason"] == "refresh_failed_local_fallback"
+            assert item["checked_at"] is not None
+    assert len(client.get(f"/api/v1/projects/{project_id}/findings").json()) == 2
 
 
 def test_empty_project_and_not_found(client):

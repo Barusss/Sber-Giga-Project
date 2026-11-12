@@ -15,6 +15,13 @@ class Settings(BaseSettings):
     upload_dir: Path = Path("./uploads")
     max_upload_mb: int = 20
 
+    ocr_backend: Literal["tesseract", "paddleocr"] = "tesseract"
+    ocr_dpi: int = Field(default=200, ge=72, le=400)
+    ocr_timeout_seconds: float = Field(default=60.0, gt=0)
+    max_pdf_pages: int = Field(default=500, ge=1)
+    paddle_detection_model_dir: str | None = None
+    paddle_recognition_model_dir: str | None = None
+
     # SecretStr redacts the key in Settings repr and error messages.
     deepseek_api_key: SecretStr = SecretStr("")
     deepseek_base_url: str = "https://api.deepseek.com"

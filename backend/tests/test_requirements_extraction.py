@@ -57,13 +57,13 @@ def test_clause_continues_across_pages():
     assert clauses[1].page == 2
 
 
-def test_duplicate_clauses_are_deduplicated():
+def test_identical_text_under_different_clause_numbers_is_preserved():
     clauses = extract_clauses([
         make_fragment(1, 0, "1.1. Установить прибор учета"),
         make_fragment(1, 1, "2.4. Установить прибор учета"),
     ])
 
-    assert len(clauses) == 1
+    assert len(clauses) == 2
     assert clauses[0].clause_number == "1.1"
 
 

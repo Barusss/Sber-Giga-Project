@@ -1,3 +1,4 @@
+from typing import Callable
 """Participant #3 TU/ZnP module: storage, human review and AI-assisted matching.
 
 Manual input and expert confirmations are always available. The automated
@@ -7,7 +8,7 @@ persisted as requirements/verifications/findings, and a human verdict remains
 the final decision.
 """
 import threading
-from datetime import timezone
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
@@ -24,6 +25,7 @@ from app.core.models import (
     RequirementCategory as DBRequirementCategory,
     RequirementStatus as DBRequirementStatus,
     RequirementVerification,
+    RequirementAnalysis,
     ReviewState,
     ReviewStatus as FindingReviewStatus,
     TURequirement as DBTURequirement,
@@ -76,6 +78,19 @@ def _finding_matches(finding: Finding, requirement: DBTURequirement) -> bool:
     if linked_id is not None:
         return linked_id == requirement.id
     return finding.explanation.startswith(f"[{requirement.clause_number}]")
+
+
+def _finding_in_pair(finding: Finding, tu_document_id: str, znp_document_id: str | None) -> bool:
+    evidence = [e for e in finding.evidence or [] if isinstance(e, dict)]
+    return any(
+        e.get("document_id") == tu_document_id
+        and e.get("znp_document_id") == znp_document_id
+        for e in evidence
+        if "znp_document_id" in e
+    ) or (
+        znp_document_id is not None
+        and {tu_document_id, znp_document_id} <= {e.get("document_id") for e in evidence}
+    )
 
 
 @router.post("/projects/{project_id}/tu-requirements",
@@ -143,20 +158,39 @@ def confirm_requirement(
     status/explanation while setting the human override. If no verification
     exists, creates a needs_review record with a human override.
     """
-    get_project(db, project_id, edit=True)
+    with _analysis_lock(project_id):
+        _lock_project_for_analysis(db, project_id)
+        return _confirm_requirement(project_id, payload, db)
+
+
+def _confirm_requirement(project_id: str, payload: ConfirmRequirementRequest, db: Session):
     requirement = db.get(DBTURequirement, payload.requirement_id)
     if requirement is None or requirement.project_id != project_id:
         raise HTTPException(404, "TU requirement not found in project")
-    verification = db.scalar(
-        select(RequirementVerification)
-        .where(RequirementVerification.project_id == project_id,
-               RequirementVerification.requirement_id == requirement.id)
-        .order_by(RequirementVerification.created_at.desc(),
-                  RequirementVerification.id.desc())
-    )
+    if payload.znp_document_id:
+        document = db.get(Document, payload.znp_document_id)
+        if document is None or document.project_id != project_id or document.kind != DocumentKind.znp:
+            raise HTTPException(422, "ZNP document must belong to this project")
+    choices = db.scalars(
+        select(RequirementVerification).where(
+            RequirementVerification.project_id == project_id,
+            RequirementVerification.requirement_id == requirement.id,
+        )
+    ).all()
+    if payload.znp_document_id:
+        choices = [v for v in choices if v.znp_document_id == payload.znp_document_id]
+    if payload.verification_id:
+        verification = next((v for v in choices if v.id == payload.verification_id), None)
+        if verification is None:
+            raise HTTPException(404, "Verification not found for this requirement")
+    else:
+        if len(choices) > 1:
+            raise HTTPException(409, "Specify verification_id for the document pair")
+        verification = choices[0] if choices else None
     if verification is None:
         verification = RequirementVerification(
             project_id=project_id, requirement_id=requirement.id,
+            znp_document_id=payload.znp_document_id,
             status=DBRequirementStatus.needs_review,
             confidence_score=None,
         )
@@ -173,7 +207,8 @@ def confirm_requirement(
         )
     ).all()
     for finding in findings:
-        if _finding_matches(finding, requirement):
+        if (_finding_matches(finding, requirement)
+                and _finding_in_pair(finding, requirement.document_id, verification.znp_document_id)):
             finding.review_status = (
                 FindingReviewStatus.rejected
                 if payload.status == RequirementStatus.fulfilled
@@ -346,7 +381,10 @@ def _deduplicate_requirements(
             for requirement in group
             for verification in by_requirement.get(requirement.id, [])
         ]
-        keeper = _best_verification(group_verifications, accepted_ids)
+        by_pair: dict[str | None, list[RequirementVerification]] = {}
+        for verification in group_verifications:
+            by_pair.setdefault(verification.znp_document_id, []).append(verification)
+        keepers = [_best_verification(items, accepted_ids) for items in by_pair.values()]
 
         def survivor_rank(requirement: DBTURequirement):
             best = _best_verification(
@@ -365,10 +403,10 @@ def _deduplicate_requirements(
             )
 
         survivor = max(group, key=survivor_rank)
-        if keeper is not None:
+        for keeper in keepers:
             keeper.requirement_id = survivor.id
         for verification in group_verifications:
-            if verification is not keeper:
+            if verification not in keepers:
                 db.delete(verification)
 
         for finding in findings:
@@ -384,6 +422,12 @@ def _deduplicate_requirements(
                 evidence.append(entry)
             if changed:
                 finding.evidence = evidence
+
+        runs = db.scalars(select(RequirementAnalysis).where(
+            RequirementAnalysis.tu_document_id == survivor.document_id)).all()
+        for run in runs:
+            run.requirement_ids = list(dict.fromkeys(
+                survivor.id if item in group_ids else item for item in run.requirement_ids))
 
         for requirement in group:
             if requirement is not survivor:
@@ -423,7 +467,7 @@ def _fragment_for_quote(
     clause: Clause | None,
     fragments_by_id: dict[str, Fragment],
 ) -> Fragment | None:
-    """Find the fragment that really contains the quote; otherwise use the first one."""
+    """Find the fragment containing the quote, or the first for an absent quote."""
     if clause is None:
         return None
     candidates = [
@@ -438,6 +482,7 @@ def _fragment_for_quote(
         for fragment in candidates:
             if needle in _normalize_ws(fragment.text):
                 return fragment
+        return None
     return candidates[0]
 
 
@@ -455,6 +500,7 @@ def _apply_quote_provenance(
     tu_clauses: dict[str, Clause],
     znp_clauses: dict[str, Clause],
     fragments_by_id: dict[str, Fragment],
+    znp_document_id: str | None = None,
 ) -> None:
     for item in items:
         tu_clause = tu_clauses.get(item.requirement.id)
@@ -464,6 +510,14 @@ def _apply_quote_provenance(
             item.tu_page = tu_fragment.page
             item.tu_fragment_text = tu_fragment.text
             item.tu_quote = _shorten_to_fragment(item.tu_quote, tu_fragment)
+        elif tu_clause is not None and item.tu_quote:
+            item.tu_quote = None
+            item.tu_fragment_id = None
+            item.tu_page = None
+            item.tu_fragment_text = None
+            if item.status == RequirementStatus.fulfilled:
+                item.status = RequirementStatus.needs_review
+                item.reasoning = "Требует проверки: цитата ТУ не привязана к одному исходному фрагменту."
 
         if item.matched_clause is None:
             continue
@@ -474,6 +528,68 @@ def _apply_quote_provenance(
             item.znp_page = znp_fragment.page
             item.znp_fragment_text = znp_fragment.text
             item.znp_quote = _shorten_to_fragment(item.znp_quote, znp_fragment)
+        elif item.znp_quote and not (item.validation_details or {}).get("items"):
+            item.znp_quote = None
+            item.znp_fragment_id = None
+            item.znp_page = None
+            item.znp_fragment_text = None
+            if item.status == RequirementStatus.fulfilled:
+                item.status = RequirementStatus.needs_review
+                item.reasoning = "Требует проверки: цитата ЗнП не привязана к одному исходному фрагменту."
+
+    for item in items:
+        details = item.validation_details or {}
+        list_items = details.get("items")
+        if not isinstance(list_items, list):
+            continue
+        first_evidence = None
+        for list_item in list_items:
+            validated = []
+            proposed_evidence = list_item.get("evidence", [])
+            for evidence in proposed_evidence:
+                clause = znp_clauses.get(evidence.get("clause_id"))
+                if clause is None:
+                    continue
+                quote = evidence.get("quote") or ""
+                fragment = next((fragments_by_id[fragment_id] for fragment_id in clause.fragment_ids
+                    if fragment_id in fragments_by_id
+                    and fragments_by_id[fragment_id].document_id == znp_document_id
+                    and _normalize_ws(quote) in _normalize_ws(fragments_by_id[fragment_id].text)), None)
+                if fragment is None or not quote.strip():
+                    continue
+                validated_entry = {"document_id": fragment.document_id, "fragment_id": fragment.id,
+                    "page": fragment.page, "clause_number": clause.clause_number, "quote": quote}
+                validated.append(validated_entry)
+                if first_evidence is None:
+                    first_evidence = (validated_entry, clause, fragment)
+            list_item["evidence"] = validated
+            if not validated or len(validated) != len(proposed_evidence):
+                list_item["status"] = "needs_review"
+        if any(entry.get("status") != "fulfilled" for entry in list_items):
+            if item.status == RequirementStatus.fulfilled:
+                item.status = RequirementStatus.needs_review
+            count = sum(entry.get("status") == "fulfilled" for entry in list_items)
+            prefix = "Требует проверки."
+            if item.status == RequirementStatus.missing:
+                prefix = "Соответствие не установлено."
+            explanation = f"{prefix} Подтверждено элементов: {count} из {len(list_items)}."
+            if item.reasoning and "цитата ТУ не привязана" in item.reasoning:
+                explanation = item.reasoning + " " + explanation
+            item.reasoning = explanation
+        if first_evidence:
+            entry, clause, fragment = first_evidence
+            item.matched_clause = ZNPClause(id="source", clause_number=clause.clause_number, text=clause.text,
+                fragment_id=fragment.id, page=fragment.page, fragment_text=fragment.text)
+            item.znp_quote = entry["quote"]
+            item.znp_fragment_id = fragment.id
+            item.znp_page = fragment.page
+            item.znp_fragment_text = fragment.text
+        else:
+            item.matched_clause = None
+            item.znp_quote = None
+            item.znp_fragment_id = None
+            item.znp_page = None
+            item.znp_fragment_text = None
 
 
 @router.post("/analyze", response_model=CheckRequirementsResponse)
@@ -509,8 +625,11 @@ def _analyze_project_requirements(
     payload: AnalyzeProjectRequirementsRequest,
     db: Session,
     agent: RequirementsAgent,
+    progress_callback: Callable[[str, int, int, str | None], None] | None = None,
 ) -> CheckRequirementsResponse:
     project_id = payload.project_id
+    if progress_callback:
+        progress_callback("reading", 0, 0, None)
 
     docs = db.scalars(select(Document).where(Document.project_id == project_id)).all()
     docs_by_id = {document.id: document for document in docs}
@@ -542,6 +661,10 @@ def _analyze_project_requirements(
         if not is_service_clause(clause.text)
     ]
     znp_raw = _extract_clauses_from_doc(db, znp_doc)
+    if not tu_raw or not znp_raw:
+        raise HTTPException(422, "No useful TU requirements or ZNP clauses extracted; check OCR and document structure")
+    if progress_callback:
+        progress_callback("preparing", 0, len(tu_raw), None)
 
     fragment_ids = {
         fragment_id
@@ -558,7 +681,8 @@ def _analyze_project_requirements(
     }
 
     existing_requirements = db.scalars(
-        select(DBTURequirement).where(DBTURequirement.project_id == project_id)
+        select(DBTURequirement).where(DBTURequirement.project_id == project_id,
+                                      DBTURequirement.document_id == tu_doc.id)
     ).all()
     existing_verifications = db.scalars(
         select(RequirementVerification)
@@ -579,7 +703,8 @@ def _analyze_project_requirements(
     if deduplicated:
         db.flush()
         existing_requirements = db.scalars(
-            select(DBTURequirement).where(DBTURequirement.project_id == project_id)
+            select(DBTURequirement).where(DBTURequirement.project_id == project_id,
+                                      DBTURequirement.document_id == tu_doc.id)
         ).all()
         existing_verifications = db.scalars(
             select(RequirementVerification)
@@ -598,9 +723,12 @@ def _analyze_project_requirements(
         ): requirement
         for requirement in existing_requirements
     }
+    existing_findings = [f for f in existing_findings if _finding_in_pair(f, tu_doc.id, znp_doc.id)]
     accepted_ids = _accepted_requirement_ids(existing_findings, existing_requirements)
     verifications_by_requirement: dict[str, list[RequirementVerification]] = {}
     for verification in existing_verifications:
+        if verification.znp_document_id != znp_doc.id:
+            continue
         verifications_by_requirement.setdefault(
             verification.requirement_id, [],
         ).append(verification)
@@ -664,6 +792,9 @@ def _analyze_project_requirements(
     for requirement in existing_requirements:
         if requirement.id in db_requirements:
             continue
+        if any(v.requirement_id == requirement.id and v.znp_document_id != znp_doc.id
+               for v in existing_verifications):
+            continue
         has_human_verdict = any(
             verification.requirement_id == requirement.id
             and verification.is_confirmed_by_human
@@ -698,13 +829,19 @@ def _analyze_project_requirements(
             )
         )
 
-    response = agent.verify_all(tu_schemas, znp_schemas)
+    response = (
+        agent.verify_all(tu_schemas, znp_schemas, progress_callback=progress_callback)
+        if progress_callback else agent.verify_all(tu_schemas, znp_schemas)
+    )
+    if progress_callback:
+        progress_callback("persisting", len(tu_schemas), len(tu_schemas), None)
     _attach_provenance(response.checked_requirements, tu_schemas, znp_schemas)
     _apply_quote_provenance(
-        response.checked_requirements, tu_clauses, znp_clauses, fragments_by_id,
+        response.checked_requirements, tu_clauses, znp_clauses, fragments_by_id, znp_doc.id,
     )
     for item in response.checked_requirements:
         db_requirement = db_requirements.get(item.requirement.id)
+        item.automatic_status = item.status
         if db_requirement is not None and item.tu_fragment_id:
             db_requirement.fragment_id = item.tu_fragment_id
             db_requirement.page = item.tu_page
@@ -728,7 +865,9 @@ def _analyze_project_requirements(
                 id=item.id,
                 project_id=project_id,
                 requirement_id=item.requirement.id,
+                znp_document_id=znp_doc.id,
                 status=DBRequirementStatus(item.status.value),
+                method=item.method,
                 confidence_score=item.confidence_score,
                 matched_znp_clause_number=matched_clause_number,
                 matched_znp_text=matched_clause_text,
@@ -737,6 +876,7 @@ def _analyze_project_requirements(
                 tu_quote=item.tu_quote,
                 znp_quote=item.znp_quote,
                 reasoning=item.reasoning,
+                validation_details=item.validation_details,
                 is_confirmed_by_human=False,
             )
             db.add(verification)
@@ -773,6 +913,9 @@ def _analyze_project_requirements(
             item.tu_quote = verification.tu_quote
             item.znp_quote = verification.znp_quote
             item.reasoning = verification.reasoning
+            item.automatic_status = RequirementStatus(verification.status.value)
+            item.validation_details = verification.validation_details
+            item.method = verification.method
             item.is_confirmed_by_human = True
             item.human_override_status = (
                 RequirementStatus(verification.human_override_status.value)
@@ -784,6 +927,7 @@ def _analyze_project_requirements(
                 item.status = item.human_override_status
         else:
             verification.status = DBRequirementStatus(item.status.value)
+            verification.method = item.method
             verification.confidence_score = item.confidence_score
             verification.matched_znp_clause_number = matched_clause_number
             verification.matched_znp_text = matched_clause_text
@@ -792,6 +936,7 @@ def _analyze_project_requirements(
             verification.tu_quote = item.tu_quote
             verification.znp_quote = item.znp_quote
             verification.reasoning = item.reasoning
+            verification.validation_details = item.validation_details
             if payload.force:
                 verification.is_confirmed_by_human = False
                 verification.human_override_status = None
@@ -831,6 +976,7 @@ def _analyze_project_requirements(
         evidence_list = [
             {
                 "document_id": tu_doc.id,
+                "znp_document_id": znp_doc.id,
                 "requirement_id": item.requirement.id,
                 "fragment_id": item.tu_fragment_id,
                 "page": item.tu_page if item.tu_page is not None else 1,
@@ -845,6 +991,12 @@ def _analyze_project_requirements(
                 "page": item.znp_page if item.znp_page is not None else 1,
                 "quote": item.znp_quote,
             })
+        for list_item in (item.validation_details or {}).get("items", []):
+            for evidence in list_item.get("evidence", []):
+                entry = {"document_id": evidence["document_id"], "requirement_id": item.requirement.id,
+                    "fragment_id": evidence["fragment_id"], "page": evidence["page"], "quote": evidence["quote"]}
+                if entry not in evidence_list:
+                    evidence_list.append(entry)
 
         finding_type = (
             "missing_requirement"
@@ -889,13 +1041,25 @@ def _analyze_project_requirements(
     if response.trace_info is None:
         response.trace_info = {}
     response.trace_info["analysis"] = analysis
+    response.stats = {
+        status.value: sum(item.status == status for item in response.checked_requirements)
+        for status in RequirementStatus
+    }
+    response.stats["total"] = len(response.checked_requirements)
+    completed = db.get(RequirementAnalysis, (tu_doc.id, znp_doc.id))
+    if completed is None:
+        completed = RequirementAnalysis(tu_document_id=tu_doc.id, znp_document_id=znp_doc.id)
+        db.add(completed)
+    completed.requirement_ids = [item.requirement.id for item in response.checked_requirements]
+    completed.completed_at = datetime.now(timezone.utc)
 
     db.commit()
     return response
 
 
 @router.get("/projects/{project_id}", response_model=CheckRequirementsResponse)
-def get_project_requirements(project_id: str, db: Session = Depends(get_db)):
+def get_project_requirements(project_id: str, tu_document_id: str | None = None,
+                             znp_document_id: str | None = None, db: Session = Depends(get_db)):
     """Return persisted TU/ZnP comparison results for a project."""
     get_project(db, project_id)
 
@@ -915,6 +1079,10 @@ def get_project_requirements(project_id: str, db: Session = Depends(get_db)):
             Finding.module == "requirements",
         )
     ).all()
+    if tu_document_id:
+        requirements = [r for r in requirements if r.document_id == tu_document_id]
+    if znp_document_id:
+        verifications = [v for v in verifications if v.znp_document_id == znp_document_id]
     accepted_ids = _accepted_requirement_ids(findings, requirements)
 
     verifications_by_requirement: dict[str, list[RequirementVerification]] = {}
@@ -932,19 +1100,15 @@ def get_project_requirements(project_id: str, db: Session = Depends(get_db)):
         own = verifications_by_requirement.get(requirement.id)
         if not own:
             continue
-        verification = _best_verification(own, accepted_ids)
-        if verification is None:
-            continue
-        key = _requirement_key(
-            requirement.document_id, requirement.clause_number, requirement.text,
-        )
-        current = cards.get(key)
-        if (
-            current is None
-            or _verification_rank(verification, accepted_ids)
-            > _verification_rank(current[1], accepted_ids)
-        ):
-            cards[key] = (requirement, verification)
+        by_pair: dict[str | None, list[RequirementVerification]] = {}
+        for verification in own:
+            by_pair.setdefault(verification.znp_document_id, []).append(verification)
+        for pair_id, pair_verifications in by_pair.items():
+            verification = _best_verification(pair_verifications, accepted_ids)
+            key = (*_requirement_key(requirement.document_id, requirement.clause_number, requirement.text), pair_id)
+            current = cards.get(key)
+            if current is None or _verification_rank(verification, accepted_ids) > _verification_rank(current[1], accepted_ids):
+                cards[key] = (requirement, verification)
 
     fragment_ids = {
         requirement.fragment_id
@@ -1002,11 +1166,14 @@ def get_project_requirements(project_id: str, db: Session = Depends(get_db)):
                     ),
                 ),
                 status=effective_status,
+                automatic_status=RequirementStatus(verification.status.value),
                 confidence_score=verification.confidence_score or 0.0,
                 matched_clause=matched,
                 tu_quote=verification.tu_quote,
                 znp_quote=verification.znp_quote,
                 reasoning=verification.reasoning,
+                validation_details=verification.validation_details,
+                method=verification.method,
                 is_confirmed_by_human=verification.is_confirmed_by_human,
                 human_comment=verification.human_comment,
                 human_override_status=(

@@ -50,12 +50,14 @@ class LLMVerificationDecision(BaseModel):
     reasoning: Optional[str] = None
     method: Optional[str] = None
     channels: List[str] = Field(default_factory=list)
+    validation_details: Optional[dict] = None
 
 
 class RequirementCheckItem(BaseModel):
     id: str
     requirement: TURequirement
     status: RequirementStatus
+    automatic_status: Optional[RequirementStatus] = None
     confidence_score: float
     matched_clause: Optional[ZNPClause] = None
     tu_quote: Optional[str] = None
@@ -72,6 +74,7 @@ class RequirementCheckItem(BaseModel):
     znp_fragment_text: Optional[str] = None
     channels: List[str] = Field(default_factory=list)
     method: Optional[str] = None
+    validation_details: Optional[dict] = None
 
 
 class CheckRequirementsRequest(BaseModel):
@@ -87,6 +90,8 @@ class CheckRequirementsResponse(BaseModel):
 
 class ConfirmRequirementRequest(BaseModel):
     requirement_id: str
+    verification_id: str | None = None
+    znp_document_id: str | None = None
     status: RequirementStatus
     comment: Optional[str] = None
 
@@ -116,6 +121,8 @@ class TURequirementOut(TURequirementCreate):
 
 
 class RequirementVerificationOut(BaseModel):
+    method: str | None = None
+    znp_document_id: str | None = None
     model_config = ConfigDict(from_attributes=True)
     id: str
     project_id: str

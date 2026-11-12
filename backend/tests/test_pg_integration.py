@@ -6,7 +6,7 @@ import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
 
-from app.core.models import Chunk, Document, DocumentKind, Project
+from app.core.models import Chunk, Document, DocumentKind, Project, TURequirement, RequirementVerification, RequirementCategory, RequirementStatus
 from app.search.router import lexical_ids, semantic_ids
 
 
@@ -36,5 +36,31 @@ def test_pgvector_and_russian_full_text():
                        {"v": json.dumps(vector), "id": chunk.id})
         assert lexical_ids(db, doc.id, "релейная защита", 5)[0] == right.id
         assert semantic_ids(db, doc.id, "dummy-384-v1", v1, 5)[0] == right.id
+        db.rollback()
+    engine.dispose()
+
+
+@pytest.mark.skipif(not os.environ.get("TEST_POSTGRES_URL"), reason="PostgreSQL job only")
+def test_pg_requirement_validation_details_roundtrip():
+    engine = create_engine(os.environ["TEST_POSTGRES_URL"])
+    with Session(engine) as db:
+        project = Project(name="validation details integration")
+        db.add(project)
+        db.flush()
+        tu = Document(project_id=project.id, kind=DocumentKind.tu, filename="tu.docx", stored_path="none",
+                      mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+        znp = Document(project_id=project.id, kind=DocumentKind.znp, filename="znp.pdf", stored_path="none", mime_type="application/pdf")
+        db.add_all([tu, znp])
+        db.flush()
+        requirement = TURequirement(project_id=project.id, document_id=tu.id, clause_number="1", category=RequirementCategory.other, text="Требование")
+        db.add(requirement)
+        db.flush()
+        details = {"version": 1, "items": [{"item_id": 1, "evidence": [{"document_id": znp.id, "quote": "Цитата"}]}]}
+        verification = RequirementVerification(project_id=project.id, requirement_id=requirement.id, znp_document_id=znp.id,
+            status=RequirementStatus.needs_review, validation_details=details)
+        db.add(verification)
+        db.flush()
+        db.expire(verification, ["validation_details"])
+        assert verification.validation_details == details
         db.rollback()
     engine.dispose()

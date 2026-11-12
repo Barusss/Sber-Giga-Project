@@ -1,15 +1,6 @@
 import {useEffect, useMemo, useRef, useState} from 'react'
-import {API, Document, Fragment, Project, request} from '../api/client'
-import {beginDiagnostic} from '../debug/diagnostics'
-
-type UploadEvent = {
-  stage: 'received' | 'parsing' | 'parsed' | 'indexing' | 'complete' | 'error'
-  message: string
-  trace_id?: string
-  pages?: number
-  fragments?: number
-  document?: Document
-}
+import {Document, Fragment, Project, request} from '../api/client'
+import {useOptionalOperations} from '../operations/OperationsPanel'
 
 type PageGroup = {
   number: number
@@ -51,55 +42,12 @@ function humanError(error: unknown) {
   return error instanceof Error ? error.message : String(error)
 }
 
-async function readUploadResponse(response: Response, onEvent: (event: UploadEvent) => void): Promise<Document> {
-  if (!response.ok) {
-    let message = `HTTP ${response.status}: ${response.statusText}`
-    try {
-      const payload = await response.json()
-      if (typeof payload.detail === 'string') message = payload.detail
-    } catch { /* the server returned a non-JSON error */ }
-    throw new Error(message)
-  }
-  if (!response.body) throw new Error('Браузер не поддерживает потоковую обработку ответа')
-
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  let remaining = ''
-  let document: Document | null = null
-
-  function parseLine(line: string) {
-    if (!line.trim()) return
-    const event = JSON.parse(line) as UploadEvent
-    onEvent(event)
-    if (event.stage === 'error') throw new Error(event.trace_id ? `${event.message} (код ${event.trace_id})` : event.message)
-    if (event.stage === 'complete') {
-      if (!event.document) throw new Error('Сервер не передал результат загрузки')
-      document = event.document
-    }
-  }
-
-  try {
-    while (true) {
-      const {done, value} = await reader.read()
-      if (done) break
-      remaining += decoder.decode(value, {stream: true})
-      const lines = remaining.split('\n')
-      remaining = lines.pop() ?? ''
-      for (const line of lines) parseLine(line)
-    }
-    remaining += decoder.decode()
-    if (remaining.trim()) parseLine(remaining)
-  } finally {
-    reader.releaseLock()
-  }
-
-  if (!document) throw new Error('Соединение завершилось до окончания обработки документа')
-  return document
-}
-
-export function DocumentsPage() {
+export function DocumentsPage({projectId}: {projectId?: string} = {}) {
+  const operationContext = useOptionalOperations()
+  const operations = operationContext?.operations ?? []
+  const processedJobs = useRef(new Set<string>())
   const [projects, setProjects] = useState<Project[]>([])
-  const [project, setProject] = useState('')
+  const [project, setProject] = useState(projectId ?? '')
   const [kind, setKind] = useState<'tu'|'znp'|'other'>('tu')
   const [file, setFile] = useState<File | null>(null)
   const [docs, setDocs] = useState<Document[]>([])
@@ -107,7 +55,6 @@ export function DocumentsPage() {
   const [fragments, setFragments] = useState<Fragment[]>([])
   const [busy, setBusy] = useState(false)
   const [reading, setReading] = useState(false)
-  const [uploadStep, setUploadStep] = useState('')
   const [error, setError] = useState('')
   const [query, setQuery] = useState('')
   const [pageNumber, setPageNumber] = useState(1)
@@ -117,8 +64,12 @@ export function DocumentsPage() {
   const fileInput = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
-    request<Project[]>('/projects').then(setProjects).catch(err => setError(humanError(err)))
-  }, [])
+    if (!projectId) request<Project[]>('/projects').then(setProjects).catch(err => setError(humanError(err)))
+  }, [projectId])
+
+  useEffect(() => {
+    if (projectId && project !== projectId) selectProject(projectId)
+  }, [projectId])
 
   useEffect(() => {
     let cancelled = false
@@ -131,6 +82,21 @@ export function DocumentsPage() {
       .catch(err => { if (!cancelled) setError(humanError(err)) })
     return () => { cancelled = true }
   }, [project])
+
+  useEffect(() => {
+    if (!project) return
+    const finished = operations.filter(job =>
+      job.kind === 'upload' && job.project_id === project && job.status === 'completed')
+    if (!finished.some(job => !processedJobs.current.has(job.id))) return
+    finished.forEach(job => processedJobs.current.add(job.id))
+    request<Document[]>(`/projects/${project}/documents`)
+      .then(setDocs)
+      .catch(err => setError(humanError(err)))
+  }, [operations, project])
+
+  const uploadRunning = operations.some(job =>
+    job.kind === 'upload' && job.project_id === project &&
+    (job.status === 'queued' || job.status === 'running'))
 
   const pages = useMemo<PageGroup[]>(() => {
     const byPage = new Map<number, Fragment[]>()
@@ -192,42 +158,21 @@ export function DocumentsPage() {
 
   async function upload(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (!file || !project || busy) return
-
-    const operation = beginDiagnostic(`OCR: ${file.name}`, 'Отправка файла на сервер')
+    if (!file || !project || busy || uploadRunning) return
     setBusy(true)
     setError('')
-    setUploadStep('Отправка файла на сервер')
-
     try {
       const form = new FormData()
       form.append('kind', kind)
       form.append('file', file)
-      const response = await fetch(`${API}/projects/${project}/documents/stream`, {
-        method: 'POST',
-        body: form
-      })
-
-      const saved = await readUploadResponse(response, event => {
-        setUploadStep(event.message)
-        if (event.stage !== 'complete' && event.stage !== 'error') {
-          const detail = event.trace_id ? `${event.message} · ${event.trace_id}` : event.message
-          operation.step(detail)
-        }
-      })
-
-      operation.success('Документ сохранён и проиндексирован')
-      setDocs(items => [...items.filter(item => item.id !== saved.id), saved])
+      if (operationContext) await operationContext.upload(form)
+      else await request(`/projects/${project}/operations/upload`, {method:'POST', body:form})
       setFile(null)
       if (fileInput.current) fileInput.current.value = ''
-      await viewDocument(saved)
     } catch (err) {
-      const message = humanError(err)
-      operation.error(message)
-      setError(message)
+      setError(humanError(err))
     } finally {
       setBusy(false)
-      setUploadStep('')
     }
   }
 
@@ -244,22 +189,22 @@ export function DocumentsPage() {
   return (
     <div className="documents-workspace">
       <header className="documents-heading">
-        <h1>Документы и сканы</h1>
+        <h1>Документы</h1>
         <p className="muted">Загружайте PDF или DOCX. Сканированные страницы распознаются, а обычный текст сохраняется без OCR.</p>
       </header>
 
       <form onSubmit={upload} className="panel documents-upload">
         <div className="documents-upload-grid">
-          <label>Проект
+          {!projectId && <label>Проект
             <select value={project} onChange={event => selectProject(event.target.value)}
-              disabled={busy} required>
+              disabled={busy || uploadRunning} required>
               <option value="">Выберите проект</option>
               {projects.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
             </select>
-          </label>
+          </label>}
           <label>Тип документа
             <select value={kind} onChange={event => setKind(event.target.value as 'tu'|'znp'|'other')}
-              disabled={busy}>
+              disabled={busy || uploadRunning}>
               <option value="tu">Технические условия (ТУ)</option>
               <option value="znp">Задание на проектирование (ЗнП)</option>
               <option value="other">Другое</option>
@@ -268,16 +213,15 @@ export function DocumentsPage() {
           <label>PDF или DOCX
             <input ref={fileInput} type="file" accept=".pdf,.docx"
               onChange={event => setFile(event.target.files?.[0] ?? null)}
-              disabled={busy} required />
+              disabled={busy || uploadRunning} required />
           </label>
-          <button disabled={busy || !project || !file} type="submit">
-            {busy ? 'Обрабатываем...' : 'Загрузить и распознать'}
+          <button disabled={busy || uploadRunning || !project || !file} type="submit">
+            {busy ? 'Передаём файл…' : uploadRunning ? 'Идёт обработка' : 'Загрузить и распознать'}
           </button>
         </div>
-        {busy && <div className="documents-upload-progress" role="status" aria-live="polite">
-          <span className="documents-spinner" aria-hidden="true" />
-          <span><strong>Обработка документа</strong><small>{uploadStep}</small></span>
-          <button type="button" className="secondary" onClick={() => window.dispatchEvent(new Event('open-diagnostics'))}>Журнал</button>
+        {busy && <div className="workspace-progress operation-uploading" role="status">
+          <span className="operation-spinner" aria-hidden="true"/>
+          <span>Файл передаётся на сервер. После передачи распознавание продолжится независимо от страницы.</span>
         </div>}
       </form>
 
@@ -308,10 +252,10 @@ export function DocumentsPage() {
         <section className="panel documents-viewer">
           <div className="documents-viewer-head">
             <div>
-              <p className="documents-eyebrow">Распознанный документ</p>
               <h2>{selected.filename}</h2>
-              <p className="muted">{reading ? 'Получаем текст...' :
-                `${pages.length} стр. · ${fragments.length} фрагментов · OCR: ${ocrPages} стр.`}</p>
+              <p className="muted">{reading ? 'Получаем текст...' : selected.pagination_kind === 'physical' ?
+                `${pages.length} стр. · ${fragments.length} фрагментов · OCR: ${ocrPages} стр.` :
+                `Физические страницы не определены · ${fragments.length} фрагментов`}</p>
             </div>
             <button type="button" className="secondary" onClick={() => { setSelected(null); setFragments([]); viewRequest.current += 1 }}>
               Закрыть
@@ -339,14 +283,14 @@ export function DocumentsPage() {
               </div>
 
               <div className="documents-reader">
-                <nav className="documents-page-nav" aria-label="Страницы документа">
-                  <h3>Страницы {searchTerm && <small>Найдено: {matchingPages.length}</small>}</h3>
+                <nav className="documents-page-nav" aria-label={selected.pagination_kind === 'physical' ? 'Страницы документа' : 'Текст документа'}>
+                  <h3>{selected.pagination_kind === 'physical' ? 'Страницы' : 'Текст документа'} {searchTerm && <small>Найдено: {matchingPages.length}</small>}</h3>
                   {matchingPages.map(page => (
                     <button key={page.number} type="button"
                       className={currentPage?.number === page.number ? 'active' : ''}
                       onClick={() => setPageNumber(page.number)}
                       aria-current={currentPage?.number === page.number ? 'page' : undefined}>
-                      <span>Страница {page.number}</span>
+                      <span>{selected.pagination_kind === 'physical' ? `Страница ${page.number}` : 'Текст документа'}</span>
                       {page.hasOcr && <small>OCR</small>}
                     </button>
                   ))}
@@ -358,10 +302,10 @@ export function DocumentsPage() {
                     <>
                       <div className="documents-page-header">
                         <div>
-                          <h3>Страница {currentPage.number}</h3>
+                          <h3>{selected.pagination_kind === 'physical' ? `Страница ${currentPage.number}` : 'Текст документа'}</h3>
                           <small>{currentPage.hasOcr ? 'Распознано со скана' : 'Текст документа'}</small>
                         </div>
-                        <button className="secondary" type="button" onClick={copyPage}>Копировать страницу</button>
+                        <button className="secondary" type="button" onClick={copyPage}>{selected.pagination_kind === 'physical' ? 'Копировать страницу' : 'Копировать текст'}</button>
                       </div>
                       <article className="documents-paper" style={{fontSize: `${fontSize}px`}}>
                         {currentPage.blocks.map(block => (

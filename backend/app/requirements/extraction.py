@@ -160,6 +160,13 @@ def extract_clauses(fragments: Sequence[Fragment]) -> list[Clause]:
         if is_noise(text):
             continue
         block_type = fragment.block_type or "paragraph"
+        if block_type == "page_furniture":
+            continue
+        if block_type == "toc":
+            current = None
+            pending_heading = None
+            toc_mode = True
+            continue
 
         if _TOC_TITLE_RE.match(text):
             current = None
@@ -257,10 +264,10 @@ def extract_clauses(fragments: Sequence[Fragment]) -> list[Clause]:
         clauses.extend(_draft_to_clauses(draft))
 
     deduplicated: list[Clause] = []
-    seen: set[str] = set()
+    seen: set[tuple] = set()
     for clause in clauses:
-        key = normalize_clause_text(clause.text)
-        if not key or key in seen:
+        key = (clause.section_path, clause.clause_number, normalize_clause_text(clause.text))
+        if not key[2] or key in seen:
             continue
         seen.add(key)
         deduplicated.append(clause)

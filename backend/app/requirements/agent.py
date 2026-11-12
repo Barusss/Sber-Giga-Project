@@ -1,7 +1,8 @@
 """Агентный цикл проверки соответствия ТУ и ЗнП с трассировкой шагов."""
 import json
+import re
 import time
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 
 from app.ai.deepseek import DeepSeekClient, DeepSeekError
@@ -21,6 +22,11 @@ from app.requirements.tools import (
     tool_search_znp_clauses,
     tool_validate_quotes,
     tool_verify_engineering_params,
+    _list_items,
+    _extract_identifiers,
+    _canonical_text,
+    _identifier_present,
+    _content_tokens,
 )
 
 AGENT_SYSTEM_PROMPT = """Ты ИИ-агент инженерной экспертизы по технологическому присоединению.
@@ -50,8 +56,10 @@ AGENT_SYSTEM_PROMPT = """Ты ИИ-агент инженерной экспер�
   "matched_znp_clause_id": "id пункта или null",
   "tu_quote": "точная подстрока из требования ТУ",
   "znp_quote": "точная подстрока из пункта ЗнП или null",
-  "reasoning": "объяснение для инженера"
+  "reasoning": "объяснение для инженера",
+  "evidence_items": [{"item_id": 1, "status": "fulfilled" | "needs_review" | "missing", "reasoning": "объяснение", "evidence": [{"clause_id": "id пункта ЗнП", "quote": "точная цитата"}]}]
 }
+Для перечня укажи evidence_items для каждого элемента из tu_requirement.list_items. Каждый элемент подтверждай только относящимися к нему цитатами; пункты ЗнП могут быть разными.
 Правило эскалации: если параметры расходятся, формулировка неоднозначна или уверенность ниже 0.70 — ставь "needs_review".
 Правило параметров: числа, единицы измерения, направление сравнения (не более/не менее/не выше/не ниже/≤/≥) и нормативные коды (ГОСТ, ГОСТ Р, СП, СНиП, СТО, РД, СО, ПУЭ, ФЗ, № документа) должны совпадать с ТУ. Если значение, единица, направление или код расходятся, либо значимый параметр ТУ не подтверждён в ЗнП, ставь "needs_review", а не "fulfilled".
 Правило перечней: если требование ТУ содержит перечень (маркированный список, пункты 1)/а), строки после вводного двоеточия или несколько сегментов через ";"), ставь "fulfilled" только когда в ЗнП подтверждены ВСЕ элементы перечня. Если хотя бы один элемент не подтверждён — "needs_review" и перечисли неподтверждённые элементы в reasoning.
@@ -97,8 +105,12 @@ class RequirementsAgent:
         self,
         tu_requirements: list[TURequirement],
         znp_clauses: list[ZNPClause],
+        progress_callback: Callable[[str, int, int, str | None], None] | None = None,
     ) -> CheckRequirementsResponse:
         started_at = time.perf_counter()
+        total = len(tu_requirements)
+        if progress_callback:
+            progress_callback("embedding", 0, total, None)
         checked_items: list[RequirementCheckItem] = []
         all_traces: list[dict[str, Any]] = []
 
@@ -111,7 +123,12 @@ class RequirementsAgent:
         if not clause_embeddings:
             clause_embeddings = None
 
-        for req in tu_requirements:
+        if progress_callback:
+            progress_callback("verifying", 0, total, None)
+
+        for index, req in enumerate(tu_requirements, start=1):
+            if progress_callback:
+                progress_callback("verifying", index - 1, total, req.clause_number)
             decision, req_trace = self._verify_single_requirement(
                 req, znp_clauses, znp_by_id, clause_embeddings,
             )
@@ -132,16 +149,20 @@ class RequirementsAgent:
                     id=str(uuid4()),
                     requirement=req,
                     status=decision.status,
+                    automatic_status=decision.status,
                     confidence_score=decision.similarity_score,
                     matched_clause=matched_clause,
                     tu_quote=decision.tu_quote,
                     znp_quote=decision.znp_quote,
                     reasoning=decision.reasoning,
+                    validation_details=decision.validation_details,
                     is_confirmed_by_human=False,
                     method=decision.method,
                     channels=decision.channels,
                 )
             )
+            if progress_callback:
+                progress_callback("verifying", index, total, None)
 
         stats = {
             "fulfilled": sum(1 for i in checked_items if i.status == RequirementStatus.fulfilled),
@@ -158,6 +179,7 @@ class RequirementsAgent:
                 "execution_time_ms": elapsed_ms,
                 "agent_runs": all_traces,
                 "embedding": self.embedder.status(),
+                "degraded": any(item.method != "llm" for item in checked_items),
             },
         )
 
@@ -185,6 +207,7 @@ class RequirementsAgent:
                     "clause_number": req.clause_number,
                     "category": req.category.value,
                     "text": req.text,
+                    "list_items": [{"item_id": i, "text": text} for i, text in enumerate(_list_items(req.text), start=1)],
                 },
                 "history": observations,
             }
@@ -315,6 +338,11 @@ class RequirementsAgent:
         trace: list[dict[str, Any]],
         llm_duration: float,
     ) -> tuple[LLMVerificationDecision, list[dict[str, Any]]]:
+        list_items = _list_items(req.text)
+        proposed_items = llm_reply.get("evidence_items")
+        if len(list_items) >= 2 and isinstance(proposed_items, list):
+            return self._finalize_list_decision(llm_reply, req, znp_by_id, list_items, trace, llm_duration)
+
         raw_matched_id = llm_reply.get("matched_znp_clause_id")
         matched_id = str(raw_matched_id).strip() if raw_matched_id else None
 
@@ -410,24 +438,26 @@ class RequirementsAgent:
         except (TypeError, ValueError):
             confidence = 0.7
 
-        reasoning = str(llm_reply.get("reasoning") or "Проверка выполнена ИИ-агентом.")
+        model_reasoning = str(llm_reply.get("reasoning") or "Проверка выполнена ИИ-агентом.")
+        model_status = status
+        reasoning = ""
 
         if status == RequirementStatus.fulfilled and matched_clause is None:
             status = RequirementStatus.needs_review
             reasoning += " [Не указан подтверждающий пункт ЗнП]"
             confidence = min(confidence, 0.60)
 
-        if status == RequirementStatus.fulfilled and evidence_check["quote_hallucinated"]:
+        if model_status == RequirementStatus.fulfilled and evidence_check["quote_hallucinated"]:
             status = RequirementStatus.needs_review
             reasoning += " [Цитата ЗнП не найдена в пункте, заменена фактическим фрагментом]"
             confidence = min(confidence, 0.65)
 
-        if status == RequirementStatus.fulfilled and not evidence_check["quote_present"]:
+        if model_status == RequirementStatus.fulfilled and not evidence_check["quote_present"]:
             status = RequirementStatus.needs_review
             reasoning += " [Модель не привела цитату ЗнП; фрагмент подобран автоматически]"
             confidence = min(confidence, 0.65)
 
-        if status == RequirementStatus.fulfilled and (
+        if model_status == RequirementStatus.fulfilled and (
             not quote_check["znp_quote_present"]
             or not quote_check["znp_quote_valid"]
             or not quote_check["znp_quote_atomic"]
@@ -437,7 +467,7 @@ class RequirementsAgent:
             confidence = min(confidence, 0.60)
 
         if (
-            status == RequirementStatus.fulfilled
+            model_status == RequirementStatus.fulfilled
             and coverage_check["is_list"]
             and not coverage_check["covered"]
         ):
@@ -450,13 +480,34 @@ class RequirementsAgent:
             )
             confidence = min(confidence, 0.65)
 
-        if not param_check["params_match"] and status == RequirementStatus.fulfilled:
+        if not param_check["params_match"] and model_status == RequirementStatus.fulfilled:
             status = RequirementStatus.needs_review
             reasoning += f" [Валидатор параметров: {'; '.join(param_check['mismatches'])}]"
             confidence = min(confidence, 0.65)
 
         if confidence < 0.70 and status == RequirementStatus.fulfilled:
             status = RequirementStatus.needs_review
+            reasoning += " [Уверенность ниже порога автоматического подтверждения]"
+
+        if not reasoning:
+            if status == RequirementStatus.fulfilled:
+                reasoning = "Модель считает требование отражённым; выполнены доступные автоматические проверки."
+            elif status == RequirementStatus.missing:
+                reasoning = "Модель не установила соответствия; требуется оценка инженера."
+            else:
+                reasoning = "Требуется проверка инженера."
+        else:
+            reasoning = "Требует проверки:" + reasoning
+
+        validation_details = {
+            "version": 1,
+            "model_status": model_status.value,
+            "model_reasoning": model_reasoning,
+            "quote_check": quote_check,
+            "evidence_check": evidence_check,
+            "param_check": param_check,
+            "coverage_check": coverage_check,
+        }
 
         trace.append({
             "step": len(trace) + 1,
@@ -486,11 +537,98 @@ class RequirementsAgent:
                 tu_quote=tu_quote,
                 znp_quote=znp_quote,
                 reasoning=reasoning,
+                validation_details=validation_details,
                 method="llm",
                 channels=channels or ["lexical"],
             ),
             trace,
         )
+
+    def _finalize_list_decision(self, reply, req, znp_by_id, list_items, trace, llm_duration):
+        proposed = {}
+        for item in reply["evidence_items"]:
+            if isinstance(item, dict) and isinstance(item.get("item_id"), int):
+                proposed.setdefault(item["item_id"], []).append(item)
+
+        items = []
+        first_clause = None
+        first_quote = None
+        for index, text in enumerate(list_items, start=1):
+            candidates = proposed.get(index, [])
+            candidate = candidates[0] if len(candidates) == 1 else {}
+            evidence = []
+            partial_evidence = []
+            identifiers = _extract_identifiers(text)
+            object_ids = {identifier for identifier in identifiers
+                if re.fullmatch(r"[а-яёa-z]{2,6}-\d{1,4}(?:[.,/]\d+)?", identifier, re.IGNORECASE)}
+            raw_evidence = candidate.get("evidence")
+            if not isinstance(raw_evidence, list):
+                raw_evidence = []
+            for entry in raw_evidence:
+                if not isinstance(entry, dict):
+                    continue
+                clause = znp_by_id.get(str(entry.get("clause_id") or ""))
+                quote = entry.get("quote")
+                if not clause or not isinstance(quote, str):
+                    continue
+                quote_check = tool_validate_quotes(req.text, req.text, clause.text, quote)
+                quote_canonical = _canonical_text(quote)
+                if not quote_check["znp_quote_valid"] or not quote_check["znp_quote_atomic"]:
+                    continue
+                if object_ids and not all(_identifier_present(identifier, quote_canonical) for identifier in object_ids):
+                    continue
+                if not identifiers:
+                    requirement_tokens = _content_tokens(text)
+                    quote_tokens = _content_tokens(quote)
+                    if not requirement_tokens or len(requirement_tokens & quote_tokens) / len(requirement_tokens) < 0.65:
+                        continue
+                entry = {"clause_id": clause.id, "clause_number": clause.clause_number, "quote": quote, "fragment_id": clause.fragment_id, "page": clause.page}
+                params = tool_verify_engineering_params(text, quote)
+                if params["params_match"] and all(_identifier_present(identifier, quote_canonical) for identifier in identifiers):
+                    evidence.append(entry)
+                else:
+                    partial_evidence.append(entry)
+            complete_evidence = bool(evidence)
+            if not evidence and len(partial_evidence) >= 2 and object_ids:
+                combined = " ".join(entry["quote"] for entry in partial_evidence)
+                combined_canonical = _canonical_text(combined)
+                if (tool_verify_engineering_params(text, combined)["params_match"]
+                        and all(_identifier_present(identifier, combined_canonical) for identifier in identifiers)):
+                    evidence = partial_evidence
+            if evidence and first_clause is None:
+                first_clause = znp_by_id[evidence[0]["clause_id"]]
+                first_quote = evidence[0]["quote"]
+            accepted = candidate.get("status") == "fulfilled" and complete_evidence
+            items.append({"item_id": index, "text": text, "status": "fulfilled" if accepted else "needs_review", "model_reasoning": str(candidate.get("reasoning") or ""), "evidence": evidence})
+
+        try:
+            confidence = float(reply.get("confidence_score", 0.7))
+            if 1 < confidence <= 100:
+                confidence /= 100
+            confidence = max(0.0, min(1.0, confidence))
+        except (TypeError, ValueError):
+            confidence = 0.7
+        accepted_count = sum(item["status"] == "fulfilled" for item in items)
+        model_status = str(reply.get("status") or "needs_review")
+        status = RequirementStatus.needs_review
+        if model_status == "fulfilled" and accepted_count == len(items) and confidence >= 0.7:
+            status = RequirementStatus.fulfilled
+        if model_status == "missing" and accepted_count == 0:
+            status = RequirementStatus.missing
+        reasoning = f"Подтверждено элементов: {accepted_count} из {len(items)}."
+        if status == RequirementStatus.needs_review:
+            reasoning = "Требует проверки. " + reasoning
+            if ((model_status == "missing" and accepted_count > 0)
+                    or (model_status == "fulfilled" and accepted_count != len(items))):
+                reasoning += " Итоговый статус модели противоречит проверенным элементам."
+        elif status == RequirementStatus.missing:
+            reasoning = "Модель не установила соответствия; требуется оценка инженера. " + reasoning
+        details = {"version": 1, "model_status": model_status, "model_reasoning": str(reply.get("reasoning") or ""), "items": items}
+        trace.append({"step": len(trace) + 1, "tool": "finish_and_validate_list", "final_status": status.value, "duration_ms": llm_duration})
+        tu_quote = reply.get("tu_quote")
+        if not isinstance(tu_quote, str) or not tool_validate_quotes(req.text, tu_quote, None, None)["tu_quote_valid"]:
+            tu_quote = req.text[:120]
+        return LLMVerificationDecision(status=status, similarity_score=round(confidence, 3), matched_znp_clause_id=first_clause.id if first_clause else None, tu_quote=tu_quote, znp_quote=first_quote, reasoning=reasoning, method="llm", channels=["lexical"], validation_details=details), trace
 
     def _deterministic_agent_fallback(
         self,
@@ -535,6 +673,7 @@ class RequirementsAgent:
                     znp_quote=None,
                     reasoning="В тексте ЗнП не найдено пунктов, соответствующих данному требованию ТУ.",
                     method="deterministic",
+                    validation_details={"version": 1, "method": "deterministic"},
                     channels=channels,
                 ),
                 trace,
@@ -609,50 +748,17 @@ class RequirementsAgent:
                     znp_quote=znp_quote,
                     reasoning="; ".join(issues),
                     method="deterministic",
+                    validation_details={"version": 1, "method": "deterministic", "param_check": param_res, "coverage_check": coverage_res, "quote_check": quote_res},
                     channels=channels,
                 ),
                 trace,
             )
 
-        coverage_note = ""
-        if coverage_res["is_list"]:
-            coverage_note = (
-                f" Перечень подтверждён полностью ({coverage_res['items_covered']} "
-                f"из {coverage_res['items_total']})."
-            )
-        if (
-            best["similarity_score"] >= MATCH_THRESHOLD
-            and best["lexical_score"] >= MIN_LEXICAL_SCORE_FOR_FULFILLED
-        ):
-            return (
-                LLMVerificationDecision(
-                    status=RequirementStatus.fulfilled,
-                    similarity_score=best["similarity_score"],
-                    matched_znp_clause_id=best["clause_id"],
-                    tu_quote=req.text,
-                    znp_quote=znp_quote,
-                    reasoning=(
-                        f"Требование отражено в пункте {best['clause_number']}, "
-                        f"параметры совпадают.{coverage_note}"
-                    ),
-                    method="deterministic",
-                    channels=channels,
-                ),
-                trace,
-            )
-
-        semantic_only = (
-            best.get("semantic_score") is not None
-            and best["lexical_score"] < MIN_LEXICAL_SCORE_FOR_FULFILLED
-        )
         reasoning = (
-            "Семантическое совпадение без достаточной лексической опоры, "
-            "требуется подтверждение инженером."
-            if semantic_only
-            else "Частичное совпадение, требуется подтверждение инженером."
+            "Смысловая проверка ИИ недоступна или не завершена. "
+            "Найдены только поисковые кандидаты; сходство текста не подтверждает "
+            "выполнение требования. Требуется решение инженера."
         )
-        if coverage_note:
-            reasoning += coverage_note
         return (
             LLMVerificationDecision(
                 status=RequirementStatus.needs_review,
@@ -662,6 +768,7 @@ class RequirementsAgent:
                 znp_quote=znp_quote,
                 reasoning=reasoning,
                 method="deterministic",
+                validation_details={"version": 1, "method": "deterministic", "param_check": param_res, "coverage_check": coverage_res, "quote_check": quote_res},
                 channels=channels,
             ),
             trace,

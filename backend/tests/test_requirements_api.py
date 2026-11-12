@@ -17,7 +17,8 @@ from app.documents.parser import ExtractedBlock
 from app.main import app
 from app.requirements.agent import RequirementsAgent
 from app.requirements.extraction import Clause
-from app.requirements.router import _fragment_for_quote
+from app.requirements.router import _fragment_for_quote, _apply_quote_provenance
+from app.requirements.schemas import RequirementCheckItem, RequirementStatus, TURequirement, RequirementCategory, ZNPClause
 
 
 def prepare(client, monkeypatch):
@@ -85,7 +86,7 @@ def test_analyze_persists_fragment_provenance(client, monkeypatch):
     assert set(items) == {"1.1", "1.2"}
 
     power = items["1.1"]
-    assert power["status"] == "fulfilled"
+    assert power["status"] == "needs_review"
     assert power["tu_page"] == 1
     assert power["tu_fragment_id"]
     assert "150 кВт" in power["tu_fragment_text"]
@@ -198,7 +199,7 @@ def test_analyze_skips_headings_toc_and_service_sections(client, monkeypatch):
     }
 
     assert set(items) == {"1.1", "2"}
-    assert items["1.1"]["status"] == "fulfilled"
+    assert items["1.1"]["status"] == "needs_review"
     assert items["2"]["status"] == "missing"
     assert items["2"]["requirement"]["text"] == \
         "Установить счетчик класса точности 0.5S."
@@ -264,7 +265,7 @@ def test_manual_tu_storage_and_human_verdict(client, monkeypatch):
 
 
 def test_project_isolation_type_and_review_protection(client, monkeypatch):
-    pid, docs = prepare(client, monkeypatch)
+    pid, docs = _project_with_documents(client, monkeypatch, _requirements_blocks)
     other = client.post("/api/v1/projects", json={"name": "Другой проект"}).json()["id"]
     base = f"/api/v1/requirements/projects/{pid}"
     payload = {
@@ -289,6 +290,11 @@ def test_project_isolation_type_and_review_protection(client, monkeypatch):
         "requirement_id": "unknown", "status": "fulfilled",
     }).status_code == 404
 
+    assert client.post(f"/api/v1/projects/{pid}/approve").status_code == 409
+    analyzed = client.post("/api/v1/requirements/analyze", json={"project_id": pid}).json()
+    for card in analyzed["checked_requirements"]:
+        assert client.post(f"{base}/confirm", json={"requirement_id": card["requirement"]["id"],
+            "verification_id": card["id"], "status": "fulfilled"}).status_code == 200
     approval = client.post(f"/api/v1/projects/{pid}/approve")
     assert approval.status_code == 200, approval.text
     assert client.post(f"{base}/tu-requirements", json=payload).status_code == 409
@@ -300,8 +306,8 @@ def test_project_isolation_type_and_review_protection(client, monkeypatch):
         "project_id": pid, "tu_document_id": docs["znp"],
         "znp_document_id": docs["tu"],
     }).status_code == 409  # Project is approved above.
-    assert len(client.get(f"{base}/tu-requirements").json()) == 1
-    assert client.get(f"{base}/verifications").json() == []
+    assert client.get(f"{base}/tu-requirements").json()
+    assert client.get(f"{base}/verifications").json()
 
 
 def test_core_legacy_services_still_visible(client):
@@ -334,6 +340,40 @@ def _requirements_blocks(data, suffix):
             ExtractedBlock(2, 0, "1.2. Установить счетчик класса точности 0.5S."),
         ]
     return [ExtractedBlock(3, 0, "3.1. Предусмотреть максимальную мощность 150 кВт.")]
+
+
+def test_expert_report_includes_complete_saved_pair_and_normatives(client, monkeypatch):
+    pid, docs = _project_with_documents(client, monkeypatch, _requirements_blocks)
+    analyzed = client.post("/api/v1/requirements/analyze", json={"project_id": pid})
+    assert analyzed.status_code == 200, analyzed.text
+    response = client.get(f"/api/v1/projects/{pid}/expert-report")
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["requirements"]["pair"]["tu_document_id"] == docs["tu"]
+    assert data["requirements"]["pair"]["znp_document_id"] == docs["znp"]
+    assert data["requirements"]["complete"] is True
+    assert len(data["requirements"]["items"]) == data["requirements"]["stats"]["total"] == 2
+    assert "normatives" in data
+
+
+def test_expert_report_requires_choice_for_multiple_pairs(client, monkeypatch):
+    pid, docs = _project_with_documents(client, monkeypatch, _requirements_blocks)
+    response = client.post(f"/api/v1/projects/{pid}/documents", data={"kind": "znp"},
+        files={"file": ("second.pdf", BytesIO(b"znp"), "application/pdf")})
+    assert response.status_code == 201, response.text
+    second_znp = response.json()["id"]
+    for znp in (docs["znp"], second_znp):
+        analyzed = client.post("/api/v1/requirements/analyze", json={"project_id": pid,
+            "tu_document_id": docs["tu"], "znp_document_id": znp})
+        assert analyzed.status_code == 200, analyzed.text
+    url = f"/api/v1/projects/{pid}/expert-report"
+    report = client.get(url).json()["requirements"]
+    assert len(report["available_pairs"]) == 2
+    assert report["pair"] is None
+    chosen = client.get(url, params={"tu_document_id": docs["tu"], "znp_document_id": second_znp})
+    assert chosen.status_code == 200, chosen.text
+    assert chosen.json()["requirements"]["pair"]["znp_document_id"] == second_znp
+    assert client.get(url, params={"tu_document_id": docs["tu"], "znp_document_id": "unrelated"}).status_code == 404
 
 
 def test_reanalysis_preserves_human_decisions_and_evidence_links(client, monkeypatch):
@@ -486,8 +526,105 @@ def test_quote_maps_to_fragment_that_contains_it():
     )
     fragments = {"f1": first, "f2": second}
     assert _fragment_for_quote("150 кВт", clause, fragments).id == "f2"
-    assert _fragment_for_quote("цитаты нет", clause, fragments).id == "f1"
+    assert _fragment_for_quote("цитаты нет", clause, fragments) is None
     assert _fragment_for_quote("150 кВт", None, fragments) is None
+
+
+def test_list_evidence_must_map_to_a_real_fragment():
+    fragment = Fragment(id="f", document_id="znp-doc", page=2, position=0, text="Настоящий текст")
+    clause = Clause(clause_number="1", text="Настоящий текст и отсутствующая цитата", page=2,
+                    fragment_id="f", fragment_ids=["f"], section_path=None, fragment_text=fragment.text)
+    requirement = TURequirement(id="tu", clause_number="1", category=RequirementCategory.other, text="Требование")
+    item = RequirementCheckItem(id="v", requirement=requirement, status=RequirementStatus.fulfilled,
+        confidence_score=0.9, matched_clause=ZNPClause(id="znp-1", clause_number="1", text=clause.text),
+        validation_details={"version": 1, "items": [{"item_id": 1, "status": "fulfilled", "evidence": [
+            {"clause_id": "znp-1", "quote": "отсутствующая цитата"}]}]})
+    _apply_quote_provenance([item], {}, {"znp-1": clause}, {"f": fragment}, "znp-doc")
+    assert item.status == RequirementStatus.needs_review
+    assert item.validation_details["items"][0]["evidence"] == []
+
+
+def test_list_evidence_is_persisted_with_source_fragments(client, monkeypatch):
+    def blocks(data, suffix):
+        if data == b"tu":
+            return [ExtractedBlock(1, 0, "1.1. Предусмотреть:\n- устройство АБ-123;\n- устройство ВГ-456;")]
+        return [ExtractedBlock(2, 0, "2.1. Установить устройство АБ-123."),
+                ExtractedBlock(3, 0, "2.2. Установить устройство ВГ-456.")]
+    pid, docs = _project_with_documents(client, monkeypatch, blocks)
+    def reply(self, system_prompt, user_prompt):
+        return {"action": "finish", "status": "fulfilled", "confidence_score": 0.95,
+            "tu_quote": "устройство АБ-123", "reasoning": "Подтверждено",
+            "evidence_items": [
+                {"item_id": 1, "status": "fulfilled", "evidence": [{"clause_id": "znp-1", "quote": "устройство АБ-123"}]},
+                {"item_id": 2, "status": "fulfilled", "evidence": [{"clause_id": "znp-2", "quote": "устройство ВГ-456"}]},
+            ]}
+    monkeypatch.setattr("app.ai.deepseek.DeepSeekClient.complete_json", reply)
+    response = client.post("/api/v1/requirements/analyze", json={"project_id": pid})
+    assert response.status_code == 200, response.text
+    item = response.json()["checked_requirements"][0]
+    assert item["status"] == "fulfilled"
+    details = item["validation_details"]["items"]
+    assert len(details) == 2
+    assert all(part["evidence"][0]["document_id"] == docs["znp"] for part in details)
+    assert len({part["evidence"][0]["fragment_id"] for part in details}) == 2
+    stored = client.get(f"/api/v1/requirements/projects/{pid}").json()["checked_requirements"][0]
+    assert stored["validation_details"]["items"] == details
+
+
+def test_single_evidence_spanning_fragments_is_not_misattributed():
+    first = Fragment(id="f1", document_id="znp-doc", page=1, position=0, text="Часть первая")
+    second = Fragment(id="f2", document_id="znp-doc", page=2, position=0, text="часть вторая")
+    clause = Clause(clause_number="1", text="Часть первая часть вторая", page=1,
+        fragment_id="f1", fragment_ids=["f1", "f2"], section_path=None, fragment_text=first.text)
+    requirement = TURequirement(id="tu", clause_number="1", category=RequirementCategory.other, text="Требование")
+    item = RequirementCheckItem(id="v", requirement=requirement, status=RequirementStatus.fulfilled,
+        confidence_score=0.9, znp_quote="Часть первая часть вторая",
+        matched_clause=ZNPClause(id="znp-1", clause_number="1", text=clause.text))
+    _apply_quote_provenance([item], {}, {"znp-1": clause}, {"f1": first, "f2": second}, "znp-doc")
+    assert item.status == RequirementStatus.needs_review
+    assert item.znp_fragment_id is None
+    assert item.znp_quote is None
+
+
+def test_multi_citation_element_is_not_fulfilled_after_losing_one_source():
+    first = Fragment(id="f1", document_id="znp-doc", page=1, position=0, text="Устройство АБ-123: 150 кВт")
+    second = Fragment(id="f2", document_id="znp-doc", page=2, position=0, text="Нет нужной цитаты")
+    clauses = {
+        "z1": Clause(clause_number="1", text=first.text, page=1, fragment_id="f1", fragment_ids=["f1"], section_path=None, fragment_text=first.text),
+        "z2": Clause(clause_number="2", text="Устройство АБ-123: 110 кВ", page=2, fragment_id="f2", fragment_ids=["f2"], section_path=None, fragment_text=second.text),
+    }
+    requirement = TURequirement(id="tu", clause_number="1", category=RequirementCategory.other, text="Требование")
+    item = RequirementCheckItem(id="v", requirement=requirement, status=RequirementStatus.fulfilled, confidence_score=0.9,
+        matched_clause=ZNPClause(id="z1", clause_number="1", text=first.text),
+        validation_details={"version": 1, "items": [{"item_id": 1, "status": "fulfilled", "evidence": [
+            {"clause_id": "z1", "quote": first.text}, {"clause_id": "z2", "quote": "Устройство АБ-123: 110 кВ"}]}]})
+    _apply_quote_provenance([item], {}, clauses, {"f1": first, "f2": second}, "znp-doc")
+    assert len(item.validation_details["items"][0]["evidence"]) == 1
+    assert item.validation_details["items"][0]["status"] == "needs_review"
+    assert item.status == RequirementStatus.needs_review
+
+
+def test_missing_list_result_keeps_consistent_reason_after_provenance():
+    requirement = TURequirement(id="tu", clause_number="1", category=RequirementCategory.other, text="Требование")
+    item = RequirementCheckItem(id="v", requirement=requirement, status=RequirementStatus.missing,
+        confidence_score=0.9, reasoning="Модель не установила соответствия.",
+        validation_details={"version": 1, "items": [{"item_id": 1, "status": "needs_review", "evidence": []}]})
+    _apply_quote_provenance([item], {}, {}, {}, "znp-doc")
+    assert item.status == RequirementStatus.missing
+    assert "Требует проверки" not in item.reasoning
+
+
+def test_list_provenance_preserves_missing_tu_quote_warning():
+    fragment = Fragment(id="f", document_id="tu-doc", page=1, position=0, text="Начало требования")
+    clause = Clause(clause_number="1", text="Начало требования продолжение", page=1,
+        fragment_id="f", fragment_ids=["f"], section_path=None, fragment_text=fragment.text)
+    requirement = TURequirement(id="tu", clause_number="1", category=RequirementCategory.other, text=clause.text)
+    item = RequirementCheckItem(id="v", requirement=requirement, status=RequirementStatus.fulfilled,
+        confidence_score=0.9, tu_quote="Начало требования продолжение",
+        validation_details={"version": 1, "items": [{"item_id": 1, "status": "needs_review", "evidence": []}]})
+    _apply_quote_provenance([item], {"tu": clause}, {}, {"f": fragment}, "znp-doc")
+    assert item.status == RequirementStatus.needs_review
+    assert "цитата ТУ" in item.reasoning
 
 
 def test_get_requirements_deduplicates_stable_key_and_prefers_human(client, monkeypatch):
@@ -542,6 +679,7 @@ def test_reanalysis_merges_duplicates_and_preserves_human_decision(client, monke
         "requirement_id": first["id"],
         "status": "missing",
         "comment": "Инженерное решение",
+        "znp_document_id": docs["znp"],
     }).status_code == 200
 
     analyzed = client.post("/api/v1/requirements/analyze", json={"project_id": pid})
@@ -688,7 +826,7 @@ def test_reanalysis_keeps_confirmed_requirement_when_text_disappears(client, mon
         "tu_document_id": uploaded.json()["id"],
     })
     assert second.status_code == 200, second.text
-    assert second.json()["trace_info"]["analysis"]["removed"] == 1
+    assert second.json()["trace_info"]["analysis"]["removed"] == 0
 
     stored = client.get(base).json()
     stored_items = {
@@ -714,6 +852,36 @@ def test_explicit_document_roles_are_validated_before_analysis(client, monkeypat
         "tu_document_id": docs["tu"],
         "znp_document_id": docs["tu"],
     }).status_code == 422
+
+
+def test_validation_details_survive_read_and_confirmed_reanalysis(client, monkeypatch):
+    pid, _ = _project_with_documents(client, monkeypatch, _requirements_blocks)
+    original_verify = RequirementsAgent.verify_all
+    details = {"version": 1, "model_reasoning": "Исходный вывод модели"}
+
+    def with_details(self, tu_requirements, znp_clauses):
+        result = original_verify(self, tu_requirements, znp_clauses)
+        result.checked_requirements[0].validation_details = details
+        return result
+
+    monkeypatch.setattr(RequirementsAgent, "verify_all", with_details)
+    endpoint = "/api/v1/requirements/analyze"
+    response = client.post(endpoint, json={"project_id": pid})
+    assert response.status_code == 200, response.text
+    item = response.json()["checked_requirements"][0]
+    base = f"/api/v1/requirements/projects/{pid}"
+    stored = client.get(base).json()["checked_requirements"]
+    assert next(x for x in stored if x["id"] == item["id"])["validation_details"] == details
+    confirmed = client.post(f"{base}/confirm", json={
+        "requirement_id": item["requirement"]["id"],
+        "verification_id": item["id"], "status": "fulfilled",
+    })
+    assert confirmed.status_code == 200, confirmed.text
+    details = {"version": 1, "model_reasoning": "Новый вывод"}
+    repeated = client.post(endpoint, json={"project_id": pid})
+    assert repeated.status_code == 200, repeated.text
+    kept = next(x for x in repeated.json()["checked_requirements"] if x["id"] == item["id"])
+    assert kept["validation_details"]["model_reasoning"] == "Исходный вывод модели"
 
 
 def test_reanalysis_keeps_confirmed_evidence_and_source_when_new_match_changes(client, monkeypatch):
@@ -760,6 +928,7 @@ def test_reanalysis_keeps_confirmed_evidence_and_source_when_new_match_changes(c
     assert kept["is_confirmed_by_human"] is True
     assert kept["human_comment"] == "Проверено по исходной цитате"
     assert kept["status"] == "fulfilled"
+    assert kept["automatic_status"] == old["status"]
     assert kept["matched_clause"]["text"] == old["matched_clause"]["text"]
     assert kept["znp_quote"] == old["znp_quote"]
     assert kept["znp_fragment_id"] == old["znp_fragment_id"]
@@ -771,5 +940,6 @@ def test_reanalysis_keeps_confirmed_evidence_and_source_when_new_match_changes(c
         if item["requirement"]["id"] == old["requirement"]["id"]
     )
     assert stored["matched_clause"]["text"] == old["matched_clause"]["text"]
+    assert stored["automatic_status"] == old["status"]
     assert stored["znp_quote"] == old["znp_quote"]
     assert stored["znp_fragment_id"] == old["znp_fragment_id"]

@@ -51,6 +51,10 @@ type RequirementCheckItem = {
   znp_fragment_text?: string | null
   channels?: string[]
   method?: string | null
+  validation_details?: {version: number; model_status?: string; model_reasoning?: string; items?: Array<{
+    item_id: number; text: string; status: string
+    evidence: Array<{document_id?: string; fragment_id?: string; clause_number: string; quote: string; page?: number | null}>
+  }>} | null
 }
 
 type RequirementVerification = {
@@ -73,6 +77,7 @@ type CheckRequirementsResponse = {
     total?: number
   }
   trace_info?: {
+    degraded?: boolean
     execution_time_ms?: number
     analysis?: {
       created: number
@@ -188,12 +193,14 @@ function SourceFragment({
   quote,
   page,
   fragmentId,
+  physicalPage,
 }: {
   title: string
   text?: string | null
   quote?: string | null
   page?: number | null
   fragmentId?: string | null
+  physicalPage?: boolean
 }) {
   return (
     <div
@@ -207,7 +214,7 @@ function SourceFragment({
       <div className="horizontal" style={{ justifyContent: 'space-between', gap: 8 }}>
         <b style={{ fontSize: 13 }}>{title}</b>
         <small className="muted">
-          {page ? `стр. ${page}` : 'страница не определена'}
+          {physicalPage && page ? `стр. ${page}` : 'страница не определена'}
           {fragmentId ? ` · фрагмент ${fragmentId.slice(0, 8)}` : ''}
         </small>
       </div>
@@ -293,11 +300,22 @@ export function RequirementsPage() {
       })
       .catch((error: Error) => {if (active) setError(error.message)})
 
-    request<CheckRequirementsResponse>(`/requirements/projects/${selectedProjectId}`)
+    return () => {active = false}
+  }, [selectedProjectId])
+
+  useEffect(() => {
+    let active = true
+    setItems([])
+    setStats({fulfilled: 0, missing: 0, needs_review: 0, total: 0})
+    setComments({})
+    setTraceInfo(null)
+    if (!selectedProjectId || !tuDocId || !znpDocId) return () => {active = false}
+    const params = new URLSearchParams({tu_document_id: tuDocId, znp_document_id: znpDocId})
+    request<CheckRequirementsResponse>(`/requirements/projects/${selectedProjectId}?${params}`)
       .then((res) => {if (active) applyResponse(res)})
       .catch((error: Error) => {if (active) setError(error.message)})
     return () => {active = false}
-  }, [selectedProjectId])
+  }, [selectedProjectId, tuDocId, znpDocId])
 
   function applyResponse(res: CheckRequirementsResponse) {
     setItems(res.checked_requirements)
@@ -398,6 +416,7 @@ export function RequirementsPage() {
         `/requirements/projects/${selectedProjectId}/confirm`,
         json('POST', {
           requirement_id: item.requirement.id,
+          verification_id: item.id,
           status: newStatus,
           comment: commentText || null,
         })
@@ -550,6 +569,7 @@ export function RequirementsPage() {
       </section>
 
       {error && <p className="error">{error}</p>}
+      {traceInfo?.degraded && <p className="error">Смысловая проверка ИИ недоступна или не завершена. Показаны поисковые кандидаты. Для утверждения нужны решения инженера.</p>}
 
       {items.length > 0 && (
         <section className="panel stack">
@@ -828,7 +848,7 @@ export function RequirementsPage() {
                 {/* МИНИ-ПОЛОСКА УВЕРЕННОСТИ ИИ */}
                 <div className="horizontal" style={{ gap: 6 }}>
                   <small>
-                    Уверенность ИИ: <b>{confPercent}%</b>
+                    {item.method === 'deterministic' ? 'Сходство текста' : 'Оценка ИИ'}: <b>{confPercent}%</b>
                   </small>
                   <div
                     style={{
@@ -858,7 +878,7 @@ export function RequirementsPage() {
                     fontWeight: item.is_confirmed_by_human ? 600 : 400,
                   }}
                 >
-                  {item.is_confirmed_by_human ? '✓ Проверено инженером' : 'Ожидает решения'}
+                  {item.is_confirmed_by_human ? 'Проверено инженером' : 'Ожидает решения'}
                 </small>
               </div>
             </div>
@@ -881,7 +901,7 @@ export function RequirementsPage() {
                 <h3 style={{ marginTop: 0 }}>
                   Требование ТУ ({item.requirement.clause_number})
                 </h3>
-                {item.tu_page != null && <small className="muted">Страница {item.tu_page}</small>}
+                {docs.find(doc => doc.id === tuDocId)?.pagination_kind === 'physical' && item.tu_page != null && <small className="muted">Страница {item.tu_page}</small>}
                 <p style={{ margin: '8px 0' }}>{item.requirement.text}</p>
                 {item.tu_quote && (
                   <blockquote>
@@ -903,7 +923,7 @@ export function RequirementsPage() {
                   Сопоставленный пункт ЗнП{' '}
                   {item.matched_clause ? `(${item.matched_clause.clause_number})` : ''}
                 </h3>
-                {item.znp_page != null && <small className="muted">Страница {item.znp_page}</small>}
+                {docs.find(doc => doc.id === znpDocId)?.pagination_kind === 'physical' && item.znp_page != null && <small className="muted">Страница {item.znp_page}</small>}
                 {item.matched_clause ? (
                   <>
                     <p style={{ margin: '8px 0' }}>{item.matched_clause.text}</p>
@@ -935,6 +955,7 @@ export function RequirementsPage() {
                 quote={item.tu_quote}
                 page={item.tu_page}
                 fragmentId={item.tu_fragment_id ?? item.requirement.fragment_id}
+                physicalPage={docs.find(doc => doc.id === tuDocId)?.pagination_kind === 'physical'}
               />
               <SourceFragment
                 title="Исходный фрагмент ЗнП"
@@ -942,6 +963,7 @@ export function RequirementsPage() {
                 quote={item.znp_quote}
                 page={item.znp_page}
                 fragmentId={item.znp_fragment_id ?? item.matched_clause?.fragment_id}
+                physicalPage={docs.find(doc => doc.id === znpDocId)?.pagination_kind === 'physical'}
               />
             </div>
 
@@ -953,7 +975,34 @@ export function RequirementsPage() {
                 borderRadius: 6,
               }}
             >
-              <b>Заключение ИИ-агента:</b> {item.reasoning || 'Нет дополнительного описания.'}
+              <b>Заключение проверки:</b>{' '}
+              {item.validation_details
+                ? item.reasoning || 'Нет дополнительного описания.'
+                : 'Результат прежнего формата; подробности автоматической проверки не сохранены.'}
+              {item.validation_details?.items?.map(element => (
+                <div key={element.item_id} style={{marginTop: 12}}>
+                  <b>{element.text}</b> — {element.status === 'fulfilled' ? 'подтверждено' : 'требует проверки'}
+                  {element.evidence.map((evidence, index) => (
+                    <blockquote key={`${evidence.fragment_id ?? index}-${index}`}>
+                      Пункт ЗнП {evidence.clause_number}: «{evidence.quote}»
+                      {evidence.fragment_id && <small> · фрагмент {evidence.fragment_id.slice(0, 8)}</small>}
+                      {docs.find(doc => doc.id === znpDocId)?.pagination_kind === 'physical' && evidence.page != null && <small> · стр. {evidence.page}</small>}
+                    </blockquote>
+                  ))}
+                </div>
+              ))}
+              {item.validation_details?.model_reasoning && (
+                <details>
+                  <summary>Предварительный вывод модели</summary>
+                  <p>{item.validation_details.model_reasoning}</p>
+                </details>
+              )}
+              {!item.validation_details && item.reasoning && (
+                <details>
+                  <summary>Исходное пояснение прежней проверки</summary>
+                  <p>{item.reasoning}</p>
+                </details>
+              )}
             </div>
 
             {!isApproved && (

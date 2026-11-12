@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Normative, Project, Document, json, request } from '../api/client'
+import {useOptionalOperations} from '../operations/OperationsPanel'
 
 type CheckedStandard = {
   code: string
@@ -38,7 +39,9 @@ type VerificationProgress = {
 
 const CHECK_BATCH_SIZE = 5
 
-export function NormativesPage() {
+export function NormativesPage({projectId}: {projectId?: string} = {}) {
+  const operationContext = useOptionalOperations()
+  const operations = operationContext?.operations ?? []
   const [items, setItems] = useState<Normative[]>([])
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
@@ -53,15 +56,16 @@ export function NormativesPage() {
 
   const [projects, setProjects] = useState<Project[]>([])
   const [documents, setDocuments] = useState<Document[]>([])
-  const [selectedProjectId, setSelectedProjectId] = useState('')
+  const [selectedProjectId, setSelectedProjectId] = useState(projectId ?? '')
   const [selectedDocId, setSelectedDocId] = useState('')
   
   const [isExtracting, setIsExtracting] = useState(false)
   const [isChecking, setIsChecking] = useState(false)
   const [report, setReport] = useState<VerificationReport | null>(null)
   const [checkProgress, setCheckProgress] = useState<VerificationProgress | null>(null)
-  const checkResume = useRef<{docId: string, offset: number, report: VerificationReport} | null>(null)
+  const checkResume = useRef<{docId: string, offset: number, report: VerificationReport, refresh: boolean} | null>(null)
   const checkController = useRef<AbortController | null>(null)
+  const seenFinished = useRef(new Set<string>())
 
   useEffect(() => {
     return () => checkController.current?.abort()
@@ -83,8 +87,12 @@ export function NormativesPage() {
   }
 
   useEffect(() => {
-    request<Project[]>('/projects').then(setProjects).catch(e => setError(e.message))
-  }, [])
+    if (!projectId) request<Project[]>('/projects').then(setProjects).catch(e => setError(e.message))
+  }, [projectId])
+
+  useEffect(() => {
+    if (projectId) setSelectedProjectId(projectId)
+  }, [projectId])
 
   useEffect(() => { loadNormatives() }, [search, statusFilter])
 
@@ -100,6 +108,48 @@ export function NormativesPage() {
       setDocuments([])
     }
   }, [selectedProjectId])
+
+  const liveExtract = operations.find(job => job.kind === 'normative_extract' &&
+    job.project_id === selectedProjectId && job.document_id === selectedDocId && (job.status === 'queued' || job.status === 'running'))
+  const liveCheck = operations.find(job => job.kind === 'normative_check' &&
+    job.project_id === selectedProjectId && job.document_id === selectedDocId && (job.status === 'queued' || job.status === 'running'))
+  const extracting = isExtracting || !!liveExtract
+  const checking = isChecking || !!liveCheck
+
+  useEffect(() => {
+    if (!operationContext || !selectedProjectId) return
+    const latest = operations.find(job => job.project_id === selectedProjectId &&
+      (job.kind === 'normative_check' || job.kind === 'normative_extract') && job.document_id)
+    if (!selectedDocId && latest?.document_id) {
+      setSelectedDocId(latest.document_id)
+      return
+    }
+    const verification = operations.find(job =>
+      job.kind === 'normative_check' && job.project_id === selectedProjectId &&
+      job.document_id === selectedDocId)
+    if (verification?.result) {
+      const saved = verification.result as VerificationReport
+      if (Array.isArray(saved.checked) && typeof saved.total === 'number') {
+        setReport(saved)
+        setCheckProgress({
+          checked: verification.progress_current ?? saved.total,
+          total: verification.progress_total ?? saved.total,
+        })
+      }
+    }
+    for (const job of operations) {
+      if (!seenFinished.current.has(job.id) && job.project_id === selectedProjectId &&
+          job.status === 'completed' &&
+          (job.kind === 'normative_extract' || job.kind === 'normative_check')) {
+        seenFinished.current.add(job.id)
+        loadNormatives()
+        if (job.kind === 'normative_extract') {
+          request<Document[]>(`/projects/${selectedProjectId}/documents`)
+            .then(setDocuments).catch(() => undefined)
+        }
+      }
+    }
+  }, [operations, selectedDocId, selectedProjectId, operationContext])
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -155,6 +205,18 @@ export function NormativesPage() {
 
   async function handleExtract() {
     if (!selectedDocId) return
+    if (operationContext) {
+      setIsExtracting(true)
+      setError('')
+      try {
+        await operationContext.start({kind:'normative_extract', document_id:selectedDocId})
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e))
+      } finally {
+        setIsExtracting(false)
+      }
+      return
+    }
     setIsExtracting(true)
     setError('')
     setReport(null)
@@ -171,10 +233,22 @@ export function NormativesPage() {
     }
   }
 
-  async function handleCheck() {
-    if (!selectedDocId || isChecking) return
+  async function handleCheck(refresh = false) {
+    if (!selectedDocId || checking) return
+    if (operationContext) {
+      setIsChecking(true)
+      setError('')
+      try {
+        await operationContext.start({kind:'normative_check', document_id:selectedDocId, refresh})
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e))
+      } finally {
+        setIsChecking(false)
+      }
+      return
+    }
     const docId = selectedDocId
-    const previous = checkResume.current?.docId === docId ? checkResume.current : null
+    const previous = checkResume.current?.docId === docId && checkResume.current.refresh === refresh ? checkResume.current : null
     let offset = previous?.offset ?? 0
     let aggregate: VerificationReport = previous?.report ?? {
       document_id: docId,
@@ -197,7 +271,7 @@ export function NormativesPage() {
     try {
       while (true) {
         const batch = await request<VerificationBatch>(
-          `/documents/${docId}/check-normatives?offset=${offset}&limit=${CHECK_BATCH_SIZE}`,
+          `/documents/${docId}/check-normatives?offset=${offset}&limit=${CHECK_BATCH_SIZE}&refresh=${refresh}`,
           {method: 'POST', signal: controller.signal}
         )
         // Never silently skip, repeat or miscount codes when the API contract changes.
@@ -234,7 +308,7 @@ export function NormativesPage() {
           break
         }
         offset = batch.next_offset
-        checkResume.current = {docId, offset, report: aggregate}
+        checkResume.current = {docId, offset, report: aggregate, refresh}
       }
     } catch (error) {
       const stopped = controller.signal.aborted
@@ -253,6 +327,13 @@ export function NormativesPage() {
     }
   }
 
+  const sourceLabel = (value: string | null, reason: string | null) => {
+    if (reason === 'refresh_failed_local_fallback') return 'Локальный реестр (обновление не удалось)'
+    if (value === 'rosstandart') return 'Росстандарт'
+    if (value === 'local') return 'Локальный реестр'
+    return 'Не подтверждено'
+  }
+
   const statusLabel = (value: string) => {
     if (value === 'active') return 'Действует'
     if (value === 'obsolete') return 'Не действует / заменён'
@@ -262,36 +343,34 @@ export function NormativesPage() {
   return (
     <div className="normatives-workspace">
       <header className="page-heading">
-        <div className="eyebrow">МОДУЛЬ 02 / НОРМАТИВНЫЙ КОНТРОЛЬ</div>
-        <h1>ГОСТ и НТД<span className="heading-dot">.</span></h1>
-        <p className="muted">Извлечение ссылок из документов, проверка по Росстандарту и
-          экспертные замечания с исходными цитатами.</p>
+        <h1>{projectId ? 'Подготовка документов' : 'ГОСТ и НТД'}</h1>
+        <p className="muted">Извлечение ссылок и проверка по локальному реестру с возможностью
+          обновления из Росстандарта. Источник и дата официального подтверждения показываются отдельно.</p>
       </header>
 
       {/* СЕКЦИЯ АНАЛИЗА ДОКУМЕНТА */}
       <section className="panel stack normative-analysis">
         <div className="panel-heading">
-          <div><div className="eyebrow">01 / ДОКУМЕНТ</div><h2>Анализ нормативных ссылок</h2></div>
-          <span className="panel-counter">По 5 нормативов за запрос</span>
+          <h2>Анализ нормативных ссылок</h2>
         </div>
         
         <div className="normative-chooser">
-          <label>Проект
-          <select 
-            value={selectedProjectId} 
-            onChange={e => setSelectedProjectId(e.target.value)} 
-            disabled={isExtracting || isChecking}
+          {!projectId && <label>Проект
+          <select
+            value={selectedProjectId}
+            onChange={e => setSelectedProjectId(e.target.value)}
+            disabled={extracting || checking}
           >
             <option value="">Выберите проект...</option>
             {projects.map(p => (
               <option key={p.id} value={p.id}>{p.name}</option>
             ))}
-          </select></label>
+          </select></label>}
           <label>Документ
           <select 
             value={selectedDocId} 
             onChange={e => setSelectedDocId(e.target.value)} 
-            disabled={!selectedProjectId || isExtracting || isChecking}
+            disabled={!selectedProjectId || extracting || checking}
           >
             <option value="">Выберите документ...</option>
             {documents.map(d => (
@@ -303,25 +382,34 @@ export function NormativesPage() {
         <div className="normative-actions">
           <button 
             onClick={handleExtract} 
-            disabled={isExtracting || isChecking || !selectedDocId} 
+            disabled={extracting || checking || !selectedDocId} 
             className="secondary"
           >
-            {isExtracting ? 'Извлекаем...' : '1. Извлечь нормативные ссылки'}
+            {extracting ? 'Извлекаем...' : 'Извлечь нормативные ссылки'}
           </button>
           
           <button 
-            onClick={handleCheck} 
-            disabled={isChecking || isExtracting || !selectedDocId} 
+            onClick={() => handleCheck(false)} 
+            disabled={checking || extracting || !selectedDocId} 
 
           >
-            {isChecking ? 'Проверяем...' : checkResume.current?.docId === selectedDocId
-              ? 'Продолжить проверку' : '2. Проверить актуальность'}
+            {checking ? 'Проверяем...' : checkResume.current?.docId === selectedDocId
+              ? 'Продолжить проверку' : 'Проверить по реестру'}
+          </button>
+          <button type="button" className="secondary"
+            onClick={() => handleCheck(true)}
+            disabled={checking || extracting || !selectedDocId}
+            title="Проверить все обозначения через Росстандарт, не полагаясь на сохранённый статус">
+            {checkResume.current?.docId === selectedDocId && checkResume.current.refresh
+              ? 'Продолжить обновление' : 'Обновить из Росстандарта'}
           </button>
         </div>
 
-        {isChecking && (
+        {checking && (
           <button type="button" className="secondary"
-            onClick={() => checkController.current?.abort()}>
+            onClick={() => liveCheck && operationContext
+              ? void operationContext.cancel(liveCheck.id)
+              : checkController.current?.abort()}>
             Остановить после текущей порции
           </button>
         )}
@@ -329,7 +417,7 @@ export function NormativesPage() {
         {checkProgress && (
           <div className="normative-progress" role="status" aria-live="polite">
             <div className="normative-progress-top">
-              <span>{isChecking ? 'Проверка Росстандарта' :
+              <span>{checking ? 'Проверка нормативов' :
                 checkProgress.checked === checkProgress.total ? 'Все нормативы обработаны' : 'Частичный результат'}</span>
               <strong>{checkProgress.checked} из {checkProgress.total}</strong>
             </div>
@@ -358,7 +446,7 @@ export function NormativesPage() {
                   <tr>
                     <th>Стандарт</th>
                     <th>Тип</th>
-                    <th>Статус (Росстандарт)</th>
+                    <th>Статус</th>
                     <th>Замена</th>
                     <th>Стр.</th>
                     <th>Источник</th>
@@ -372,14 +460,19 @@ export function NormativesPage() {
                       <td><span className={'normative-status ' + item.status}>
                         {item.registry_status || statusLabel(item.status)}</span></td>
                       <td>{item.replacement || '—'}</td>
-                      <td>{item.pages.join(', ') || '—'}</td>
+                      <td>{documents.find(document => document.id === selectedDocId)?.pagination_kind === 'physical'
+                        ? item.pages.join(', ') || '—' : 'не определена'}</td>
                       <td>
-                        {item.source === 'rosstandart' && item.source_url ? (
-                          <><a href={item.source_url} target="_blank" rel="noopener noreferrer">
-                            Карточка Росстандарта</a>
-                            <small style={{display: 'block'}}>{item.checked_at ?
-                              new Date(item.checked_at).toLocaleDateString('ru-RU') : 'Дата не указана'}</small></>
-                        ) : 'Не подтверждено'}
+                        {item.source_url ? (
+                          <a href={item.source_url} target="_blank" rel="noopener noreferrer">
+                            {sourceLabel(item.source, item.reason)}
+                          </a>
+                        ) : sourceLabel(item.source, item.reason)}
+                        <small style={{display: 'block'}}>
+                          {item.checked_at
+                            ? `Официально подтверждено: ${new Date(item.checked_at).toLocaleDateString('ru-RU')}`
+                            : 'Дата официального подтверждения не указана'}
+                        </small>
                       </td>
                     </tr>
                   ))}
@@ -389,16 +482,15 @@ export function NormativesPage() {
             
             <p className="normative-note">
               Новых замечаний: {report.findings_created}. Замечания с цитатами доступны
-              в экспертном отчёте. Локальный статус без ответа Росстандарта не является подтверждением.
+              в экспертном отчёте. Локальные значения могут устареть; для новой официальной проверки используйте «Обновить из Росстандарта».
             </p>
           </div>
         )}
       </section>
 
-      {/* СЕКЦИЯ УПРАВЛЕНИЯ РЕЕСТРОМ */}
+      {!projectId && <>
       <section className="panel stack" id="normative-editor">
-        <div className="eyebrow">02 / ЛОКАЛЬНЫЙ СПРАВОЧНИК</div>
-        <h2>{editId ? '✏️ Редактирование норматива' : '➕ Добавить норматив вручную'}</h2>
+        <h2>{editId ? 'Редактирование норматива' : 'Добавить норматив вручную'}</h2>
         
         <form onSubmit={handleSubmit} className="normative-edit-form">
           <label>Обозначение
@@ -443,7 +535,7 @@ export function NormativesPage() {
       {/* ТАБЛИЦА РЕЕСТРА */}
       <section className="panel">
         <div className="normative-registry-head">
-          <div><div className="eyebrow">03 / РЕЕСТР</div>
+          <div>
             <h2>Локальный реестр</h2>
             <p className="muted">Справочные статусы не считаются проверенными без даты Росстандарта.</p>
           </div>
@@ -514,6 +606,7 @@ export function NormativesPage() {
         
         {!items.length && <p className="muted">Реестр пуст.</p>}
       </section>
+      </>}
     </div>
   )
 }
