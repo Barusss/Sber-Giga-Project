@@ -1,4 +1,14 @@
 export type AnalysisTrace = {
+  atomization?: {
+    mode: string
+    clauses_total: number
+    model_calls: number
+    clauses_split: number
+    atoms_total: number
+    fallback_clauses: number
+    fallback_reasons?: Record<string, number>
+    degraded: boolean
+  }
   degraded?: boolean
   agent_runs?: Array<{
     requirement_id?: string

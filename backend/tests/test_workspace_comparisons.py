@@ -131,3 +131,71 @@ def test_legacy_comparison_is_visible_with_saved_result(client, monkeypatch):
     assert len(listed.json()) == 1
     assert listed.json()[0]["run_count"] == 1
     assert client.get(url).json()[0]["id"] == listed.json()[0]["id"]
+
+
+
+def test_workspace_persists_deepseek_atomization_trace(client, monkeypatch):
+    import json
+
+    from app.documents.parser import ExtractedBlock
+
+    original = ("2.1. Для КЛ-1 предусмотреть алюминиевый кабель "
+                "сечением не менее 120 мм² на напряжение 10 кВ.")
+
+    def blocks(data, suffix):
+        if data == b"tu":
+            return [ExtractedBlock(
+                1, 0, "1.1. Для КЛ-1 предусмотреть алюминиевый кабель 120 мм², 10 кВ."
+            )]
+        return [ExtractedBlock(2, 0, original)]
+
+    def answer(self, *, system_prompt, user_prompt):
+        payload = json.loads(user_prompt)
+        if "clause_text" in payload:
+            return {"atoms": [
+                {"quote": "алюминиевый кабель",
+                 "context_quotes": ["2.1. Для КЛ-1 предусмотреть"]},
+                {"quote": "сечением не менее 120 мм²",
+                 "context_quotes": ["2.1. Для КЛ-1 предусмотреть"]},
+                {"quote": "на напряжение 10 кВ.",
+                 "context_quotes": ["2.1. Для КЛ-1 предусмотреть"]},
+            ]}
+        if "tu_candidates" in payload:
+            return {"links": [], "search_more": False}
+        if "candidates" in payload:
+            return {"conflicts": [], "uncertain_ids": []}
+        return {"covered": False, "evidence_ids": [],
+                "object_consistent": False, "reasoning": "Нет подтверждения"}
+
+    monkeypatch.setattr("app.documents.router.extract_blocks", blocks)
+    monkeypatch.setattr("app.ai.deepseek.DeepSeekClient.complete_json", answer)
+    project = client.post("/api/v1/projects", json={"name": "DeepSeek atomization"}).json()
+    ids = {}
+    for kind in ("tu", "znp"):
+        uploaded = client.post(
+            f"/api/v1/projects/{project['id']}/documents",
+            data={"kind": kind},
+            files={"file": (f"{kind}.pdf", BytesIO(kind.encode()), "application/pdf")},
+        )
+        assert uploaded.status_code == 201, uploaded.text
+        ids[kind] = uploaded.json()["id"]
+    pairs_url = f"/api/v1/projects/{project['id']}/comparisons"
+    created = client.post(pairs_url, json={"pairs": [{
+        "tu_document_id": ids["tu"], "znp_document_id": ids["znp"],
+    }]})
+    assert created.status_code == 201, created.text
+    pair = created.json()[0]
+    run = client.post(f"{pairs_url}/{pair['id']}/runs")
+    assert run.status_code == 201, run.text
+    details = run.json()["result"]
+    atomization = details["trace_info"]["atomization"]
+    assert atomization["mode"] == "deepseek_conservative"
+    assert atomization["clauses_total"] == 1
+    assert atomization["clauses_split"] == 1
+    assert atomization["atoms_total"] == 3
+    assert atomization["degraded"] is False
+    assert details["trace_info"]["znp_atoms_processed"] == 3
+    assert details["checked_requirements"][0]["status"] == "needs_review"
+    saved = client.get(f"{pairs_url}/{pair['id']}/runs/{run.json()['run']['id']}")
+    assert saved.status_code == 200
+    assert saved.json()["result"]["trace_info"]["atomization"] == atomization

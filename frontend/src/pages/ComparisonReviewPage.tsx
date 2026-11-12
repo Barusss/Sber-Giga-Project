@@ -266,6 +266,20 @@ export function ComparisonReviewPage({projectId, approved}: {projectId: string; 
             <div><strong>{detail.result.stats.needs_review}</strong><span>Требуют рассмотрения</span></div>
           </div>
           <AnalysisFallbackNotice trace={detail.result.trace_info} items={detail.result.checked_requirements}/>
+          {detail.result.trace_info?.atomization && <details className="workspace-evidence-details">
+            <summary>Атомизация ЗнП через DeepSeek: {detail.result.trace_info.atomization.atoms_total} положений</summary>
+            <p>
+              Исходных пунктов: {detail.result.trace_info.atomization.clauses_total}.
+              Разделено моделью: {detail.result.trace_info.atomization.clauses_split}.
+              Получено проверяемых положений: {detail.result.trace_info.atomization.atoms_total}.
+              Сохранено целиком: {detail.result.trace_info.atomization.fallback_clauses}.
+            </p>
+            {detail.result.trace_info.atomization.degraded &&
+              <p>DeepSeek был недоступен. Необработанные пункты сохранены целиком; качество атомизации снижено.</p>}
+            {detail.result.trace_info.atomization.fallback_reasons &&
+              Object.entries(detail.result.trace_info.atomization.fallback_reasons).map(([reason, count]) =>
+                <p key={reason}>{reason}: {count}</p>)}
+          </details>}
           <AnalysisScoreExplanation/>
           <div className="workspace-toolbar">
             <input type="search" value={search} onChange={e => setSearch(e.target.value)}
