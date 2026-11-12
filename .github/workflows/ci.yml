@@ -26,18 +26,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - run: npm install
-      - name: Export npm lockfile for reproducible Docker install (temporary)
-        run: |
-          python3 - <<'PY'
-          import base64
-          from pathlib import Path
-          content = base64.b64encode(Path("package-lock.json").read_bytes()).decode("ascii")
-          print("LOCKFILE_BEGIN")
-          for i in range(0, len(content), 1500):
-              print("LOCKFILE_PART:" + content[i:i + 1500])
-          print("LOCKFILE_END")
-          PY
+      - run: npm ci --no-audit --no-fund
       - run: npm run build
   postgres-integration:
     runs-on: ubuntu-latest
