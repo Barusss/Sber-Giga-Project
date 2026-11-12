@@ -168,3 +168,65 @@ def test_model_cannot_confirm_other_object_through_similar_numeric_value():
     )
     item = result.checked_requirements[0]
     assert item.status.value == "needs_review"
+
+
+
+def test_distinct_list_conditions_can_be_proven_by_separate_znp_clauses():
+    class TwoPartAI(GroundedAI):
+        def complete_json(self, *, system_prompt, user_prompt):
+            payload = json.loads(user_prompt)
+            if "znp_atom" in payload:
+                atom_text = payload["znp_atom"]["text"]
+                candidate = payload["tu_candidates"][0]
+                return {"links": [{
+                    "requirement_id": candidate["requirement_id"],
+                    "relation": "supports", "tu_quote": candidate["text"],
+                    "znp_quote": atom_text,
+                    "confidence": 0.95, "reasoning": "Составная часть требования",
+                }], "search_more": False}
+            return super().complete_json(system_prompt=system_prompt, user_prompt=user_prompt)
+
+    result = agent(TwoPartAI()).verify_all([
+        req("1.1. Предусмотреть:\n- КЛ-1 напряжение 10 кВ;\n- КЛ-2 напряжение 6 кВ.")
+    ], [
+        znp(1, "2.1. КЛ-1 напряжение 10 кВ."),
+        znp(2, "2.2. КЛ-2 напряжение 6 кВ."),
+    ])
+    item = result.checked_requirements[0]
+    assert item.status.value == "fulfilled"
+    assert len(item.validation_details["obligation_coverage"]) == 2
+    assert all(row["status"] == "fulfilled" for row in item.validation_details["obligation_coverage"])
+    assert len({x["atom_id"] for x in item.validation_details["matches"]}) == 2
+
+
+def test_semantic_prohibition_conflict_is_found_without_number_discrepancy():
+    class SemanticAI(GroundedAI):
+        def complete_json(self, *, system_prompt, user_prompt):
+            payload = json.loads(user_prompt)
+            if "candidates" in payload and "tu_candidates" not in payload:
+                conflicts = [
+                    {"atom_id": candidate["atom_id"],
+                     "tu_quote": "Запрещается применение",
+                     "znp_quote": "Допускается применение",
+                     "reasoning": "Прямое нормативное противоречие"}
+                    for candidate in payload["candidates"]
+                    if "Допускается применение" in candidate["text"]
+                ]
+                return {"conflicts": conflicts, "uncertain_ids": []}
+            if "znp_atom" in payload:
+                atom = payload["znp_atom"]
+                if "Допускается" in atom["text"]:
+                    return {"links": [], "search_more": False}
+            return super().complete_json(system_prompt=system_prompt, user_prompt=user_prompt)
+
+    result = agent(SemanticAI()).verify_all([
+        req("1.1. Запрещается применение алюминиевого кабеля КЛ-1.")
+    ], [
+        znp(1, "2.1. Запрещается применение алюминиевого кабеля КЛ-1."),
+        znp(2, "2.2. Допускается применение алюминиевого кабеля КЛ-1."),
+    ])
+    item = result.checked_requirements[0]
+    assert item.status.value == "needs_review"
+    audit = item.validation_details["contradiction_audit"]
+    assert audit["confirmed"]
+    assert audit["confirmed"][0]["atom_id"] == "z-2"

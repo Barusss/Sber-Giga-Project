@@ -282,11 +282,19 @@ class ZnPFirstAgent:
         coverage_results: dict[str, list[dict[str, Any]]] = {}
         targeted_results: dict[str, list[dict[str, Any]]] = {}
         targeted_calls = 0
+        # Build the reverse-side semantic candidates once; if local embeddings
+        # are unavailable, targeted retrieval falls back to lexical ranking.
+        znp_vectors = (
+            self.embedder.embed_documents([atom.text for atom in znp_clauses])
+            if znp_clauses and self.embedder.enabled else []
+        )
+        if len(znp_vectors) != len(znp_clauses) or not self.embedder.enabled:
+            znp_vectors = None
 
         for requirement in tu_requirements:
             entries = links[requirement.id]
             evidence = [x for x in entries if x["relation"] in {"supports", "partial"}
-                        and "mismatch" not in x["param_check"]["mismatch_types"]]
+                        and x.get("scope_consistent", True)]
             initial = [
                 assess_coverage(requirement, obligation, evidence, self.ai)
                 for obligation in obligations[requirement.id]
@@ -301,8 +309,13 @@ class ZnPFirstAgent:
                 for query in list(dict.fromkeys(gap_queries))[:6]:
                     # Searching the opposite way here is a fallback exclusively
                     # for uncovered TU obligations, not the main architecture.
+                    query_vector = (
+                        self.embedder.embed_query(query) if znp_vectors is not None else None
+                    )
                     candidates = tool_search_znp_clauses(
-                        query, znp_clauses, top_k=min(len(znp_clauses), self.batch_size * 3)
+                        query, znp_clauses, top_k=min(len(znp_clauses), self.batch_size * 3),
+                        query_embedding=query_vector,
+                        clause_embeddings=znp_vectors if self.embedder.enabled else None,
                     )
                     for index in range(0, len(candidates), self.batch_size):
                         batch = candidates[index:index + self.batch_size]
@@ -343,7 +356,7 @@ class ZnPFirstAgent:
                         break
             targeted_results[requirement.id] = targeted
             evidence = [x for x in entries if x["relation"] in {"supports", "partial"}
-                        and "mismatch" not in x["param_check"]["mismatch_types"]]
+                        and x.get("scope_consistent", True)]
             coverage_results[requirement.id] = [
                 assess_coverage(requirement, obligation, evidence, self.ai)
                 for obligation in obligations[requirement.id]
@@ -379,11 +392,14 @@ class ZnPFirstAgent:
             obligation_checks = coverage_results[requirement.id]
             matched = supported[0] if supported else (partial[0] if partial else
                                                      (matches[0] if matches else None))
+            approved_evidence_ids = {
+                evidence_id
+                for row in obligation_checks if row["status"] == "fulfilled"
+                for evidence_id in row["evidence_ids"]
+            }
             evidence_text = "\n".join(
                 znp_by_id[entry["atom_id"]].text
-                for entry in matches
-                if entry["relation"] in {"supports", "partial"}
-                and "mismatch" not in entry["param_check"]["mismatch_types"]
+                for entry in matches if entry["link_id"] in approved_evidence_ids
             )
             params = tool_verify_engineering_params(requirement.text, evidence_text)
             coverage = tool_check_list_coverage(requirement.text, evidence_text)

@@ -6,6 +6,7 @@ quote is always rechecked against the original TU text.
 """
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import asdict, dataclass
 from hashlib import sha256
@@ -129,7 +130,7 @@ def assess_coverage(
     try:
         response = ai.complete_json(
             system_prompt=COVERAGE_PROMPT,
-            user_prompt=__import__("json").dumps(payload, ensure_ascii=False),
+            user_prompt=json.dumps(payload, ensure_ascii=False),
         )
     except Exception as exc:
         return {
@@ -153,9 +154,16 @@ def assess_coverage(
     safe = bool(chosen) and all(
         not allowed[key].get("warnings")
         and allowed[key].get("scope_consistent", True)
-        and "mismatch" not in allowed[key]["param_check"]["mismatch_types"]
         for key in chosen
     )
+    # A link was initially checked against the WHOLE TU clause. For an
+    # enumerated requirement it can therefore report mismatches simply because
+    # the other list members live in separate ZnP clauses. Check the selected
+    # evidence against THIS obligation before validating its coverage.
+    selected_text = "\n".join(allowed[key]["atom_text"] for key in chosen)
+    from app.requirements.tools import tool_verify_engineering_params
+    obligation_params = tool_verify_engineering_params(obligation.text, selected_text)
+    safe = safe and obligation_params["params_match"]
     complete = (
         response.get("covered") is True
         and response.get("object_consistent") is True
@@ -207,11 +215,21 @@ def conflict_candidates(requirement: TURequirement, atoms: list[Any]) -> list[di
     """
     from app.requirements.tools import tool_verify_engineering_params
     candidates = []
+    # Non-numeric deontic oppositions require a separate semantic audit too.
+    # This is candidate discovery only: DeepSeek must confirm the opposition.
+    deontic = re.compile(
+        r"\b(?:запрещ\w*|допуска\w*|не\s+допуска\w*|"
+        r"не\s+предусмотр\w*|исключ\w*|отсутств\w*)\b",
+        re.IGNORECASE,
+    )
+    tu_deontic = bool(deontic.search(requirement.text))
     for atom in atoms:
         if not scope_overlap(requirement.text, atom.text):
             continue
         diff = tool_verify_engineering_params(requirement.text, atom.text)
-        if "mismatch" in diff["mismatch_types"]:
+        if ("mismatch" in diff["mismatch_types"]
+                or (tu_deontic and deontic.search(atom.text))
+                or (deontic.search(atom.text) and not tu_deontic)):
             candidates.append({
                 "atom_id": atom.id,
                 "text": atom.text,
@@ -254,7 +272,7 @@ def assess_conflicts(
         try:
             response = ai.complete_json(
                 system_prompt=CONFLICT_PROMPT,
-                user_prompt=__import__("json").dumps(payload, ensure_ascii=False),
+                user_prompt=json.dumps(payload, ensure_ascii=False),
             )
         except Exception:
             uncertain.extend(x["atom_id"] for x in batch)
@@ -274,6 +292,16 @@ def assess_conflicts(
             seen.add(key)
             tu_quote, znp_quote = suggestion.get("tu_quote"), suggestion.get("znp_quote")
             if not isinstance(tu_quote, str) or not isinstance(znp_quote, str) or not _quote_in_text(requirement.text, tu_quote) or not _quote_in_text(candidate["text"], znp_quote) or not tu_quote.strip() or not znp_quote.strip():
+                uncertain.append(key)
+                continue
+            tu_sources = requirement.sources
+            if tu_sources and not any(_quote_in_text(
+                source.get("text", "") if isinstance(source, dict) else source.text,
+                tu_quote,
+            ) for source in tu_sources):
+                uncertain.append(key)
+                continue
+            if not tu_sources and requirement.fragment_text and not _quote_in_text(requirement.fragment_text, tu_quote):
                 uncertain.append(key)
                 continue
             # A quote spanning stitched OCR fragments is not a valid citation.
