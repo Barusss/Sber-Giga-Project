@@ -53,6 +53,15 @@ type RequirementCheckItem = {
   method?: string | null
   validation_details?: {version: number; pipeline?: string
     matches?: Array<{atom_id: string; clause_number: string; relation: string; quote: string; reasoning?: string; page?: number|null; param_check?: {mismatches?: string[]}}>
+    obligation_coverage?: Array<{
+      obligation_id: string; text: string; status: string; reasoning?: string
+      evidence_ids?: string[]
+    }>
+    contradiction_audit?: {
+      candidates_checked: number
+      confirmed: Array<{atom_id: string; quote: string; clause_number: string; reasoning?: string}>
+      uncertain_atom_ids: string[]
+    }
     candidate_limit_reached?: boolean; model_error?: string|null
     model_status?: string; model_reasoning?: string; items?: Array<{
     item_id: number; text: string; status: string
@@ -982,6 +991,18 @@ export function RequirementsPage() {
               {item.validation_details
                 ? item.reasoning || 'Нет дополнительного описания.'
                 : 'Результат прежнего формата; подробности автоматической проверки не сохранены.'}
+              {item.validation_details?.obligation_coverage?.length ? <details open>
+                <summary>Покрытие условий ТУ ({item.validation_details.obligation_coverage.filter(row => row.status === 'fulfilled').length} из {item.validation_details.obligation_coverage.length})</summary>
+                {item.validation_details.obligation_coverage.map(row => <div key={row.obligation_id} style={{marginTop: 10}}>
+                  <b>{row.status === 'fulfilled' ? 'Подтверждено' : 'Требует проверки'}</b> — {row.text}
+                  {row.reasoning && <p>{row.reasoning}</p>}
+                </div>)}
+              </details> : null}
+              {item.validation_details?.contradiction_audit && <p>
+                Независимая проверка противоречий: кандидатов {item.validation_details.contradiction_audit.candidates_checked},
+                подтверждённых {item.validation_details.contradiction_audit.confirmed.length},
+                неоднозначных {item.validation_details.contradiction_audit.uncertain_atom_ids.length}.
+              </p>}
               {item.validation_details?.pipeline === 'znp_first_conservative' && (
                 <details open>
                   <summary>Связанные положения ЗнП ({item.validation_details.matches?.length ?? 0})</summary>

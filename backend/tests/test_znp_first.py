@@ -25,6 +25,15 @@ def atom(i, text="2.1. Предусмотреть мощность 150 кВт.")
 class PositiveAI:
     def complete_json(self, *, system_prompt, user_prompt):
         payload = json.loads(user_prompt)
+        if "obligation" in payload:
+            return {
+                "covered": True,
+                "evidence_ids": [entry["link_id"] for entry in payload["evidence"][:1]],
+                "object_consistent": True,
+                "reasoning": "Подтверждено точной цитатой",
+            }
+        if "candidates" in payload and "tu_candidates" not in payload:
+            return {"conflicts": [], "uncertain_ids": []}
         znp = payload["znp_atom"]
         candidates = payload["tu_candidates"]
         target = next((item for item in candidates if item["requirement_id"] == "tu-1"), None)

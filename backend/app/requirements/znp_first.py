@@ -15,6 +15,10 @@ from uuid import uuid4
 from app.ai.deepseek import DeepSeekClient, DeepSeekError
 from app.ai.embeddings import EmbeddingService
 from app.requirements.retrieval import RequirementRetriever
+from app.requirements.coverage import (
+    build_obligations, assess_coverage, all_obligations_covered,
+    conflict_candidates, assess_conflicts, scope_overlap,
+)
 from app.requirements.schemas import (
     CheckRequirementsResponse, RequirementCheckItem, RequirementStatus,
     TURequirement, ZNPClause,
@@ -68,8 +72,9 @@ class ZnPFirstAgent:
         self.batch_size = batch_size
         self.max_batches = max_batches
 
-    def _judge(self, atom: ZNPClause, candidates: list[dict[str, Any]], context: list[dict[str, Any]]) -> dict[str, Any]:
+    def _judge(self, atom: ZNPClause, candidates: list[dict[str, Any]], context: list[dict[str, Any]], phase: str = "primary") -> dict[str, Any]:
         payload = {
+            "phase": phase,
             "znp_atom": {
                 "id": atom.id,
                 "clause_number": atom.clause_number,
@@ -140,14 +145,17 @@ class ZnPFirstAgent:
         params = tool_verify_engineering_params(requirement.text, atom.text)
         warnings = list(getattr(atom, "warnings", ()) or ())
         if relation == "supports":
-            if not params["params_match"] or confidence < 0.7 or warnings:
+            if (not params["params_match"] or confidence < 0.7 or warnings
+                    or not scope_overlap(requirement.text, atom.text)):
                 relation = "partial"
         if relation == "conflicts" and params["params_match"]:
             # Semantic opposition may be real, but Python cannot certify it.
             relation = "partial"
         return {
+            "link_id": f"{requirement.id}:{atom.id}",
             "atom_id": atom.id,
             "clause_id": atom.id,
+            "atom_text": atom.text,
             "clause_number": atom.clause_number,
             "fragment_id": source_field(znp_source, "fragment_id"),
             "page": source_field(znp_source, "page"),
@@ -160,6 +168,7 @@ class ZnPFirstAgent:
             "search_score": round(float(similarity), 3),
             "reasoning": str(proposal.get("reasoning") or ""),
             "param_check": params,
+            "scope_consistent": scope_overlap(requirement.text, atom.text),
             "warnings": warnings,
         }
 
@@ -266,57 +275,161 @@ class ZnPFirstAgent:
             if progress_callback:
                 progress_callback("verifying", number, len(znp_clauses), atom.clause_number)
 
+        # Complete coverage is assessed per TU obligation, not from one merged
+        # similarity score. We first look for gaps, then perform a targeted
+        # second retrieval pass on ZnP; all resulting citations are revalidated.
+        obligations = {item.id: build_obligations(item) for item in tu_requirements}
+        coverage_results: dict[str, list[dict[str, Any]]] = {}
+        targeted_results: dict[str, list[dict[str, Any]]] = {}
+        targeted_calls = 0
+
+        for requirement in tu_requirements:
+            entries = links.get(requirement.id, [])
+            evidence = [x for x in entries if x["relation"] in {"supports", "partial"}
+                        and "mismatch" not in x["param_check"]["mismatch_types"]]
+            initial = [
+                assess_coverage(requirement, obligation, evidence, self.ai)
+                for obligation in obligations[requirement.id]
+            ] if model_available else []
+            gap_queries = [
+                obligation.text for obligation, result in
+                zip(obligations[requirement.id], initial)
+                if result["status"] != "fulfilled"
+            ] if initial else [o.text for o in obligations[requirement.id]]
+            targeted: list[dict[str, Any]] = []
+            if model_available and gap_queries:
+                for query in list(dict.fromkeys(gap_queries))[:6]:
+                    # Searching the opposite way here is a fallback exclusively
+                    # for uncovered TU obligations, not the main architecture.
+                    candidates = tool_search_znp_clauses(
+                        query, znp_clauses, top_k=min(len(znp_clauses), self.batch_size * 3)
+                    )
+                    for index in range(0, len(candidates), self.batch_size):
+                        batch = candidates[index:index + self.batch_size]
+                        for suggestion in batch:
+                            atom = znp_by_id[suggestion["clause_id"]]
+                            if (atom.id, requirement.id) in seen:
+                                continue
+                            target = {
+                                "requirement_id": requirement.id,
+                                "clause_number": requirement.clause_number,
+                                "text": requirement.text,
+                                "similarity_score": suggestion["similarity_score"],
+                            }
+                            targeted_calls += 1
+                            try:
+                                answer = self._judge(atom, [target], [], phase="targeted")
+                            except DeepSeekError as exc:
+                                model_error = str(exc)
+                                model_available = False
+                                break
+                            if not isinstance(answer, dict) or not isinstance(answer.get("links"), list):
+                                targeted.append({"atom_id": atom.id, "error": "invalid_response"})
+                                continue
+                            for proposal in answer["links"]:
+                                if not isinstance(proposal, dict) or str(proposal.get("requirement_id")) != requirement.id:
+                                    continue
+                                entry = self._validated_link(
+                                    atom, requirement, proposal, suggestion["similarity_score"]
+                                )
+                                if entry is not None:
+                                    entries.append(entry)
+                                    seen.add((atom.id, requirement.id))
+                                    targeted.append({"atom_id": atom.id, "result": entry["relation"]})
+                                    break
+                        if not model_available:
+                            break
+                    if not model_available:
+                        break
+            targeted_results[requirement.id] = targeted
+            evidence = [x for x in entries if x["relation"] in {"supports", "partial"}
+                        and "mismatch" not in x["param_check"]["mismatch_types"]]
+            coverage_results[requirement.id] = [
+                assess_coverage(requirement, obligation, evidence, self.ai)
+                for obligation in obligations[requirement.id]
+            ] if model_available else [{
+                "obligation_id": obligation.id, "text": obligation.text,
+                "status": "needs_review", "evidence_ids": [],
+                "reasoning": "Модель недоступна, покрытие не подтверждено",
+                "checked": False,
+            } for obligation in obligations[requirement.id]]
+
+        # Independent contradiction audit scans ALL ZnP atoms, including those
+        # never returned by TU retrieval and those omitted by the main agent.
+        audits: dict[str, dict[str, Any]] = {}
+        for requirement in tu_requirements:
+            candidates = conflict_candidates(requirement, znp_clauses)
+            confirmed, uncertain, calls = assess_conflicts(
+                requirement, candidates, self.ai
+            ) if model_available else ([], [x["atom_id"] for x in candidates], 0)
+            audits[requirement.id] = {
+                "candidates_checked": len(candidates),
+                "confirmed": confirmed, "uncertain_atom_ids": uncertain,
+                "llm_calls": calls,
+            }
+
         checked: list[RequirementCheckItem] = []
         for requirement in tu_requirements:
             matches = links.get(requirement.id, [])
             supported = [link for link in matches if link["relation"] == "supports"]
-            conflicts = [link for link in matches if link["relation"] == "conflicts"]
             partial = [link for link in matches if link["relation"] == "partial"]
-            matched = supported[0] if supported else (conflicts[0] if conflicts else
-                                                     (partial[0] if partial else None))
-            evidence_text = "\n".join(link["quote"] for link in supported)
-            coverage = tool_check_list_coverage(requirement.text, evidence_text)
-            # Verify the entire set of documented parameters, not only each match.
+            conflicts = [link for link in matches if link["relation"] == "conflicts"]
+            audit = audits[requirement.id]
+            conflicts.extend(audit["confirmed"])
+            obligation_checks = coverage_results[requirement.id]
+            matched = supported[0] if supported else (partial[0] if partial else
+                                                     (matches[0] if matches else None))
+            evidence_text = "\n".join(
+                znp_by_id[entry["atom_id"]].text
+                for entry in matches
+                if entry["relation"] in {"supports", "partial"}
+                and "mismatch" not in entry["param_check"]["mismatch_types"]
+            )
             params = tool_verify_engineering_params(requirement.text, evidence_text)
-            complete = bool(supported) and not conflicts and not partial
-            complete = complete and coverage["covered"] and params["params_match"]
+            coverage = tool_check_list_coverage(requirement.text, evidence_text)
+            complete = (
+                all_obligations_covered(obligation_checks)
+                and bool(supported or partial)
+                and params["params_match"]
+                and coverage["covered"]
+                and not conflicts
+                and not audit["uncertain_atom_ids"]
+                and not any(entry.get("warnings") for entry in matches)
+                and model_available
+            )
             status = RequirementStatus.fulfilled if complete else RequirementStatus.needs_review
             if conflicts:
-                reason = f"Выявлено противоречий: {len(conflicts)}. Требуется проверка инженера."
-            elif partial:
-                reason = f"Есть {len(partial)} неоднозначных или частичных соответствий."
+                reason = f"Обнаружены возможные противоречия ({len(conflicts)}); необходима проверка инженера."
+            elif audit["uncertain_atom_ids"]:
+                reason = f"Есть непроверенные кандидаты на противоречие ({len(audit['uncertain_atom_ids'])})."
             elif complete:
-                reason = f"Найдено проверенных подтверждений: {len(supported)}."
+                reason = f"Все {len(obligation_checks)} обязательных условия ТУ подтверждены и проверены."
             else:
-                reason = "Автоматическая проверка не установила достаточного подтверждения."
-            targeted: list[dict[str, Any]] = []
-            if not complete:
-                # A targeted coverage check is advisory; never equate search failure with absence.
-                targeted = tool_search_znp_clauses(requirement.text, znp_clauses, top_k=3)
-                targeted = [{
-                    "clause_id": item["clause_id"],
-                    "clause_number": item["clause_number"],
-                    "score": item["similarity_score"],
-                } for item in targeted]
+                remaining = sum(row["status"] != "fulfilled" for row in obligation_checks)
+                reason = f"Не подтверждено условий ТУ: {remaining} из {len(obligation_checks)}."
             details = {
-                "version": 2,
+                "version": 3,
                 "pipeline": "znp_first_conservative",
-                "matches": matches,
+                "matches": matches + audit["confirmed"],
+                "obligations": [row.as_dict() for row in obligations[requirement.id]],
+                "obligation_coverage": obligation_checks,
                 "coverage_check": coverage,
                 "param_check": params,
-                "targeted_search": targeted,
+                "targeted_search": targeted_results[requirement.id],
+                "contradiction_audit": audit,
                 "znp_atoms_processed": len(znp_clauses),
                 "candidate_limit_reached": bool(limited_atoms),
                 "model_error": model_error,
                 "unmatched": not bool(matches),
             }
-            result_clause = znp_by_id[matched["clause_id"]] if matched else None
+            result_clause = znp_by_id.get(matched["clause_id"]) if matched else None
             checked.append(RequirementCheckItem(
                 id=str(uuid4()),
                 requirement=requirement,
                 status=status,
                 automatic_status=status,
-                confidence_score=(min(link["confidence"] for link in supported) if complete else 0.0),
+                confidence_score=(min(link["confidence"] for link in supported)
+                                  if complete and supported else 0.0),
                 matched_clause=result_clause,
                 tu_quote=matched["tu_quote"] if matched else requirement.text[:120],
                 znp_quote=matched["quote"] if matched else None,
@@ -341,6 +454,11 @@ class ZnPFirstAgent:
                 "znp_atoms_processed": len(znp_clauses),
                 "znp_atoms_total": len(znp_clauses),
                 "links_total": sum(len(entries) for entries in links.values()),
+                "tu_obligations_total": sum(len(items) for items in obligations.values()),
+                "targeted_model_calls": targeted_calls,
+                "independent_conflict_candidates": sum(a["candidates_checked"] for a in audits.values()),
+                "uncovered_obligations": sum(sum(r["status"] != "fulfilled" for r in rows)
+                                            for rows in coverage_results.values()),
                 "retrieval_limited_atoms": len(set(limited_atoms)),
                 "agent_runs": traces,
                 "embedding": self.embedder.status(),

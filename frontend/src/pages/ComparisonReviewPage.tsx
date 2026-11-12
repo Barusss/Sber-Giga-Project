@@ -23,6 +23,16 @@ type VerificationItem = {
       reasoning?: string; page?: number|null; fragment_id?: string|null
       confidence?: number; param_check?: {mismatches?: string[]}
     }>
+    obligations?: Array<{id: string; text: string; context: string}>
+    obligation_coverage?: Array<{
+      obligation_id: string; text: string; status: string; reasoning: string
+      evidence_ids?: string[]; checked?: boolean
+    }>
+    contradiction_audit?: {
+      candidates_checked: number
+      confirmed: Array<{atom_id: string; clause_number: string; quote: string; reasoning?: string}>
+      uncertain_atom_ids: string[]
+    }
     candidate_limit_reached?: boolean
     model_error?: string|null
     model_reasoning?: string; items?: Array<{
@@ -298,6 +308,20 @@ export function ComparisonReviewPage({projectId, approved}: {projectId: string; 
                 {item.validation_details.model_error &&
                   <p>ИИ-анализ не завершён: {item.validation_details.model_error}</p>}
               </div>
+              {item.validation_details.obligation_coverage?.length ? <details className="workspace-evidence-details" open>
+                <summary>Покрытие условий ТУ ({item.validation_details.obligation_coverage.filter(x => x.status === 'fulfilled').length} из {item.validation_details.obligation_coverage.length})</summary>
+                {item.validation_details.obligation_coverage.map(condition => <div key={condition.obligation_id}>
+                  <p><strong>{condition.status === 'fulfilled' ? 'Подтверждено' : 'Требует проверки'}</strong> — {condition.text}</p>
+                  {condition.reasoning && <p>{condition.reasoning}</p>}
+                  {condition.evidence_ids?.length ? <p>Связанных доказательств: {condition.evidence_ids.length}</p> : null}
+                </div>)}
+              </details> : null}
+              {item.validation_details.contradiction_audit && <div className="workspace-analysis-note">
+                <strong>Независимая проверка противоречий</strong>
+                <p>Просмотрено кандидатов: {item.validation_details.contradiction_audit.candidates_checked}.
+                  Противоречий: {item.validation_details.contradiction_audit.confirmed.length}.
+                  Неоднозначных: {item.validation_details.contradiction_audit.uncertain_atom_ids.length}.</p>
+              </div>}
               {item.validation_details.matches?.length ? <details className="workspace-evidence-details" open>
                 <summary>Все связанные положения ЗнП ({item.validation_details.matches.length})</summary>
                 {item.validation_details.matches.map((match, index) => <div key={match.atom_id + '-' + index}>
