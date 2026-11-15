@@ -41,6 +41,25 @@ quote или context_quotes; ни одна техническая характе
 
 # For an initial production rollout: do not separate dependent conditional
 # clauses. A later validated format can represent dependencies explicitly.
+_MULTI_PROPERTY = re.compile(
+    r"\b(?:алюминиев\w*|медн\w*|материал\w*|сечени\w*|"
+    r"напряжени\w*|мощност\w*|категори\w*|класс\w*|"
+    r"защит\w*|учет\w*|заземлени\w*|длин\w*|"
+    r"точност\w*|резерв\w*)\b",
+    re.IGNORECASE,
+)
+
+
+def _likely_composite(text: str) -> bool:
+    """Avoid a paid split attempt on short, trivially indivisible statements."""
+    if text.count(";") >= 1 or text.count("\n-") >= 1:
+        return True
+    if len(set(match.group(0).casefold()[:5] for match in
+               _MULTI_PROPERTY.finditer(text))) >= 2:
+        return True
+    return len(text) > 170 and bool(re.search(r"\bи\b|,", text, re.IGNORECASE))
+
+
 _DEPENDENCIES = re.compile(
     r"\b(?:при\s+условии|при\s+наличии|в\s+случае|за\s+исключением|"
     r"за\s+условием|только\s+при|лишь\s+при|если|либо|или|"
@@ -194,6 +213,10 @@ def semantic_atomize(
             output.append(parent)
             reasons["oversized_clause"] += 1
             continue
+        if not _likely_composite(parent.text):
+            output.append(parent)
+            reasons["simple_clause_no_split_needed"] += 1
+            continue
         payload = {
             "clause_number": parent.clause_number,
             "section_path": parent.section_path,
@@ -206,10 +229,11 @@ def semantic_atomize(
                 system_prompt=ATOMIZATION_PROMPT,
                 user_prompt=json.dumps(payload, ensure_ascii=False),
             )
-        except DeepSeekError:
+        except DeepSeekError as exc:
             unavailable = True
             degraded = True
-            reasons["provider_unavailable"] += 1
+            reason = "request_budget_reached" if hasattr(exc, "scope") else "provider_unavailable"
+            reasons[reason] += 1
             output.append(parent)
             continue
         except (TypeError, ValueError):

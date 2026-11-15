@@ -34,6 +34,8 @@ from app.core.models import (
 from app.requirements.agent import RequirementsAgent
 from app.requirements.atomization import atomize_fragments
 from app.requirements.semantic_atomization import semantic_atomize
+from app.requirements.llm_tracking import TrackedRequirementsLLM
+from app.core.config import settings
 from app.requirements.znp_first import ZnPFirstAgent
 from app.requirements.extraction import (
     Clause,
@@ -688,7 +690,15 @@ def _analyze_project_requirements(
     # legacy numbered-clause splitting. Each atom retains exact source spans.
     conservative_atoms = []
     atomization_trace = None
+    llm_ledger = None
     if isinstance(agent, ZnPFirstAgent):
+        llm_ledger = TrackedRequirementsLLM(
+            agent.ai,
+            max_calls=settings.requirements_llm_max_calls,
+            atomization_limit=settings.requirements_llm_atomization_calls,
+            targeted_limit=settings.requirements_llm_targeted_calls,
+        )
+        agent.ai = llm_ledger
         znp_fragments = db.scalars(
             select(Fragment)
             .where(Fragment.document_id == znp_doc.id)
@@ -883,10 +893,16 @@ def _analyze_project_requirements(
         agent.verify_all(tu_schemas, znp_schemas, progress_callback=progress_callback)
         if progress_callback else agent.verify_all(tu_schemas, znp_schemas)
     )
+    if response.trace_info is None:
+        response.trace_info = {}
     if atomization_trace is not None:
-        if response.trace_info is None:
-            response.trace_info = {}
         response.trace_info["atomization"] = atomization_trace
+        if atomization_trace["degraded"]:
+            response.trace_info["degraded"] = True
+    if llm_ledger is not None:
+        response.trace_info["llm_usage"] = llm_ledger.trace()
+        if llm_ledger.trace()["limit_reached"]:
+            response.trace_info["degraded"] = True
     if progress_callback:
         progress_callback("persisting", len(tu_schemas), len(tu_schemas), None)
     _attach_provenance(response.checked_requirements, tu_schemas, znp_schemas)

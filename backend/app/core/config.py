@@ -30,6 +30,12 @@ class Settings(BaseSettings):
     deepseek_timeout_seconds: float = Field(default=60.0, gt=0)
     deepseek_max_tokens: int = Field(default=3000, ge=1)
 
+    # Guardrails for a single TU/ZnP comparison. Request limits are not
+    # a monetary limit: individual calls can use different token volumes.
+    requirements_llm_max_calls: int = Field(default=250, ge=1)
+    requirements_llm_atomization_calls: int = Field(default=40, ge=0)
+    requirements_llm_targeted_calls: int = Field(default=35, ge=0)
+
     # Optional local semantic channel; without the model the analysis uses lexical search.
     embedding_enabled: bool = True
     embedding_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"

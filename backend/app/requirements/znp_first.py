@@ -8,13 +8,14 @@ from __future__ import annotations
 
 import json
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict
 from typing import Any, Callable
 from uuid import uuid4
 
 from app.ai.deepseek import DeepSeekClient, DeepSeekError
 from app.ai.embeddings import EmbeddingService
 from app.requirements.retrieval import RequirementRetriever
+from app.requirements.llm_tracking import LLMCallLimitExceeded
 from app.requirements.coverage import (
     build_obligations, assess_coverage, all_obligations_covered,
     conflict_candidates, assess_conflicts, scope_overlap,
@@ -33,6 +34,12 @@ MATCH_PROMPT = """Ты проверяешь одно положение ЗнП �
 Поиск уже выполнен Python; не делай вывод об отсутствии требования из одного списка кандидатов.
 Найди все относящиеся к этому положению требования ТУ среди ПЕРЕДАННЫХ кандидатов.
 Для каждого относящегося верни точные цитаты ИЗ ОБОИХ исходных текстов.
+Важно: текст атома ЗнП может быть составлен из отдельных цитат и контекста,
+соединённых переносом строки. Нельзя цитировать такую склейку целиком.
+Поле znp_quote должно быть ОДНИМ непрерывным дословным фрагментом,
+который присутствует одновременно в znp_atom.text и в одном из
+znp_atom.source_fragments[].text. Аналогично tu_quote должен находиться
+в одном исходном фрагменте ТУ. Не придумывай объединённые цитаты.
 Не придумывай цитаты и идентификаторы. Не смешивай разные объекты, условные
 разрешения, исключения, альтернативы, единицы измерения и направления неравенств.
 Если данных недостаточно, используй partial; неверные числа или условия — conflicts.
@@ -79,6 +86,12 @@ class ZnPFirstAgent:
                 "id": atom.id,
                 "clause_number": atom.clause_number,
                 "text": atom.text,
+                "source_fragments": [
+                    {"fragment_id": source.get("fragment_id"),
+                     "text": str(source.get("text", ""))[:2400]}
+                    for source in (atom.sources or [])[:3]
+                    if isinstance(source, dict)
+                ],
                 "section_path": getattr(atom, "section_path", None),
                 "context_sources": getattr(atom, "context_sources", []),
                 "warnings": getattr(atom, "warnings", []),
@@ -88,6 +101,14 @@ class ZnPFirstAgent:
                 "requirement_id": item["requirement_id"],
                 "clause_number": item["clause_number"],
                 "text": item["text"],
+                "source_fragments": [
+                    {"fragment_id": source.get("fragment_id"),
+                     "text": str(source.get("text", ""))[:1600]}
+                    for source in (
+                        getattr(getattr(self, "_requirements", {}).get(item["requirement_id"]),
+                                "sources", []) or []
+                    )[:3] if isinstance(source, dict)
+                ],
                 "similarity_score": item["similarity_score"],
                 "context_sources": item.get("context_sources", []),
             } for item in candidates],
@@ -101,17 +122,29 @@ class ZnPFirstAgent:
     def _validated_link(
         atom: ZNPClause, requirement: TURequirement,
         proposal: dict[str, Any], similarity: float,
+        rejection_counts: Counter[str] | None = None,
     ) -> dict[str, Any] | None:
         relation = proposal.get("relation")
         if relation not in {"supports", "conflicts", "partial"}:
+            if rejection_counts is not None:
+                rejection_counts["invalid_relation"] += 1
             return None
         tu_quote = proposal.get("tu_quote")
         znp_quote = proposal.get("znp_quote")
         if not isinstance(tu_quote, str) or not isinstance(znp_quote, str):
+            if rejection_counts is not None:
+                rejection_counts["missing_quotes"] += 1
             return None
         quotes = tool_validate_quotes(requirement.text, tu_quote, atom.text, znp_quote)
         if not (quotes["tu_quote_valid"] and quotes["znp_quote_valid"]
                 and quotes["znp_quote_atomic"]):
+            if rejection_counts is not None:
+                if not quotes["tu_quote_valid"]:
+                    rejection_counts["tu_quote_not_in_clause"] += 1
+                elif not quotes["znp_quote_valid"]:
+                    rejection_counts["znp_quote_not_in_atom"] += 1
+                else:
+                    rejection_counts["znp_quote_not_atomic"] += 1
             return None
         # An exact citation must resolve to one actual source fragment, not just
         # to a reassembled clause spanning several pages.
@@ -133,6 +166,11 @@ class ZnPFirstAgent:
         tu_source = source_for(tu_quote, requirement)
         znp_source = source_for(znp_quote, atom)
         if tu_source is None or znp_source is None:
+            if rejection_counts is not None:
+                rejection_counts[
+                    "tu_quote_not_in_source" if tu_source is None
+                    else "znp_quote_not_in_source"
+                ] += 1
             return None
         def source_field(source, name):
             if isinstance(source, dict):
@@ -182,7 +220,13 @@ class ZnPFirstAgent:
         traces: list[dict[str, Any]] = []
         links: dict[str, list[dict[str, Any]]] = defaultdict(list)
         seen: set[tuple[str, str]] = set()
+        evaluated: Counter[str] = Counter()
+        rejected: Counter[str] = Counter()
+        proposed_total = 0
+        accepted_total = 0
+        stopped_due_to_invalid_evidence = False
         all_requirements = {item.id: item for item in tu_requirements}
+        self._requirements = all_requirements
         znp_by_id = {item.id: item for item in znp_clauses}
         model_available = True
         model_error: str | None = None
@@ -246,26 +290,47 @@ class ZnPFirstAgent:
                         "tool": "invalid_response", "reason": "Missing links array",
                     })
                     break
+                # A valid model response is still AI analysis when it concludes
+                # that no match exists; it must not be counted as local fallback.
+                for rid in candidate_by_id:
+                    evaluated[rid] += 1
                 added = 0
+                proposed_total += len(reply["links"])
                 for proposal in reply["links"]:
                     if not isinstance(proposal, dict):
+                        rejected["invalid_link_shape"] += 1
                         continue
                     rid = str(proposal.get("requirement_id") or "")
                     candidate = candidate_by_id.get(rid)
-                    if candidate is None or (atom.id, rid) in seen:
+                    if candidate is None:
+                        rejected["unknown_candidate"] += 1
+                        continue
+                    if (atom.id, rid) in seen:
                         continue
                     valid = self._validated_link(
                         atom, all_requirements[rid], proposal,
-                        candidate["similarity_score"],
+                        candidate["similarity_score"], rejected,
                     )
                     if valid is not None:
                         links[rid].append(valid)
                         seen.add((atom.id, rid))
                         added += 1
+                        accepted_total += 1
                 atom_trace["steps"].append({
                     "tool": "compare_candidates", "candidates": len(candidates),
                     "accepted_links": added,
                 })
+                if sum(rejected.values()) >= 12 and accepted_total == 0:
+                    stopped_due_to_invalid_evidence = True
+                    model_available = False
+                    model_error = (
+                        "Остановлена платная проверка: модель вернула 12 или более "
+                        "связей без проверяемых исходных цитат."
+                    )
+                    atom_trace["steps"].append({
+                        "tool": "invalid_response", "reason": model_error,
+                    })
+                    break
                 if not page["has_more"] or (added and not reply.get("search_more", False)):
                     break
                 page = retriever.search(atom, offset=batches * self.batch_size)
@@ -282,6 +347,7 @@ class ZnPFirstAgent:
         coverage_results: dict[str, list[dict[str, Any]]] = {}
         targeted_results: dict[str, list[dict[str, Any]]] = {}
         targeted_calls = 0
+        targeted_limit_hit = False
         # Build the reverse-side semantic candidates once; if local embeddings
         # are unavailable, targeted retrieval falls back to lexical ranking.
         znp_vectors = (
@@ -299,13 +365,19 @@ class ZnPFirstAgent:
                 assess_coverage(requirement, obligation, evidence, self.ai)
                 for obligation in obligations[requirement.id]
             ] if model_available else []
+            if getattr(self.ai, "exhausted", False):
+                model_available = False
+                model_error = "Достигнут лимит запросов DeepSeek для сверки"
             gap_queries = [
                 obligation.text for obligation, result in
                 zip(obligations[requirement.id], initial)
                 if result["status"] != "fulfilled"
             ] if initial else [o.text for o in obligations[requirement.id]]
             targeted: list[dict[str, Any]] = []
-            if model_available and gap_queries:
+            if model_available and gap_queries and not (
+                hasattr(self.ai, "phase_exhausted")
+                and self.ai.phase_exhausted("targeted")
+            ):
                 for query in list(dict.fromkeys(gap_queries))[:6]:
                     # Searching the opposite way here is a fallback exclusively
                     # for uncovered TU obligations, not the main architecture.
@@ -333,26 +405,34 @@ class ZnPFirstAgent:
                             try:
                                 answer = self._judge(atom, [target], [], phase="targeted")
                             except DeepSeekError as exc:
+                                if (isinstance(exc, LLMCallLimitExceeded)
+                                        and exc.scope == "phase"):
+                                    targeted_limit_hit = True
+                                    break
                                 model_error = str(exc)
                                 model_available = False
                                 break
                             if not isinstance(answer, dict) or not isinstance(answer.get("links"), list):
                                 targeted.append({"atom_id": atom.id, "error": "invalid_response"})
                                 continue
+                            evaluated[requirement.id] += 1
+                            proposed_total += len(answer["links"])
                             for proposal in answer["links"]:
                                 if not isinstance(proposal, dict) or str(proposal.get("requirement_id")) != requirement.id:
                                     continue
                                 entry = self._validated_link(
-                                    atom, requirement, proposal, suggestion["similarity_score"]
+                                    atom, requirement, proposal,
+                                    suggestion["similarity_score"], rejected,
                                 )
                                 if entry is not None:
                                     entries.append(entry)
                                     seen.add((atom.id, requirement.id))
+                                    accepted_total += 1
                                     targeted.append({"atom_id": atom.id, "result": entry["relation"]})
                                     break
-                        if not model_available:
+                        if not model_available or targeted_limit_hit:
                             break
-                    if not model_available:
+                    if not model_available or targeted_limit_hit:
                         break
             targeted_results[requirement.id] = targeted
             evidence = [x for x in entries if x["relation"] in {"supports", "partial"}
@@ -366,6 +446,9 @@ class ZnPFirstAgent:
                 "reasoning": "Модель недоступна, покрытие не подтверждено",
                 "checked": False,
             } for obligation in obligations[requirement.id]]
+            if getattr(self.ai, "exhausted", False):
+                model_available = False
+                model_error = "Достигнут лимит запросов DeepSeek для сверки"
 
         # Independent contradiction audit scans ALL ZnP atoms, including those
         # never returned by TU retrieval and those omitted by the main agent.
@@ -436,6 +519,7 @@ class ZnPFirstAgent:
                 "znp_atoms_processed": len(znp_clauses),
                 "candidate_limit_reached": bool(limited_atoms),
                 "model_error": model_error,
+                "ai_model_evaluations": evaluated[requirement.id],
                 "unmatched": not bool(matches),
             }
             result_clause = znp_by_id.get(matched["clause_id"]) if matched else None
@@ -452,7 +536,7 @@ class ZnPFirstAgent:
                 reasoning=reason,
                 validation_details=details,
                 is_confirmed_by_human=False,
-                method="llm" if matches and model_available else "deterministic",
+                method="llm" if evaluated[requirement.id] else "deterministic",
                 channels=["lexical", "semantic"] if retriever.vectors is not None else ["lexical"],
             ))
 
@@ -477,7 +561,13 @@ class ZnPFirstAgent:
                                             for rows in coverage_results.values()),
                 "retrieval_limited_atoms": len(set(limited_atoms)),
                 "agent_runs": traces,
+                "ai_evaluated_requirements": sum(bool(v) for v in evaluated.values()),
+                "proposed_links": proposed_total,
+                "validated_links": accepted_total,
+                "rejected_links": dict(rejected),
+                "stopped_due_to_invalid_evidence": stopped_due_to_invalid_evidence,
+                "targeted_limit_reached": targeted_limit_hit,
                 "embedding": self.embedder.status(),
-                "degraded": not model_available or not self.embedder.enabled,
+                "degraded": not model_available or targeted_limit_hit,
             },
         )

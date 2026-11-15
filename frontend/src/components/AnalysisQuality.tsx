@@ -10,6 +10,21 @@ export type AnalysisTrace = {
     degraded: boolean
   }
   degraded?: boolean
+  ai_evaluated_requirements?: number
+  proposed_links?: number
+  validated_links?: number
+  rejected_links?: Record<string, number>
+  targeted_limit_reached?: boolean
+  stopped_due_to_invalid_evidence?: boolean
+  llm_usage?: {
+    model_calls_total: number
+    model_calls_limit: number
+    attempted_by_phase: Record<string, number>
+    responses_by_phase: Record<string, number>
+    errors_by_phase: Record<string, number>
+    blocked_by_limit: Record<string, number>
+    limit_reached: boolean
+  }
   agent_runs?: Array<{
     requirement_id?: string
     steps?: Array<{tool?: string; reason?: string}>
@@ -93,20 +108,38 @@ export function AnalysisFallbackNotice({trace, items}: {
   items: Array<{method?: string|null}>
 }) {
   const fallbackCount = items.filter(item => item.method === 'deterministic').length
-  if (!trace?.degraded && fallbackCount === 0) return null
   const modelCount = items.filter(item => item.method === 'llm').length
+  const noValidatedLinks = trace?.validated_links === 0 && (trace.proposed_links ?? 0) > 0
+  if (!trace?.degraded && fallbackCount === 0 && !noValidatedLinks) return null
   const reasons = discoveredCauses(trace)
-  const incomplete = modelCount > 0 && fallbackCount > 0
-  const title = incomplete
-    ? 'Часть требований проверена без завершённого ответа ИИ'
-    : 'Сверка выполнена с использованием резервного алгоритма'
+  const title = noValidatedLinks
+    ? 'DeepSeek предложил связи, но ни одна не прошла проверку цитат'
+    : trace?.degraded
+      ? 'ИИ-анализ выполнен не полностью'
+      : 'Часть требований не проходила анализ ИИ'
   return <aside className="workspace-ai-notice" aria-label="Состояние ИИ-анализа">
     <strong>{title}</strong>
-    <p>Проверено ИИ-агентом: {modelCount} из {items.length}.
-      Резервным алгоритмом: {fallbackCount}.
-      Резервный алгоритм ищет похожие пункты, проверяет доступные параметры и цитаты,
-      но не подтверждает смысловое соответствие автоматически.
-      Решение по спорным требованиям принимает инженер.</p>
+    <p>ИИ рассматривал: {modelCount} из {items.length} требований.
+      Без завершённой смысловой проверки: {fallbackCount}.
+      Участие ИИ не означает, что требование выполнено: для этого
+      необходимы проверяемые доказательства. Спорные случаи рассматривает инженер.</p>
+    {trace?.llm_usage && <details>
+      <summary>Расход запросов и проверка доказательств</summary>
+      <p>Выполнено запросов к DeepSeek: {trace.llm_usage.model_calls_total} из лимита {trace.llm_usage.model_calls_limit}.
+        Запросы по этапам: {Object.entries(trace.llm_usage.attempted_by_phase).map(
+          ([name, count]) => `${name}: ${count}`
+        ).join('; ') || 'нет'}.</p>
+      <p>Ответов от DeepSeek: {Object.values(trace.llm_usage.responses_by_phase).reduce((a, b) => a + b, 0)}.
+        Связей предложено: {trace.proposed_links ?? 0}.
+        Подтверждено исходными цитатами: {trace.validated_links ?? 0}.</p>
+      {trace.rejected_links && Object.keys(trace.rejected_links).length > 0 &&
+        <p>Причины отклонения: {Object.entries(trace.rejected_links).map(
+          ([reason, count]) => `${reason}: ${count}`
+        ).join('; ')}.</p>}
+      {(trace.llm_usage.limit_reached || trace.targeted_limit_reached) &&
+        <p>Лимит запросов достигнут: оставшиеся условия требуют проверки.
+          Число запросов не является суммой затрат в денежном выражении.</p>}
+    </details>}
     <details>
       <summary>Почему это произошло и как исправить</summary>
       <p>Модель могла быть недоступна, вернуть неподходящий ответ
@@ -126,7 +159,7 @@ export function AnalysisFallbackNotice({trace, items}: {
 }
 
 function scoreHint(method?:string|null): string {
-  if (method === 'llm') return 'Это оценка модели, скорректированная автоматическими проверками. Не является вероятностью правильного заключения.'
+  if (method === 'llm') return 'DeepSeek участвовал в анализе. Число показывает оценку подтверждённых доказательств, а не долю пройденных запросов или вероятность правильности вывода.'
   if (method === 'deterministic') return 'Это сходство найденного текста ЗнП с требованием ТУ. Оно не означает подтверждённого выполнения требования.'
   return 'Метод оценки не указан в сохранённом результате; показатель нельзя интерпретировать как уверенность ИИ.'
 }
