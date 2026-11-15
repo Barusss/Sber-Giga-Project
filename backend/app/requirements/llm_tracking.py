@@ -27,12 +27,18 @@ class TrackedRequirementsLLM:
         max_calls: int = 250,
         atomization_limit: int = 40,
         targeted_limit: int = 35,
+        matching_limit: int = 120,
+        coverage_limit: int = 65,
+        contradictions_limit: int = 15,
     ) -> None:
         self.model = model
         self.max_calls = max_calls
         self.phase_limits = {
             "atomization": atomization_limit,
             "targeted": targeted_limit,
+            "matching": matching_limit,
+            "coverage": coverage_limit,
+            "contradictions": contradictions_limit,
         }
         self.attempted: Counter[str] = Counter()
         self.succeeded: Counter[str] = Counter()

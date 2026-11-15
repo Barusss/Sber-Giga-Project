@@ -231,6 +231,7 @@ class ZnPFirstAgent:
         model_available = True
         model_error: str | None = None
         limited_atoms: list[str] = []
+        matching_limited = False
         if progress_callback:
             progress_callback("embedding", 0, len(znp_clauses), None)
         retriever = RequirementRetriever(
@@ -244,6 +245,8 @@ class ZnPFirstAgent:
             atom_trace: dict[str, Any] = {
                 "atom_id": atom.id,
                 "clause_number": atom.clause_number,
+                "page": atom.page,
+                "model_checked": False,
                 "steps": [],
             }
             # The mandatory first search never depends on an LLM action.
@@ -254,6 +257,13 @@ class ZnPFirstAgent:
             })
             batches = 0
             while page["candidates"] and batches < self.max_batches:
+                if (hasattr(self.ai, "phase_exhausted")
+                        and self.ai.phase_exhausted("matching")):
+                    matching_limited = True
+                    atom_trace["steps"].append({
+                        "tool": "matching_budget", "reason": "Matching-phase request limit reached",
+                    })
+                    break
                 batches += 1
                 candidates = page["candidates"]
                 candidate_by_id = {item["requirement_id"]: item for item in candidates}
@@ -281,6 +291,12 @@ class ZnPFirstAgent:
                 try:
                     reply = self._judge(atom, candidates, context)
                 except DeepSeekError as exc:
+                    if isinstance(exc, LLMCallLimitExceeded) and exc.scope == "phase":
+                        matching_limited = True
+                        atom_trace["steps"].append({
+                            "tool": "matching_budget", "reason": str(exc),
+                        })
+                        break
                     model_error = str(exc)
                     model_available = False
                     atom_trace["steps"].append({"tool": "llm_fallback", "reason": model_error})
@@ -290,6 +306,7 @@ class ZnPFirstAgent:
                         "tool": "invalid_response", "reason": "Missing links array",
                     })
                     break
+                atom_trace["model_checked"] = True
                 # A valid model response is still AI analysis when it concludes
                 # that no match exists; it must not be counted as local fallback.
                 for rid in candidate_by_id:
@@ -331,10 +348,12 @@ class ZnPFirstAgent:
                         "tool": "invalid_response", "reason": model_error,
                     })
                     break
-                if not page["has_more"] or (added and not reply.get("search_more", False)):
+                # Do not burn through later candidate pages unless the model
+                # explicitly requests them. An empty links[] is a valid answer.
+                if not page["has_more"] or not reply.get("search_more", False):
                     break
                 page = retriever.search(atom, offset=batches * self.batch_size)
-            if page["has_more"]:
+            if page["has_more"] and not matching_limited:
                 limited_atoms.append(atom.id)
             traces.append(atom_trace)
             if progress_callback:
@@ -347,6 +366,7 @@ class ZnPFirstAgent:
         coverage_results: dict[str, list[dict[str, Any]]] = {}
         targeted_results: dict[str, list[dict[str, Any]]] = {}
         targeted_calls = 0
+        targeted_checked_atoms = set()
         targeted_limit_hit = False
         # Build the reverse-side semantic candidates once; if local embeddings
         # are unavailable, targeted retrieval falls back to lexical ranking.
@@ -416,6 +436,7 @@ class ZnPFirstAgent:
                                 targeted.append({"atom_id": atom.id, "error": "invalid_response"})
                                 continue
                             evaluated[requirement.id] += 1
+                            targeted_checked_atoms.add(atom.id)
                             proposed_total += len(answer["links"])
                             for proposal in answer["links"]:
                                 if not isinstance(proposal, dict) or str(proposal.get("requirement_id")) != requirement.id:
@@ -437,31 +458,62 @@ class ZnPFirstAgent:
             targeted_results[requirement.id] = targeted
             evidence = [x for x in entries if x["relation"] in {"supports", "partial"}
                         and x.get("scope_consistent", True)]
-            coverage_results[requirement.id] = [
-                assess_coverage(requirement, obligation, evidence, self.ai)
-                for obligation in obligations[requirement.id]
-            ] if model_available else [{
+            # Never pay for the same coverage analysis twice when targeted
+            # retrieval added no new evidence.
+            if initial and not any(row.get("result") for row in targeted):
+                coverage_results[requirement.id] = initial
+            elif model_available:
+                coverage_results[requirement.id] = [
+                    assess_coverage(requirement, obligation, evidence, self.ai)
+                    for obligation in obligations[requirement.id]
+                ]
+            else:
+                coverage_results[requirement.id] = [{
                 "obligation_id": obligation.id, "text": obligation.text,
                 "status": "needs_review", "evidence_ids": [],
                 "reasoning": "Модель недоступна, покрытие не подтверждено",
                 "checked": False,
-            } for obligation in obligations[requirement.id]]
+                } for obligation in obligations[requirement.id]]
             if getattr(self.ai, "exhausted", False):
                 model_available = False
                 model_error = "Достигнут лимит запросов DeepSeek для сверки"
 
-        # Independent contradiction audit scans ALL ZnP atoms, including those
-        # never returned by TU retrieval and those omitted by the main agent.
+        # Contradictions are sourced from the ENTIRE ZnP, independently of
+        # the supporting-link retrieval. Only already-covered TU obligations
+        # need an expensive audit; uncovered requirements cannot be approved.
+        # Broad lexical overlap is not itself a contradiction. An incomplete
+        # audit must never silently become a clean audit.
         audits: dict[str, dict[str, Any]] = {}
         for requirement in tu_requirements:
-            candidates = conflict_candidates(requirement, znp_clauses)
-            confirmed, uncertain, calls = assess_conflicts(
-                requirement, candidates, self.ai
-            ) if model_available else ([], [x["atom_id"] for x in candidates], 0)
+            covered = all_obligations_covered(coverage_results[requirement.id])
+            candidates = (
+                conflict_candidates(requirement, znp_clauses)
+                if covered and links.get(requirement.id) else []
+            )
+            batch_limit = 10
+            selected = candidates[:batch_limit]
+            pending_count = len(candidates) - len(selected)
+            confirmed: list[dict[str, Any]] = []
+            uncertain: list[str] = []
+            calls = 0
+            if selected and model_available and not (
+                hasattr(self.ai, "phase_exhausted")
+                and self.ai.phase_exhausted("contradictions")
+            ):
+                confirmed, uncertain, calls = assess_conflicts(
+                    requirement, selected, self.ai
+                )
+            elif selected:
+                pending_count += len(selected)
             audits[requirement.id] = {
-                "candidates_checked": len(candidates),
-                "confirmed": confirmed, "uncertain_atom_ids": uncertain,
+                "candidate_count": len(candidates),
+                "candidates_checked": min(len(selected), calls * 8),
+                "confirmed": confirmed,
+                "uncertain_atom_ids": uncertain,
+                "unreviewed_count": pending_count,
                 "llm_calls": calls,
+                "complete": not pending_count and not uncertain,
+                "skipped_uncovered": not covered,
             }
 
         checked: list[RequirementCheckItem] = []
@@ -489,18 +541,20 @@ class ZnPFirstAgent:
             complete = (
                 all_obligations_covered(obligation_checks)
                 and bool(supported or partial)
-                and params["params_match"]
-                and coverage["covered"]
+                # Each obligation was checked against its OWN cited evidence.
+                # Rechecking the concatenated text of different objects as one
+                # parameter set incorrectly rejects valid compound requirements.
                 and not conflicts
-                and not audit["uncertain_atom_ids"]
+                and audit["complete"]
+                and all(row.get("checked", False) for row in obligation_checks)
                 and not any(entry.get("warnings") for entry in matches)
-                and model_available
             )
             status = RequirementStatus.fulfilled if complete else RequirementStatus.needs_review
             if conflicts:
                 reason = f"Обнаружены возможные противоречия ({len(conflicts)}); необходима проверка инженера."
-            elif audit["uncertain_atom_ids"]:
-                reason = f"Есть непроверенные кандидаты на противоречие ({len(audit['uncertain_atom_ids'])})."
+            elif audit["uncertain_atom_ids"] or audit["unreviewed_count"]:
+                remaining_audit = len(audit["uncertain_atom_ids"]) + audit["unreviewed_count"]
+                reason = f"Контроль противоречий не завершён ({remaining_audit} кандидатов)."
             elif complete:
                 reason = f"Все {len(obligation_checks)} обязательных условия ТУ подтверждены и проверены."
             else:
@@ -556,11 +610,36 @@ class ZnPFirstAgent:
                 "links_total": sum(len(entries) for entries in links.values()),
                 "tu_obligations_total": sum(len(items) for items in obligations.values()),
                 "targeted_model_calls": targeted_calls,
-                "independent_conflict_candidates": sum(a["candidates_checked"] for a in audits.values()),
+                "independent_conflict_candidates": sum(a["candidate_count"] for a in audits.values()),
                 "uncovered_obligations": sum(sum(r["status"] != "fulfilled" for r in rows)
                                             for rows in coverage_results.values()),
                 "retrieval_limited_atoms": len(set(limited_atoms)),
                 "agent_runs": traces,
+                "znp_atom_results": [{
+                    "atom_id": atom.id,
+                    "clause_number": atom.clause_number,
+                    "text": atom.text[:1800],
+                    "page": atom.page,
+                    "model_checked": (
+                        trace["model_checked"] or atom.id in targeted_checked_atoms
+                    ),
+                    "candidates_count": (
+                        trace["steps"][0].get("candidates_count", 0)
+                        if trace["steps"] else 0
+                    ),
+                    "links": [{
+                        "tu_requirement_id": requirement.id,
+                        "tu_clause_number": requirement.clause_number,
+                        "tu_text": requirement.text[:1000],
+                        "relation": link["relation"],
+                        "tu_quote": link["tu_quote"],
+                        "znp_quote": link["quote"],
+                        "reasoning": link.get("reasoning", ""),
+                    } for requirement in tu_requirements
+                    for link in links.get(requirement.id, [])
+                    if link["atom_id"] == atom.id],
+                } for atom, trace in zip(znp_clauses, traces)],
+                "matching_limit_reached": matching_limited,
                 "ai_evaluated_requirements": sum(bool(v) for v in evaluated.values()),
                 "proposed_links": proposed_total,
                 "validated_links": accepted_total,
@@ -568,6 +647,6 @@ class ZnPFirstAgent:
                 "stopped_due_to_invalid_evidence": stopped_due_to_invalid_evidence,
                 "targeted_limit_reached": targeted_limit_hit,
                 "embedding": self.embedder.status(),
-                "degraded": not model_available or targeted_limit_hit,
+                "degraded": not model_available or targeted_limit_hit or matching_limited,
             },
         )

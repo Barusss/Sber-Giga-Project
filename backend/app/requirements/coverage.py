@@ -208,37 +208,66 @@ def scope_overlap(tu_text: str, znp_text: str) -> bool:
 
 
 def conflict_candidates(requirement: TURequirement, atoms: list[Any]) -> list[dict[str, Any]]:
-    """Scan ALL ZnP atoms independently of the positive retrieval results.
+    """Identify plausible contradictions, never equate broad word overlap with conflict.
 
-    A numeric discrepancy is an allegation, not a certified contradiction.
-    An actual verdict requires a subsequent source-grounded model review.
+    Candidate discovery is independent of positive retrieval. Object identity is
+    mandatory where available. The model verifies any proposed contradiction.
     """
-    from app.requirements.tools import tool_verify_engineering_params
-    candidates = []
-    # Non-numeric deontic oppositions require a separate semantic audit too.
-    # This is candidate discovery only: DeepSeek must confirm the opposition.
+    from app.requirements.tools import (
+        _content_tokens, _extract_identifiers, tool_verify_engineering_params,
+    )
+    object_id = re.compile(r"^[а-яa-z]{1,8}-?\d{1,4}(?:[./-]\d+)?$", re.IGNORECASE)
+    tu_ids = {x for x in _extract_identifiers(requirement.text)
+              if object_id.fullmatch(x)}
+    tu_words = _content_tokens(requirement.text)
+    # A comparison must have a common technical subject.  'кВ' or 'ГОСТ'
+    # alone is insufficient to claim a conflict candidate.
+    generic = {
+        "гост", "проект", "требования", "документ", "установка",
+        "должен", "система", "кв", "мвт", "значение", "пункт",
+    }
     deontic = re.compile(
         r"\b(?:запрещ\w*|допуска\w*|не\s+допуска\w*|"
         r"не\s+предусмотр\w*|исключ\w*|отсутств\w*)\b",
         re.IGNORECASE,
     )
-    tu_deontic = bool(deontic.search(requirement.text))
+    candidates = []
     for atom in atoms:
-        if not scope_overlap(requirement.text, atom.text):
+        other_ids = {x for x in _extract_identifiers(atom.text)
+                     if object_id.fullmatch(x)}
+        shared_ids = tu_ids & other_ids
+        if tu_ids and not shared_ids:
+            continue
+        if not tu_ids and other_ids:
+            continue
+        shared_words = (tu_words & _content_tokens(atom.text)) - generic
+        if not shared_ids and len(shared_words) < 2:
             continue
         diff = tool_verify_engineering_params(requirement.text, atom.text)
-        if ("mismatch" in diff["mismatch_types"]
-                or (tu_deontic and deontic.search(atom.text))
-                or (deontic.search(atom.text) and not tu_deontic)):
-            candidates.append({
-                "atom_id": atom.id,
-                "text": atom.text,
-                "clause_number": atom.clause_number,
-                "mismatches": diff["mismatches"],
-                "sources": getattr(atom, "sources", ()) or (),
-                "fragment_id": getattr(atom, "fragment_id", None),
-                "page": getattr(atom, "page", None),
-            })
+        if ("mismatch" not in diff["mismatch_types"]
+                and not deontic.search(requirement.text)
+                and not deontic.search(atom.text)):
+            continue
+        # Do not treat a syntax-level difference in a bare value as a proven
+        # contradiction; a human/model still checks object and context.
+        candidates.append({
+            "atom_id": atom.id,
+            "text": atom.text,
+            "clause_number": atom.clause_number,
+            "mismatches": diff["mismatches"],
+            "shared_subject_tokens": len(shared_words),
+            "object_ids": list(shared_ids),
+            "sources": getattr(atom, "sources", ()) or (),
+            "fragment_id": getattr(atom, "fragment_id", None),
+            "page": getattr(atom, "page", None),
+        })
+    candidates.sort(
+        key=lambda item: (
+            bool(item["object_ids"]),
+            item["shared_subject_tokens"],
+        ),
+        reverse=True,
+    )
     return candidates
 
 

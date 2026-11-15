@@ -70,6 +70,7 @@ export function ComparisonReviewPage({projectId, approved}: {projectId: string; 
   const [runs, setRuns] = useState<RunSummary[]>([])
   const [detail, setDetail] = useState<RunDetail|null>(null)
   const [status, setStatus] = useState<'all'|Status>('all')
+  const [perspective, setPerspective] = useState<'znp'|'tu'>('znp')
   const [search, setSearch] = useState('')
   const [comments, setComments] = useState<Record<string,string>>({})
   const [decisions, setDecisions] = useState<Record<string,Status>>({})
@@ -133,6 +134,14 @@ export function ComparisonReviewPage({projectId, approved}: {projectId: string; 
   }, [root, requestedRun])
 
   const items = detail?.result.checked_requirements || []
+  const atomResults = detail?.result.trace_info?.znp_atom_results || []
+  const showZnp = perspective === 'znp' && atomResults.length > 0
+  const filteredAtoms = atomResults.filter(atom => !search.trim() ||
+    [atom.text, atom.clause_number, ...atom.links.map(link =>
+      link.tu_clause_number + ' ' + link.tu_text)].some(text =>
+      text.toLocaleLowerCase('ru').includes(search.trim().toLocaleLowerCase('ru'))))
+  const linkedAtoms = atomResults.filter(atom => atom.links.length > 0).length
+  const checkedAtoms = atomResults.filter(atom => atom.model_checked).length
   const filtered = useMemo(() => items.filter(item =>
     (status === 'all' || item.status === status)
     && (!search.trim() || [item.requirement.text, item.requirement.clause_number,
@@ -281,6 +290,72 @@ export function ComparisonReviewPage({projectId, approved}: {projectId: string; 
                 <p key={reason}>{reason}: {count}</p>)}
           </details>}
           <AnalysisScoreExplanation/>
+          {atomResults.length > 0 && <>
+            <div className="workspace-toolbar">
+              <button type="button" onClick={() => {setPerspective('znp');setSearch('')}}
+                aria-pressed={showZnp} className={showZnp ? 'primary' : ''}>
+                ЗнП → ТУ ({atomResults.length} положений)
+              </button>
+              <button type="button" onClick={() => {setPerspective('tu');setSearch('')}}
+                aria-pressed={!showZnp} className={!showZnp ? 'primary' : ''}>
+                ТУ — итоговая проверка ({items.length})
+              </button>
+            </div>
+            <div className="workspace-stats">
+              <div><strong>{checkedAtoms}</strong><span>Положений ЗнП рассмотрено ИИ</span></div>
+              <div><strong>{linkedAtoms}</strong><span>Положений со связями с ТУ</span></div>
+              <div><strong>{atomResults.length - checkedAtoms}</strong><span>Ещё не рассмотрено ИИ</span></div>
+            </div>
+            {detail.result.trace_info?.matching_limit_reached && <p className="workspace-analysis-note">
+              Достигнут лимит запросов основного поиска ЗнП → ТУ.
+              Необработанные положения сохранены, отсутствие связи не означает отсутствие соответствия.
+            </p>}
+          </>}
+          {showZnp ? <>
+            <div className="workspace-analysis-note">
+              <strong>Основная сверка: от положений ЗнП к требованиям ТУ</strong>
+              <p>Каждое положение ЗнП является исходным запросом. Поиск подбирает кандидатов ТУ,
+                DeepSeek оценивает соответствие, а сервер проверяет цитаты. Ниже показаны
+                именно положения ЗнП и найденные для них связи — включая частичные и спорные.
+                Итоговое покрытие требований ТУ доступно на соседней вкладке.</p>
+            </div>
+            <div className="workspace-toolbar">
+              <input type="search" value={search} onChange={e => setSearch(e.target.value)}
+                placeholder="Поиск по ЗнП и связанным ТУ" aria-label="Поиск по положениям ЗнП"/>
+            </div>
+            {filteredAtoms.map(atom => <article className="panel workspace-requirement" key={atom.atom_id}>
+              <div className="workspace-requirement-head">
+                <h3>Положение ЗнП {atom.clause_number}</h3>
+                <span className={'workspace-status '+(atom.links.length ? 'completed' : 'queued')}>
+                  {atom.links.length ? `Связей с ТУ: ${atom.links.length}` :
+                    atom.model_checked ? 'Подтверждённых связей нет' : 'Не рассмотрено ИИ'}
+                </span>
+              </div>
+              <p>{atom.text}</p>
+              <p className="muted">
+                {atom.model_checked ? 'DeepSeek проверил кандидатов ТУ' :
+                  'DeepSeek не завершил проверку этого положения'}.
+                Кандидатов в первом поиске: {atom.candidates_count}.
+                {atom.page != null ? ` Страница ЗнП: ${atom.page}.` : ''}
+              </p>
+              {atom.links.length ? atom.links.map((link, index) =>
+                <div className="workspace-analysis-note" key={link.tu_requirement_id + '-' + index}>
+                  <strong>ТУ {link.tu_clause_number} — {
+                    link.relation === 'supports' ? 'подтверждающая связь' :
+                    link.relation === 'conflicts' ? 'возможное противоречие' :
+                    'частичное соответствие'
+                  }</strong>
+                  <p>{link.tu_text}</p>
+                  <div className="workspace-evidence-grid">
+                    <section><h4>Цитата ЗнП</h4><blockquote>{link.znp_quote}</blockquote></section>
+                    <section><h4>Цитата ТУ</h4><blockquote>{link.tu_quote}</blockquote></section>
+                  </div>
+                  {link.reasoning && <p>{link.reasoning}</p>}
+                </div>) :
+                <p className="muted">Доказанной связи пока нет. Это не вывод об отсутствии соответствия.</p>}
+            </article>)}
+            {!filteredAtoms.length && <p className="muted">Положения ЗнП по запросу не найдены.</p>}
+          </> : <>
           <div className="workspace-toolbar">
             <input type="search" value={search} onChange={e => setSearch(e.target.value)}
               placeholder="Поиск по требованиям" aria-label="Поиск по требованиям"/>
@@ -394,6 +469,7 @@ export function ComparisonReviewPage({projectId, approved}: {projectId: string; 
             </div>
           </article>)}
           {!filtered.length && <p className="muted">По фильтру требований не найдено.</p>}
+          </>}
         </div>}
       </>}
   </div>

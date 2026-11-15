@@ -25,6 +25,24 @@ export type AnalysisTrace = {
     blocked_by_limit: Record<string, number>
     limit_reached: boolean
   }
+  znp_atom_results?: Array<{
+    atom_id: string
+    clause_number: string
+    text: string
+    page?: number|null
+    model_checked: boolean
+    candidates_count: number
+    links: Array<{
+      tu_requirement_id: string
+      tu_clause_number: string
+      tu_text: string
+      relation: string
+      tu_quote: string
+      znp_quote: string
+      reasoning?: string
+    }>
+  }>
+  matching_limit_reached?: boolean
   agent_runs?: Array<{
     requirement_id?: string
     steps?: Array<{tool?: string; reason?: string}>
