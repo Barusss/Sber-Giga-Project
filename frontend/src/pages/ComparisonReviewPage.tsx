@@ -21,7 +21,9 @@ type VerificationItem = {
     matches?: Array<{
       atom_id: string; clause_number: string; relation: string; quote: string
       reasoning?: string; page?: number|null; fragment_id?: string|null
-      confidence?: number; param_check?: {mismatches?: string[]}
+      confidence?: number|null; param_check?: {mismatches?: string[]}
+      atom_text?: string; tu_quote?: string; source_phase?: string
+      search_score?: number|null
     }>
     obligations?: Array<{id: string; text: string; context: string}>
     obligation_coverage?: Array<{
@@ -405,11 +407,14 @@ export function ComparisonReviewPage({projectId, approved}: {projectId: string; 
                 {atom.model_checked ? 'Основной поиск: DeepSeek проверил кандидатов ТУ' :
                   'Основной поиск: DeepSeek не завершил проверку положения'}.
                 Кандидатов в первом поиске: {atom.candidates_count}.
+                {atom.targeted_checked ? ' Дополнительный поиск ТУ → ЗнП также рассматривал это положение.' : ''}
                 {atom.links.filter(link => link.source_phase === 'targeted').length > 0
                   ? ` Дополнительным обратным поиском найдено связей: ${atom.links.filter(link => link.source_phase === 'targeted').length}.`
                   : ''}
                 {atom.page != null ? ` Страница ЗнП: ${atom.page}.` : ''}
               </p>
+              {stageSummary?.targeted.limit_reached && !atom.targeted_checked &&
+                <p className="workspace-analysis-note">Дополнительный поиск ограничен лимитом запросов. Отсутствие связи не является выводом о несоответствии.</p>}
               {atom.links.length ? atom.links.map((link, index) =>
                 <div className="workspace-znp-link" key={link.tu_requirement_id + '-' + index}>
                   <div className="workspace-requirement-head">
@@ -438,6 +443,17 @@ export function ComparisonReviewPage({projectId, approved}: {projectId: string; 
                       <blockquote>{link.tu_quote}</blockquote>
                     </section>
                   </div>
+                  {(() => {
+                    const tuItem = items.find(item => item.requirement.id === link.tu_requirement_id)
+                    const conditions = tuItem?.validation_details?.obligation_coverage || []
+                    return conditions.length ? <details className="workspace-evidence-details">
+                      <summary>Проверка покрытия связанного требования ТУ ({conditions.filter(c => c.status === 'fulfilled').length} из {conditions.length})</summary>
+                      {conditions.map(condition => <p key={condition.obligation_id}>
+                        <strong>{condition.checked === false ? 'Не проверено' : condition.status === 'fulfilled' ? 'Подтверждено' : 'Требует рассмотрения'}</strong> — {condition.text}
+                        {condition.reasoning ? ` · ${condition.reasoning}` : ''}
+                      </p>)}
+                    </details> : null
+                  })()}
                   <div className="workspace-analysis-note">
                     <strong>Вывод сопоставления</strong>
                     <p>{link.reasoning || 'Пояснение модели не сохранено.'}</p>
@@ -575,7 +591,24 @@ export function ComparisonReviewPage({projectId, approved}: {projectId: string; 
                     match.relation === 'conflicts' ? 'возможное противоречие' :
                     'частичное соответствие'
                   }</p>
-                  <blockquote>{match.quote}</blockquote>
+                  <div className="workspace-evidence-grid">
+                    <section>
+                      <h4>Задание на проектирование</h4>
+                      {match.atom_text && <p>{match.atom_text}</p>}
+                      <blockquote>{match.quote}</blockquote>
+                    </section>
+                    <section>
+                      <h4>Технические условия</h4>
+                      {match.tu_quote ? <blockquote>{match.tu_quote}</blockquote> :
+                        <p className="muted">Точная цитата ТУ не сохранена.</p>}
+                    </section>
+                  </div>
+                  {match.source_phase &&
+                    <small>Источник связи: {match.source_phase === 'targeted' ?
+                      'дополнительный поиск ТУ → ЗнП' :
+                      match.source_phase === 'matching' ? 'основной поиск ЗнП → ТУ' :
+                      'проверка противоречий'}.</small>}
+                  <AnalysisConfidence scope="link" method="llm" score={match.confidence}/>
                   {match.reasoning && <p>{match.reasoning}</p>}
                   {match.param_check?.mismatches?.length ?
                     <p>Параметры: {match.param_check.mismatches.join('; ')}</p> : null}
