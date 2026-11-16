@@ -30,6 +30,8 @@ def flow(client, monkeypatch):
         payload = json.loads(user_prompt)
         if "clause_text" in payload:
             return {"atoms": []}
+        if "znp_candidates" in payload:
+            return {"links": []}
         if "znp_atom" in payload:
             atom = payload["znp_atom"]
             candidate = next((candidate for candidate in payload["tu_candidates"]
@@ -203,6 +205,8 @@ def test_targeted_error_is_not_reported_as_empty_model_answer():
     class TargetedError:
         def complete_json(self, *, system_prompt, user_prompt):
             payload = json.loads(user_prompt)
+            if "znp_candidates" in payload:
+                raise DeepSeekError("Cannot connect to DeepSeek API.")
             if "znp_atom" in payload:
                 if payload.get("phase") == "targeted":
                     raise DeepSeekError("Cannot connect to DeepSeek API.")

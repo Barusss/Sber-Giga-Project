@@ -34,6 +34,8 @@ class PositiveAI:
             }
         if "candidates" in payload and "tu_candidates" not in payload:
             return {"conflicts": [], "uncertain_ids": []}
+        if "znp_candidates" in payload:
+            return {"links": []}
         znp = payload["znp_atom"]
         candidates = payload["tu_candidates"]
         target = next((item for item in candidates if item["requirement_id"] == "tu-1"), None)

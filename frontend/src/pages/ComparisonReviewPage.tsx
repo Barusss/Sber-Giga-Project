@@ -21,7 +21,9 @@ type VerificationItem = {
     matches?: Array<{
       atom_id: string; clause_number: string; relation: string; quote: string
       reasoning?: string; page?: number|null; fragment_id?: string|null
-      confidence?: number; param_check?: {mismatches?: string[]}
+      confidence?: number|null; param_check?: {mismatches?: string[]}
+      atom_text?: string; tu_quote?: string; source_phase?: string
+      search_score?: number|null
     }>
     obligations?: Array<{id: string; text: string; context: string}>
     obligation_coverage?: Array<{
@@ -32,6 +34,13 @@ type VerificationItem = {
       candidates_checked: number
       confirmed: Array<{atom_id: string; clause_number: string; quote: string; reasoning?: string}>
       uncertain_atom_ids: string[]
+    }
+    primary_candidate_evaluations?: number
+    ai_model_evaluations?: number
+    validated_links?: number
+    targeted_diagnostics?: {
+      candidates: number; candidates_total?: number; checked: boolean
+      skip_reason?: string|null
     }
     candidate_limit_reached?: boolean
     model_error?: string|null
@@ -158,6 +167,12 @@ export function ComparisonReviewPage({projectId, approved}: {projectId: string; 
       text.toLocaleLowerCase('ru').includes(search.trim().toLocaleLowerCase('ru'))))
   const linkedAtoms = atomResults.filter(atom => atom.links.length > 0).length
   const checkedAtoms = atomResults.filter(atom => atom.model_checked).length
+  const checkedTu = items.filter(item =>
+    item.validation_details?.pipeline === 'znp_first_conservative' &&
+    ((item.validation_details.primary_candidate_evaluations || 0) > 0 ||
+      item.validation_details.targeted_diagnostics?.checked)).length
+  const tuCoverageChecked = items.filter(item =>
+    item.validation_details?.obligation_coverage?.every(condition => condition.checked !== false)).length
   const filtered = useMemo(() => items.filter(item =>
     (status === 'all' || item.status === status)
     && (!search.trim() || [item.requirement.text, item.requirement.clause_number,
@@ -369,14 +384,18 @@ export function ComparisonReviewPage({projectId, approved}: {projectId: string; 
               </button>
               <button type="button" onClick={() => {setPerspective('tu');setSearch('')}}
                 aria-pressed={!showZnp} className={!showZnp ? 'primary' : ''}>
-                ТУ — итоговая проверка ({items.length})
+                ТУ → ЗнП · проверка требований ({items.length})
               </button>
             </div>
-            <div className="workspace-stats">
+            {showZnp ? <div className="workspace-stats">
               <div><strong>{checkedAtoms}</strong><span>Положений ЗнП рассмотрено ИИ</span></div>
               <div><strong>{linkedAtoms}</strong><span>Положений со связями с ТУ</span></div>
               <div><strong>{atomResults.length - checkedAtoms}</strong><span>Ещё не рассмотрено ИИ</span></div>
-            </div>
+            </div> : <div className="workspace-stats">
+              <div><strong>{checkedTu}</strong><span>Требований ТУ рассмотрено ИИ при поиске связей</span></div>
+              <div><strong>{tuCoverageChecked}</strong><span>Требований с завершённой проверкой покрытия</span></div>
+              <div><strong>{items.length - checkedTu}</strong><span>Не рассмотрено ИИ при поиске связей</span></div>
+            </div>}
             {detail.result.trace_info?.matching_limit_reached && <p className="workspace-analysis-note">
               Достигнут лимит запросов основного поиска ЗнП → ТУ.
               Необработанные положения сохранены, отсутствие связи не означает отсутствие соответствия.
@@ -408,6 +427,7 @@ export function ComparisonReviewPage({projectId, approved}: {projectId: string; 
                 {atom.outcome && atom.outcome !== 'accepted_links' && atom.outcome !== 'no_links'
                   ? ` ${atomOutcomes[atom.outcome] || atom.outcome}.` : ''}
                 Кандидатов в первом поиске: {atom.candidates_count}.
+                {atom.targeted_checked ? ' Дополнительный поиск ТУ → ЗнП также рассматривал это положение.' : ''}
                 {atom.links.filter(link => link.source_phase === 'targeted').length > 0
                   ? ` Дополнительным обратным поиском найдено связей: ${atom.links.filter(link => link.source_phase === 'targeted').length}.`
                   : ''}
@@ -432,6 +452,8 @@ export function ComparisonReviewPage({projectId, approved}: {projectId: string; 
                   ТУ {candidate.clause_number} · показатель поиска {Math.round(candidate.similarity_score * 100)}%
                 </p>)}
               </details>}
+              {stageSummary?.targeted.limit_reached && !atom.targeted_checked &&
+                <p className="workspace-analysis-note">Дополнительный поиск ограничен лимитом запросов. Отсутствие связи не является выводом о несоответствии.</p>}
               {atom.links.length ? atom.links.map((link, index) =>
                 <div className="workspace-znp-link" key={link.tu_requirement_id + '-' + index}>
                   <div className="workspace-requirement-head">
@@ -461,6 +483,17 @@ export function ComparisonReviewPage({projectId, approved}: {projectId: string; 
                       <blockquote>{link.tu_quote}</blockquote>
                     </section>
                   </div>
+                  {(() => {
+                    const tuItem = items.find(item => item.requirement.id === link.tu_requirement_id)
+                    const conditions = tuItem?.validation_details?.obligation_coverage || []
+                    return conditions.length ? <details className="workspace-evidence-details">
+                      <summary>Проверка покрытия связанного требования ТУ ({conditions.filter(c => c.status === 'fulfilled').length} из {conditions.length})</summary>
+                      {conditions.map(condition => <p key={condition.obligation_id}>
+                        <strong>{condition.checked === false ? 'Не проверено' : condition.status === 'fulfilled' ? 'Подтверждено' : 'Требует рассмотрения'}</strong> — {condition.text}
+                        {condition.reasoning ? ` · ${condition.reasoning}` : ''}
+                      </p>)}
+                    </details> : null
+                  })()}
                   <div className="workspace-analysis-note">
                     <strong>Вывод сопоставления</strong>
                     <p>{link.reasoning || 'Пояснение модели не сохранено.'}</p>
@@ -503,6 +536,50 @@ export function ComparisonReviewPage({projectId, approved}: {projectId: string; 
               item.method === 'llm' && item.automatic_status !== 'fulfilled'
                 ? null : item.confidence_score
             }/>
+            {item.validation_details?.pipeline === 'znp_first_conservative' && (() => {
+              const diagnostic = item.validation_details
+              const primaryCount = diagnostic.primary_candidate_evaluations || 0
+              const targeted = diagnostic.targeted_diagnostics
+              const covered = diagnostic.obligation_coverage || []
+              const checkedCount = covered.filter(row => row.checked !== false).length
+              const limit = stageSummary?.targeted.limit_reached || llmUsage?.limit_reached
+              return <section className="workspace-stage-overview" aria-label="Этапы проверки требования ТУ">
+                <div className="workspace-stage-summary">
+                  <h4>Основной поиск ЗнП → ТУ</h4>
+                  <strong>{primaryCount} проверок кандидатов</strong>
+                  <p>{primaryCount > 0 ? 'DeepSeek рассматривал это требование среди кандидатов ЗнП.' :
+                    'Это требование не попадало в проверенные моделью кандидаты основного поиска.'}</p>
+                  {stageSummary?.matching.limited && <small>Основной поиск прерван лимитом запросов.</small>}
+                </div>
+                <div className="workspace-stage-summary">
+                  <h4>Дополнительный поиск ТУ → ЗнП</h4>
+                  <strong>{!stageSummary?.targeted.enabled ? 'Отключён' :
+                    targeted?.checked ? 'DeepSeek проверил кандидатов' : 'Не завершён'}</strong>
+                  <p>Кандидатов: {targeted?.candidates || 0}
+                    {targeted?.candidates_total != null && targeted.candidates_total > targeted.candidates
+                      ? ` из ${targeted.candidates_total} найденных` : ''}.
+                    Найденных проверяемых связей: {diagnostic.matches?.filter(m =>
+                      m.relation === 'supports' || m.relation === 'partial' || m.relation === 'conflicts'
+                    ).length || 0}.</p>
+                  {targeted?.skip_reason === 'limit' && <small>Внутренний лимит запросов DeepSeek для дополнительного поиска исчерпан.</small>}
+                  {targeted?.skip_reason === 'model_unavailable' && <small>DeepSeek был недоступен на этом этапе.</small>}
+                  {targeted?.skip_reason === 'invalid_response' && <small>Ответ DeepSeek не прошёл проверку формата.</small>}
+                  {!targeted?.checked && targeted?.skip_reason == null && stageSummary?.targeted.enabled &&
+                    <small>Дополнительный поиск не требовался или кандидаты отсутствовали.</small>}
+                  {limit && !targeted?.checked && <small>Остальные этапы могли быть выполнены частично.</small>}
+                </div>
+                <div className="workspace-stage-summary">
+                  <h4>Проверка условий ТУ</h4>
+                  <strong>{checkedCount} из {covered.length}</strong>
+                  <p>Подтверждено: {covered.filter(row => row.status === 'fulfilled').length}.
+                    Требуют внимания: {covered.filter(row => row.status !== 'fulfilled').length}.</p>
+                  {checkedCount < covered.length &&
+                    <small>Смысловая проверка покрытия не завершена для всех условий.</small>}
+                  {covered.length > 0 && !diagnostic.matches?.length &&
+                    <small>Нет проверенных связей: без доказательств автоматическое соответствие запрещено.</small>}
+                </div>
+              </section>
+            })()}
             <div className="workspace-evidence-grid">
               <section>
                 <h4>Технические условия</h4>
@@ -519,13 +596,15 @@ export function ComparisonReviewPage({projectId, approved}: {projectId: string; 
             </div>
             {item.validation_details?.pipeline === 'znp_first_conservative' && <>
               <div className="workspace-analysis-note">
-                <strong>Сверка ЗнП → ТУ</strong>
+                <strong>Доказательства и диагностика ТУ</strong>
                 <p>Положения ЗнП сопоставлены с требованиями ТУ; ниже сохранены все найденные
                   связи. Отсутствие связи не доказывает отсутствие требования.</p>
                 {item.validation_details.candidate_limit_reached &&
                   <p>Не все поисковые кандидаты были рассмотрены. Итог требует проверки инженера.</p>}
                 {item.validation_details.model_error &&
                   <p>ИИ-анализ не завершён: {item.validation_details.model_error}</p>}
+                {stageSummary?.targeted.limit_reached &&
+                  <p>Лимит дополнительного поиска достигнут. Отсутствие подтверждения не доказывает несоответствие.</p>}
               </div>
               {item.validation_details.obligation_coverage?.length ? <details className="workspace-evidence-details" open>
                 <summary>Покрытие условий ТУ ({item.validation_details.obligation_coverage.filter(x => x.status === 'fulfilled').length} из {item.validation_details.obligation_coverage.length})</summary>
@@ -552,7 +631,24 @@ export function ComparisonReviewPage({projectId, approved}: {projectId: string; 
                     match.relation === 'conflicts' ? 'возможное противоречие' :
                     'частичное соответствие'
                   }</p>
-                  <blockquote>{match.quote}</blockquote>
+                  <div className="workspace-evidence-grid">
+                    <section>
+                      <h4>Задание на проектирование</h4>
+                      {match.atom_text && <p>{match.atom_text}</p>}
+                      <blockquote>{match.quote}</blockquote>
+                    </section>
+                    <section>
+                      <h4>Технические условия</h4>
+                      {match.tu_quote ? <blockquote>{match.tu_quote}</blockquote> :
+                        <p className="muted">Точная цитата ТУ не сохранена.</p>}
+                    </section>
+                  </div>
+                  {match.source_phase &&
+                    <small>Источник связи: {match.source_phase === 'targeted' ?
+                      'дополнительный поиск ТУ → ЗнП' :
+                      match.source_phase === 'matching' ? 'основной поиск ЗнП → ТУ' :
+                      'проверка противоречий'}.</small>}
+                  <AnalysisConfidence scope="link" method="llm" score={match.confidence}/>
                   {match.reasoning && <p>{match.reasoning}</p>}
                   {match.param_check?.mismatches?.length ?
                     <p>Параметры: {match.param_check.mismatches.join('; ')}</p> : null}
