@@ -439,3 +439,12 @@ button.operation-dismiss:hover:not(:disabled) { background:#edf3f6; border:0; co
   .workspace-requirement { break-inside:avoid-page; }
   .workspace-evidence-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
 }
+
+/* Distinguish primary matching, TU coverage and optional reverse retrieval. */
+.workspace-stage-overview { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; margin:16px 0 20px; }
+.workspace-stage-summary { min-width:0; border:1px solid #dee8ee; background:#fff; border-radius:7px; padding:16px 17px; }
+.workspace-stage-summary h4 { margin:0 0 10px; font-size:13px; color:#486d80; }
+.workspace-stage-summary strong { display:block; font-size:19px; line-height:1.3; color:#25495d; }
+.workspace-stage-summary p { font-size:12px; line-height:1.55; color:#435f70; margin:9px 0 6px; }
+.workspace-stage-summary small { display:block; line-height:1.5; color:#677f90; }
+@media(max-width:1050px) { .workspace-stage-overview { grid-template-columns:1fr; } }

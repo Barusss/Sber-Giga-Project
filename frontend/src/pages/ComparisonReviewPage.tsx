@@ -149,6 +149,8 @@ export function ComparisonReviewPage({projectId, approved}: {projectId: string; 
 
   const items = detail?.result.checked_requirements || []
   const atomResults = detail?.result.trace_info?.znp_atom_results || []
+  const stageSummary = detail?.result.trace_info?.comparison_stages
+  const llmUsage = detail?.result.trace_info?.llm_usage
   const showZnp = perspective === 'znp' && atomResults.length > 0
   const filteredAtoms = atomResults.filter(atom => !search.trim() ||
     [atom.text, atom.clause_number, ...atom.links.map(link =>
@@ -325,6 +327,40 @@ export function ComparisonReviewPage({projectId, approved}: {projectId: string; 
                 <p key={reason}>{reason}: {count}</p>)}
           </details>}
           <AnalysisScoreExplanation/>
+          {stageSummary && <section className="workspace-stage-overview" aria-label="Этапы сверки">
+            <div className="workspace-stage-summary">
+              <h4>Поиск ЗнП → ТУ</h4>
+              <strong>{stageSummary.matching.checked} из {stageSummary.matching.total}</strong>
+              <p>Положений ЗнП проверено моделью. Принято связей: {stageSummary.matching.validated_links}.</p>
+              <small>Запросов: {llmUsage?.attempted_by_phase.matching ?? 'нет данных'}.
+                {stageSummary.matching.unreviewed > 0
+                  ? ` Не проверено: ${stageSummary.matching.unreviewed}.`
+                  : ' Основной проход завершён.'}</small>
+            </div>
+            <div className="workspace-stage-summary">
+              <h4>Покрытие условий ТУ</h4>
+              <strong>{stageSummary.coverage.fulfilled} из {stageSummary.coverage.total}</strong>
+              <p>Условий подтверждено доказательствами. Не проверено: {stageSummary.coverage.unreviewed}.</p>
+              <small>Запросов: {llmUsage?.attempted_by_phase.coverage ?? 'нет данных'}.
+                {stageSummary.coverage.unreviewed > 0
+                  ? ' Проверка покрытия неполная, отсутствие подтверждения не означает несоответствие.'
+                  : ` Без доказательств: ${stageSummary.coverage.uncovered}.`}</small>
+            </div>
+            <div className="workspace-stage-summary">
+              <h4>Дополнительный поиск ТУ → ЗнП</h4>
+              {stageSummary.targeted.enabled ? <>
+                <strong>{llmUsage?.attempted_by_phase.targeted ?? stageSummary.targeted.attempted} запросов</strong>
+                <p>Вспомогательный обратный поиск: принято связей {stageSummary.targeted.validated_links}.</p>
+                <small>{stageSummary.targeted.limit_reached
+                  ? 'Лимит дополнительного поиска достигнут. Основной поиск от этого не становится незавершённым.'
+                  : 'Отдельный этап, не показатель качества основного поиска.'}</small>
+              </> : <>
+                <strong>Отключён</strong>
+                <p>В тесте 10 × 10 выполняются только поиск ЗнП → ТУ и оценка покрытия.</p>
+                <small>Дополнительные платные запросы не выполнялись.</small>
+              </>}
+            </div>
+          </section>}
           {atomResults.length > 0 && <>
             <div className="workspace-toolbar">
               <button type="button" onClick={() => {setPerspective('znp');setSearch('')}}
@@ -362,15 +398,19 @@ export function ComparisonReviewPage({projectId, approved}: {projectId: string; 
               <div className="workspace-requirement-head">
                 <h3>Положение ЗнП {atom.clause_number}</h3>
                 <span className={'workspace-status '+(atom.links.length ? 'completed' : 'queued')}>
-                  {atom.links.length ? `Связей с ТУ: ${atom.links.length}` :
-                    atom.model_checked ? 'Подтверждённых связей нет' : 'Не рассмотрено ИИ'}
+                  {atom.links.length ? `Проверяемых связей: ${atom.links.length}` :
+                    atom.model_checked ? 'Основной поиск: связей не найдено' : 'Основной поиск не завершён'}
                 </span>
               </div>
               <p className="muted">
-                {atom.outcome ? atomOutcomes[atom.outcome] || atom.outcome :
-                  atom.model_checked ? 'DeepSeek проверил кандидатов ТУ' :
-                    'DeepSeek не завершил проверку этого положения'}.
+                {atom.model_checked ? 'Основной поиск: DeepSeek проверил кандидатов ТУ' :
+                  'Основной поиск: DeepSeek не завершил проверку положения'}.
+                {atom.outcome && atom.outcome !== 'accepted_links' && atom.outcome !== 'no_links'
+                  ? ` ${atomOutcomes[atom.outcome] || atom.outcome}.` : ''}
                 Кандидатов в первом поиске: {atom.candidates_count}.
+                {atom.links.filter(link => link.source_phase === 'targeted').length > 0
+                  ? ` Дополнительным обратным поиском найдено связей: ${atom.links.filter(link => link.source_phase === 'targeted').length}.`
+                  : ''}
                 {atom.page != null ? ` Страница ЗнП: ${atom.page}.` : ''}
               </p>
               {atom.search_channels?.length === 1 && atom.search_channels[0] === 'lexical' &&
@@ -395,7 +435,11 @@ export function ComparisonReviewPage({projectId, approved}: {projectId: string; 
               {atom.links.length ? atom.links.map((link, index) =>
                 <div className="workspace-znp-link" key={link.tu_requirement_id + '-' + index}>
                   <div className="workspace-requirement-head">
-                    <strong>Связь с ТУ {link.tu_clause_number}</strong>
+                    <strong>Связь с ТУ {link.tu_clause_number}
+                      {link.source_phase === 'targeted' ? ' · дополнительный поиск ТУ → ЗнП' :
+                       link.source_phase === 'matching' ? ' · основной поиск ЗнП → ТУ' :
+                       link.source_phase === 'audit' ? ' · независимая проверка противоречий' : ''}
+                    </strong>
                     <span className={'workspace-status '+(
                       link.relation === 'supports' ? 'fulfilled' : 'needs_review'
                     )}>
@@ -486,7 +530,10 @@ export function ComparisonReviewPage({projectId, approved}: {projectId: string; 
               {item.validation_details.obligation_coverage?.length ? <details className="workspace-evidence-details" open>
                 <summary>Покрытие условий ТУ ({item.validation_details.obligation_coverage.filter(x => x.status === 'fulfilled').length} из {item.validation_details.obligation_coverage.length})</summary>
                 {item.validation_details.obligation_coverage.map(condition => <div key={condition.obligation_id}>
-                  <p><strong>{condition.status === 'fulfilled' ? 'Подтверждено' : 'Требует проверки'}</strong> — {condition.text}</p>
+                  <p><strong>{condition.checked === false ? 'Не проверено (этап покрытия не завершён)' :
+                    condition.status === 'fulfilled' ? 'Подтверждено' :
+                    condition.status === 'uncovered' ? 'Доказательств не найдено' :
+                    'Требует проверки'}</strong> — {condition.text}</p>
                   {condition.reasoning && <p>{condition.reasoning}</p>}
                   {condition.evidence_ids?.length ? <p>Связанных доказательств: {condition.evidence_ids.length}</p> : null}
                 </div>)}
