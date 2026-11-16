@@ -57,6 +57,8 @@ class TrackedRequirementsLLM:
             return "atomization"
         if "obligation" in payload:
             return "coverage"
+        if payload.get("phase") == "targeted" and "tu_requirement" in payload and "znp_candidates" in payload:
+            return "targeted"
         if "znp_atom" in payload:
             return "targeted" if payload.get("phase") == "targeted" else "matching"
         if "candidates" in payload and "requirement" in payload:
