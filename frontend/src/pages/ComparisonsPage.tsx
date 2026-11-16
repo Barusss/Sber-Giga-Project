@@ -222,7 +222,7 @@ export function ComparisonsPage({projectId, approved}: {projectId: string; appro
                 {!approved && <button type="button" className="secondary"
                   title="Только первые 10 ТУ и 10 положений ЗнП; основная проверка не меняется"
                   disabled={busy || runningPairs.has(pair.id)}
-                  onClick={() => run([pair.id], true)}>Тест 10 × 10</button>
+                  onClick={() => run([pair.id], true)}>Тест 10 × 10</button>}
                 {!approved && <button type="button" className="workspace-danger" disabled={busy || runningPairs.has(pair.id)}
                   onClick={() => remove(pair)}>Удалить</button>}
               </div></td>

@@ -237,10 +237,10 @@ def _run_comparisons(db: Session, job: OperationJob) -> dict:
                 _update(progress_db, job.id, stage=stage, message=message,
                         result={"runs": list(results), "comparison_progress": last_progress})
 
-        result = execute_comparison(
-            job.project_id, pair_id, db, progress_callback=report,
-            test_mode=bool(job.params.get("test_mode", False)),
-        )
+        kwargs = {"progress_callback": report}
+        if job.params.get("test_mode", False):
+            kwargs["test_mode"] = True
+        result = execute_comparison(job.project_id, pair_id, db, **kwargs)
         results.append({"pair_id": pair_id, "run_id": result["run"]["id"]})
         _update(db, job.id, stage="comparing",
                 message=f"Выполнено сверок: {index + 1} из {len(pair_ids)}",
