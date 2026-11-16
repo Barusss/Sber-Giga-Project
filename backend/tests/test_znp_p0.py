@@ -56,6 +56,19 @@ class GroundedAI:
                     })
             return {"conflicts": conflicts, "uncertain_ids": []}
         self.phases.append(payload["phase"])
+        if "znp_candidates" in payload:
+            if not self.only_targeted or not payload["znp_candidates"]:
+                return {"links": []}
+            atom = payload["znp_candidates"][0]
+            target = payload["tu_requirement"]
+            return {"links": [{
+                "atom_id": atom["atom_id"],
+                "relation": "supports",
+                "tu_quote": target["text"],
+                "znp_quote": atom["text"],
+                "confidence": 0.94,
+                "reasoning": "Проверено в пакетном целевом поиске",
+            }]}
         atom = payload["znp_atom"]
         target = payload["tu_candidates"][0] if payload["tu_candidates"] else None
         if target is None or (self.only_targeted and payload["phase"] != "targeted"):
