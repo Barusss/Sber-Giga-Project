@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import time
+from math import isfinite
 from collections import Counter, defaultdict
 from typing import Any, Callable
 from uuid import uuid4
@@ -176,8 +177,14 @@ class ZnPFirstAgent:
             if isinstance(source, dict):
                 return source.get(name)
             return getattr(source, name, None)
+        raw_confidence = proposal.get("confidence")
+        model_confidence_available = False
         try:
-            confidence = max(0.0, min(1.0, float(proposal.get("confidence", 0))))
+            number = float(raw_confidence)
+            model_confidence_available = (
+                raw_confidence is not None and isfinite(number)
+            )
+            confidence = max(0.0, min(1.0, number)) if model_confidence_available else 0.0
         except (ValueError, TypeError):
             confidence = 0.0
         params = tool_verify_engineering_params(requirement.text, atom.text)
@@ -203,6 +210,7 @@ class ZnPFirstAgent:
             "quote": znp_quote,
             "relation": relation,
             "confidence": round(confidence, 3),
+            "model_confidence_available": model_confidence_available,
             "search_score": round(float(similarity), 3),
             "reasoning": str(proposal.get("reasoning") or ""),
             "param_check": params,
@@ -230,6 +238,7 @@ class ZnPFirstAgent:
         znp_by_id = {item.id: item for item in znp_clauses}
         model_available = True
         model_error: str | None = None
+        model_failure_kind: str | None = None
         limited_atoms: list[str] = []
         matching_limited = False
         if progress_callback:
@@ -308,6 +317,7 @@ class ZnPFirstAgent:
                         })
                         break
                     model_error = str(exc)
+                    model_failure_kind = type(exc).__name__
                     model_available = False
                     atom_trace["steps"].append({"tool": "llm_fallback", "reason": model_error})
                     break
@@ -470,6 +480,7 @@ class ZnPFirstAgent:
                                         trace["outcome"] = "request_limit"
                                     break
                                 model_error = str(exc)
+                                model_failure_kind = type(exc).__name__
                                 model_available = False
                                 trace = traces_by_atom[atom.id]
                                 trace["steps"].append({"tool": "targeted_error", "reason": model_error})
@@ -615,6 +626,11 @@ class ZnPFirstAgent:
                     "tu_clause_number": requirement.clause_number,
                     "tu_text": requirement.text[:1000],
                     "relation": link["relation"],
+                    "confidence": (
+                        link.get("confidence")
+                        if link.get("model_confidence_available") else None
+                    ),
+                    "search_score": link.get("search_score"),
                     "tu_quote": link["tu_quote"],
                     "znp_quote": link["quote"],
                     "reasoning": link.get("reasoning", ""),
@@ -756,6 +772,7 @@ class ZnPFirstAgent:
                 "rejected_links": dict(rejected),
                 "stopped_due_to_invalid_evidence": stopped_due_to_invalid_evidence,
                 "targeted_limit_reached": targeted_limit_hit,
+                "model_failure_kind": model_failure_kind,
                 "embedding": self.embedder.status(),
                 "degraded": not model_available or targeted_limit_hit or matching_limited or audit_failed,
             },

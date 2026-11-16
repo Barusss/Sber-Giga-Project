@@ -59,6 +59,8 @@ def test_preview_limits_both_inputs_and_stays_read_only(client, monkeypatch):
     assert data["run"]["test_mode"] is True
     assert data["run"]["is_current"] is False
     assert meta["enabled"] is True and meta["isolated"] is True
+    assert meta["technical_selection"] is True
+    assert meta["coverage_call_budget"] >= 16
     assert meta["tu_selected"] == 10
     assert meta["znp_source_clauses_selected"] == 10
     assert meta["znp_atoms_selected"] == 10
@@ -68,7 +70,7 @@ def test_preview_limits_both_inputs_and_stays_read_only(client, monkeypatch):
         entry["candidates_count"] == 10
         for entry in result["trace_info"]["znp_atom_results"]
     )
-    assert result["trace_info"]["llm_usage"]["model_calls_limit"] <= 45
+    assert result["trace_info"]["llm_usage"]["model_calls_limit"] <= 55
     assert [row["requirement"]["clause_number"] for row in result["checked_requirements"]] == [
         str(i) for i in range(1, 11)
     ]
@@ -120,3 +122,78 @@ def test_operation_rejects_preview_batch_or_other_operation(client, monkeypatch)
         "kind": "normative_extract", "test_mode": True,
     })
     assert wrong.status_code == 422
+
+
+
+def test_preview_connection_failure_does_not_save_zero_run(client, monkeypatch):
+    from app.ai.deepseek import DeepSeekConnectionError
+
+    pid, pair_id = project_with_clauses(client, monkeypatch, count=2)
+    runs_url = f"/api/v1/projects/{pid}/comparisons/{pair_id}/runs"
+    full = client.post(runs_url)
+    assert full.status_code == 201, full.text
+    baseline_id = full.json()["run"]["id"]
+    before = client.get(f"/api/v1/requirements/projects/{pid}/verifications").json()
+
+    def outage(self, *, system_prompt, user_prompt):
+        raise DeepSeekConnectionError("DeepSeek connect failed after retries")
+
+    monkeypatch.setattr("app.ai.deepseek.DeepSeekClient.complete_json", outage)
+    response = client.post(runs_url, params={"test_mode": "true"})
+    assert response.status_code == 503, response.text
+    assert "0 of 2" in response.json()["detail"]
+    assert client.get(runs_url).json()[0]["id"] == baseline_id
+    assert len(client.get(runs_url).json()) == 1
+    assert client.get(f"/api/v1/projects/{pid}/comparisons/{pair_id}").json()[
+        "current_run_id"] == baseline_id
+    assert client.get(f"/api/v1/requirements/projects/{pid}/verifications").json() == before
+
+
+def test_preview_skips_legal_reference_catalog_and_preamble():
+    def blocks(data, suffix):
+        if data == b"tu-preview":
+            return [
+                ExtractedBlock(1, 0, "1.1. Основание: настоящее техническое условие."),
+                ExtractedBlock(1, 1, "1.2. Нормативные документы: ГОСТ 1234, ГОСТ 5678; "
+                               "СП 12.3; СНиП 3.4. Оборудование электросети."),
+                ExtractedBlock(2, 0, "1.3. Максимальная мощность 150 кВт."),
+                ExtractedBlock(3, 0, "1.4. Предусмотреть напряжение 10 кВ."),
+            ]
+        return [
+            ExtractedBlock(2, 0, "2.1. Предусмотреть напряжение 10 кВ."),
+            ExtractedBlock(3, 0, "2.2. Предусмотреть мощность 150 кВт."),
+        ]
+
+    # The preview selector excludes reference lists before paid work.
+    from app.requirements.preview_selection import select_technical_preview
+    from types import SimpleNamespace
+    items = [SimpleNamespace(text=row.text) for row in blocks(b"tu-preview", ".pdf")]
+    selected = select_technical_preview(items)
+    assert len(selected) == 2
+    assert "мощность" in selected[0].text
+    assert "напряжение" in selected[1].text
+
+
+
+def test_full_comparison_network_failure_preserves_current_run(client, monkeypatch):
+    from app.ai.deepseek import DeepSeekConnectionError
+
+    pid, pair_id = project_with_clauses(client, monkeypatch, count=2)
+    runs_url = f"/api/v1/projects/{pid}/comparisons/{pair_id}/runs"
+    full = client.post(runs_url)
+    assert full.status_code == 201, full.text
+    baseline = full.json()["run"]["id"]
+    before = client.get(f"/api/v1/requirements/projects/{pid}/verifications").json()
+    existing = client.get(f"/api/v1/projects/{pid}/findings").json()
+
+    def broken(self, *, system_prompt, user_prompt):
+        raise DeepSeekConnectionError("DeepSeek connection failed after safe retries")
+
+    monkeypatch.setattr("app.ai.deepseek.DeepSeekClient.complete_json", broken)
+    failed = client.post(runs_url)
+    assert failed.status_code == 503, failed.text
+    assert len(client.get(runs_url).json()) == 1
+    assert client.get(f"/api/v1/projects/{pid}/comparisons/{pair_id}").json()[
+        "current_run_id"] == baseline
+    assert client.get(f"/api/v1/requirements/projects/{pid}/verifications").json() == before
+    assert client.get(f"/api/v1/projects/{pid}/findings").json() == existing

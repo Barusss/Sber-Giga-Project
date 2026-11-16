@@ -220,7 +220,7 @@ export function ComparisonsPage({projectId, approved}: {projectId: string; appro
                   <button type="button" className="secondary" disabled={busy || runningPairs.has(pair.id)}
                     onClick={() => run([pair.id])}>Запустить</button>}
                 {!approved && <button type="button" className="secondary"
-                  title="Только первые 10 ТУ и 10 положений ЗнП; основная проверка не меняется"
+                  title="До 10 технических требований ТУ и 10 положений ЗнП; пропускаем нормативные перечни, основную проверку не меняем"
                   disabled={busy || runningPairs.has(pair.id)}
                   onClick={() => run([pair.id], true)}>Тест 10 × 10</button>}
                 {!approved && <button type="button" className="workspace-danger" disabled={busy || runningPairs.has(pair.id)}

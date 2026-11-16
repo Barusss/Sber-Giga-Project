@@ -94,13 +94,10 @@ def test_queued_preview_distinguishes_provider_error_from_empty_links(flow, monk
         "kind": "comparison", "pair_ids": [pair], "test_mode": True})
     assert response.status_code == 202, response.text
     job = client.get(f"/api/v1/projects/{project}/operations/{response.json()['id']}").json()
-    assert job["status"] == "completed", job
-    saved = client.get(f"/api/v1/projects/{project}/comparisons/{pair}/runs/"
-                       + job["result"]["runs"][0]["run_id"]).json()
-    atoms = saved["result"]["trace_info"]["znp_atom_results"]
-    assert atoms[0]["outcome"] == "model_error"
-    assert all(atom["outcome"] != "no_links" for atom in atoms)
-    assert saved["result"]["trace_info"]["llm_usage"]["errors_by_phase"]["matching"] == 1
+    assert job["status"] == "failed", job
+    assert "0 of 10 ZnP atoms checked" in job["error"]
+    runs = client.get(f"/api/v1/projects/{project}/comparisons/{pair}/runs").json()
+    assert runs == []
 
 
 def test_queued_preview_explains_rejected_source_quote(flow, monkeypatch):
@@ -371,12 +368,10 @@ def test_queued_preview_reports_request_limit(flow, monkeypatch):
     response = client.post(f"/api/v1/projects/{project}/operations", json={
         "kind": "comparison", "pair_ids": [pair], "test_mode": True})
     job = client.get(f"/api/v1/projects/{project}/operations/{response.json()['id']}").json()
-    assert job["status"] == "completed", job
-    result = client.get(f"/api/v1/projects/{project}/comparisons/{pair}/runs/"
-                        + job["result"]["runs"][0]["run_id"]).json()["result"]
-    assert result["trace_info"]["llm_usage"]["limit_reached"] is True
-    assert result["trace_info"]["znp_atom_results"][1]["outcome"] == "request_limit"
-    assert result["trace_info"]["znp_atom_results"][1]["model_checked"] is False
+    assert job["status"] == "failed", job
+    assert "1 of 10 ZnP atoms checked" in job["error"]
+    runs = client.get(f"/api/v1/projects/{project}/comparisons/{pair}/runs").json()
+    assert runs == []
 
 
 def test_queued_preview_preserves_manual_verdict_and_findings(flow):

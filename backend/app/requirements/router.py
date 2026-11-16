@@ -35,6 +35,8 @@ from app.core.models import (
 from app.requirements.agent import RequirementsAgent
 from app.requirements.atomization import atomize_fragments
 from app.requirements.semantic_atomization import semantic_atomize
+from app.requirements.preview_selection import select_technical_preview
+from app.requirements.tools import _list_items
 from app.requirements.llm_tracking import TrackedRequirementsLLM
 from app.core.config import settings
 from app.requirements.znp_first import ZnPFirstAgent
@@ -643,28 +645,36 @@ def _analyze_test_subset(
     Restrict source inputs BEFORE DeepSeek atomization. Keep every child atom
     of those ten source clauses so splitting cannot silently drop evidence.
     """
-    selected_tu = tu_raw[:10]
+    selected_tu = select_technical_preview(tu_raw, limit=10)
     znp_fragments = db.scalars(
         select(Fragment).where(Fragment.document_id == znp_doc.id)
         .order_by(Fragment.page, Fragment.position)
     ).all()
     original_atoms = atomize_fragments(znp_doc.id, znp_fragments)
-    source_atoms = original_atoms[:10]
+    source_atoms = select_technical_preview(original_atoms, limit=10)
     if not selected_tu or not source_atoms:
-        raise HTTPException(422, "Test mode needs extracted TU and ZnP clauses")
+        raise HTTPException(
+            422, "Test mode needs eligible technical TU and ZnP clauses; "
+                 "legal preambles and standards lists are excluded",
+        )
 
-    # One 10-item candidate batch per ZnP atom: all first ten TU clauses
-    # are shown to the matching model, without costly extra search pages.
+    # One candidate batch per ZnP atom. Coverage budget reflects the ACTUAL
+    # number of selected obligations, rather than 15 fixed requests for any
+    # input. Nontechnical legal catalogs are excluded before paid work.
     agent.batch_size = 10
     agent.max_batches = 1
+    expected_obligations = sum(
+        max(1, len(_list_items(clause.text))) for clause in selected_tu
+    )
+    coverage_budget = min(30, max(16, expected_obligations * 2))
     ledger = TrackedRequirementsLLM(
         agent.ai,
-        max_calls=min(45, settings.requirements_llm_max_calls),
-        atomization_limit=min(10, settings.requirements_llm_atomization_calls),
+        max_calls=min(55, settings.requirements_llm_max_calls),
+        atomization_limit=min(7, settings.requirements_llm_atomization_calls),
         matching_limit=20,
-        coverage_limit=15,
+        coverage_limit=coverage_budget,
         targeted_limit=min(5, settings.requirements_llm_targeted_calls),
-        contradictions_limit=5,
+        contradictions_limit=3,
     )
     agent.ai = ledger
     atomization = semantic_atomize(source_atoms, ledger)
@@ -726,6 +736,19 @@ def _analyze_test_subset(
     result = agent.verify_all(
         tu_schemas, znp_schemas, progress_callback=progress_callback,
     )
+    primary_checked = sum(
+        bool(trace.get("model_checked"))
+        for trace in (result.trace_info or {}).get("agent_runs", [])
+    )
+    if primary_checked != len(znp_schemas):
+        # No snapshot is saved and no global analysis rows are modified.
+        # A failed mandatory search must not masquerade as a completed test.
+        raise HTTPException(
+            503,
+            f"Test AI matching incomplete: {primary_checked} of "
+            f"{len(znp_schemas)} ZnP atoms checked. "
+            "The previous comparison result was preserved.",
+        )
     _attach_provenance(result.checked_requirements, tu_schemas, znp_schemas)
     fragments = {
         fragment.id: fragment
@@ -753,6 +776,9 @@ def _analyze_test_subset(
         "tu_limit": 10,
         "znp_limit": 10,
         "tu_selected": len(tu_schemas),
+        "tu_obligations_estimated": expected_obligations,
+        "coverage_call_budget": coverage_budget,
+        "technical_selection": True,
         "znp_source_clauses_selected": len(source_atoms),
         "znp_atoms_selected": len(znp_schemas),
         "znp_atoms_after_split": len(atomization.atoms),
@@ -1041,6 +1067,21 @@ def _analyze_project_requirements(
     )
     if response.trace_info is None:
         response.trace_info = {}
+    if (
+        not payload.test_mode
+        and isinstance(agent, ZnPFirstAgent)
+        and response.trace_info.get("model_failure_kind") in {
+            "DeepSeekConnectionError", "DeepSeekAPIError", "DeepSeekResponseError"
+        }
+    ):
+        # Do not commit an apparently completed comparison when an essential
+        # provider request failed. The worker/session rolls back all changes,
+        # preserving the previously current run and expert decisions.
+        raise HTTPException(
+            503,
+            "DeepSeek request failed during comparison; no new result was saved. "
+            "The previous comparison remains current. Inspect safe API logs.",
+        )
     if atomization_trace is not None:
         response.trace_info["atomization"] = atomization_trace
         if atomization_trace["degraded"]:

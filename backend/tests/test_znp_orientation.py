@@ -68,6 +68,8 @@ def test_primary_output_contains_znp_atoms_with_links_to_tu():
     assert all(item["model_checked"] for item in atoms)
     assert all(item["links"][0]["tu_requirement_id"] == "tu-1" for item in atoms)
     assert all(item["links"][0]["tu_clause_number"] == "1" for item in atoms)
+    assert all(item["links"][0]["confidence"] == 0.95 for item in atoms)
+    assert all(isinstance(item["links"][0]["search_score"], float) for item in atoms)
     assert result.trace_info["validated_links"] == 2
 
 
@@ -112,3 +114,38 @@ def test_matching_phase_limit_preserves_coverage_budget_and_reports_unseen_atoms
     assert ledger.attempted["coverage"] >= 1
     assert ledger.total <= 12
     assert trace["validated_links"] == 1
+
+
+
+def test_model_confidence_missing_is_not_invented_as_zero_in_znp_view():
+    class Unrated(MatchModel):
+        def complete_json(self, *, system_prompt, user_prompt):
+            response = super().complete_json(
+                system_prompt=system_prompt, user_prompt=user_prompt,
+            )
+            if "links" in response:
+                for link in response["links"]:
+                    link.pop("confidence", None)
+            return response
+
+    result = compare([requirement()], [znp(1)], Unrated())
+    link = result.trace_info["znp_atom_results"][0]["links"][0]
+    assert link["confidence"] is None
+    assert link["relation"] == "partial"
+    assert result.checked_requirements[0].validation_details["matches"][0][
+        "model_confidence_available"
+    ] is False
+
+
+def test_invalid_nonfinite_confidence_is_not_displayed_as_a_percentage():
+    class InvalidScore(MatchModel):
+        def complete_json(self, *, system_prompt, user_prompt):
+            response = super().complete_json(
+                system_prompt=system_prompt, user_prompt=user_prompt,
+            )
+            if "links" in response:
+                response["links"][0]["confidence"] = "nan"
+            return response
+
+    result = compare([requirement()], [znp(1)], InvalidScore())
+    assert result.trace_info["znp_atom_results"][0]["links"][0]["confidence"] is None

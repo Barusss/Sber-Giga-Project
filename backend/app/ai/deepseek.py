@@ -6,15 +6,23 @@ without authentication and rate limits.
 """
 
 import json
+import logging
+import time
 from typing import Any
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 from app.core.config import Settings, settings
 
 
 class DeepSeekError(RuntimeError):
     """Sanitized DeepSeek error: never includes credentials or document text."""
+
+
+class DeepSeekConnectionError(DeepSeekError):
+    """Connection was not established despite safe setup-only retries."""
 
 
 class DeepSeekNotConfigured(DeepSeekError):
@@ -39,7 +47,26 @@ class DeepSeekClient:
         http_client: httpx.Client | None = None,
     ) -> None:
         self._config = config if config is not None else settings
-        self._http_client = http_client
+        self._owned_client = http_client is None
+        # Reuse pooled TLS connections across all model stages of one run.
+        self._http_client = (
+            http_client if http_client is not None
+            else httpx.Client(timeout=self._config.deepseek_timeout_seconds)
+        )
+
+    def close(self) -> None:
+        if self._owned_client:
+            self._http_client.close()
+
+    def __del__(self):
+        # Best-effort cleanup if the caller did not close the owned pool.
+        if getattr(self, "_owned_client", False):
+            client = getattr(self, "_http_client", None)
+            if client is not None:
+                try:
+                    client.close()
+                except Exception:
+                    pass
 
     def complete(
         self,
@@ -76,19 +103,48 @@ class DeepSeekClient:
 
         url = self._config.deepseek_base_url.rstrip("/") + "/chat/completions"
         headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
-        try:
-            if self._http_client is not None:
+        # Retries are limited to connection establishment failures, before
+        # a request can have reached the provider. Never replay ReadTimeout,
+        # ReadError, WriteError, RemoteProtocolError, or an HTTP response:
+        # provider-side processing/billing could already have occurred.
+        for attempt in range(1, 4):
+            started = time.monotonic()
+            try:
                 response = self._http_client.post(
                     url, json=body, headers=headers,
                     timeout=self._config.deepseek_timeout_seconds,
                 )
-            else:
-                with httpx.Client(timeout=self._config.deepseek_timeout_seconds) as client:
-                    response = client.post(url, json=body, headers=headers)
-        except httpx.TimeoutException as exc:
-            raise DeepSeekAPIError("DeepSeek request timed out.") from exc
-        except httpx.RequestError as exc:
-            raise DeepSeekAPIError("Cannot connect to DeepSeek API.") from exc
+                break
+            except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+                elapsed_ms = int((time.monotonic() - started) * 1000)
+                logger.warning(
+                    "DeepSeek network error: stage=connect type=%s attempt=%d/3 elapsed_ms=%d",
+                    type(exc).__name__, attempt, elapsed_ms,
+                )
+                if attempt == 3:
+                    raise DeepSeekConnectionError(
+                        f"DeepSeek connection setup failed after {attempt} attempts "
+                        f"({type(exc).__name__}); check container network or retry."
+                    ) from exc
+                time.sleep((0.3, 0.8)[attempt - 1])
+            except httpx.TimeoutException as exc:
+                logger.warning(
+                    "DeepSeek network error: stage=request type=%s attempt=1/1 elapsed_ms=%d",
+                    type(exc).__name__, int((time.monotonic() - started) * 1000),
+                )
+                raise DeepSeekAPIError(
+                    f"DeepSeek request timed out ({type(exc).__name__}); "
+                    "not retried because delivery is uncertain."
+                ) from exc
+            except httpx.RequestError as exc:
+                logger.warning(
+                    "DeepSeek network error: stage=request type=%s attempt=1/1 elapsed_ms=%d",
+                    type(exc).__name__, int((time.monotonic() - started) * 1000),
+                )
+                raise DeepSeekAPIError(
+                    f"DeepSeek request transport error ({type(exc).__name__}); "
+                    "not retried because delivery is uncertain."
+                ) from exc
 
         if response.status_code >= 400:
             descriptions = {
