@@ -1,6 +1,7 @@
 """Regression checks for batched TU->ZnP fallback and truthful diagnostics."""
 import json
 
+from app.ai.deepseek import DeepSeekResponseError
 from app.ai.embeddings import EmbeddingService
 from app.requirements.llm_tracking import TrackedRequirementsLLM
 from app.requirements.schemas import RequirementCategory, TURequirement, ZNPClause
@@ -87,3 +88,110 @@ def test_batched_targeted_phase_is_accounted_for_in_its_own_budget():
     response = '{"phase":"targeted","tu_requirement":{"id":"x"},"znp_candidates":[]}'
     assert TrackedRequirementsLLM.phase(response) == "targeted"
     assert ledger.phase_exhausted("targeted") is True
+
+
+class TruncateLarge(NoLinks):
+    def complete_json(self, *, system_prompt, user_prompt):
+        payload = json.loads(user_prompt)
+        candidates = payload.get("znp_candidates")
+        if candidates is not None:
+            if len(candidates) > 2:
+                raise DeepSeekResponseError(
+                    "DeepSeek response was truncated; increase DEEPSEEK_MAX_TOKENS."
+                )
+            return {"links": []}
+        return super().complete_json(
+            system_prompt=system_prompt, user_prompt=user_prompt,
+        )
+
+
+def test_truncated_targeted_batch_retries_with_smaller_batches():
+    ledger = TrackedRequirementsLLM(TruncateLarge(), max_calls=50, targeted_limit=10)
+    agent = ZnPFirstAgent(
+        ai_client=ledger, embedder=EmbeddingService(enabled=False),
+        batch_size=3, max_batches=1,
+    )
+    result = agent.verify_all([requirement(1)], [atom(i) for i in range(1, 5)])
+    details = result.checked_requirements[0].validation_details["targeted_diagnostics"]
+    assert ledger.trace()["attempted_by_phase"]["targeted"] == 3
+    assert ledger.trace()["responses_by_phase"]["targeted"] == 2
+    assert details["checked"] is True
+    assert details["checked_candidates"] == 4
+    assert details["unchecked_candidates"] == 0
+    assert details["truncated_responses"] == 1
+    assert result.trace_info["targeted_truncated_responses"] == 1
+    assert result.trace_info["model_failure_kind"] is None
+    assert result.trace_info["degraded"] is False
+
+
+class TruncateOne(NoLinks):
+    def complete_json(self, *, system_prompt, user_prompt):
+        payload = json.loads(user_prompt)
+        candidates = payload.get("znp_candidates")
+        if candidates is not None:
+            if len(candidates) > 2 or any(
+                row["atom_id"] == "a1" for row in candidates
+            ):
+                raise DeepSeekResponseError(
+                    "DeepSeek response was truncated; increase DEEPSEEK_MAX_TOKENS."
+                )
+            return {"links": []}
+        return super().complete_json(
+            system_prompt=system_prompt, user_prompt=user_prompt,
+        )
+
+
+def test_single_candidate_truncation_is_incomplete_not_a_global_failure():
+    ledger = TrackedRequirementsLLM(TruncateOne(), max_calls=50, targeted_limit=15)
+    agent = ZnPFirstAgent(
+        ai_client=ledger, embedder=EmbeddingService(enabled=False),
+        batch_size=3, max_batches=1,
+    )
+    result = agent.verify_all([requirement(1)], [atom(i) for i in range(1, 5)])
+    item = result.checked_requirements[0]
+    details = item.validation_details["targeted_diagnostics"]
+    assert details["checked"] is False
+    assert details["checked_candidates"] == 3
+    assert details["unchecked_candidates"] == 1
+    assert details["skip_reason"] == "truncated"
+    assert result.trace_info["targeted_incomplete_requirements"] == 1
+    assert result.trace_info["model_failure_kind"] is None
+    assert result.trace_info["degraded"] is True
+    assert item.status.value == "needs_review"
+
+
+def test_truncated_split_respects_targeted_phase_limit():
+    ledger = TrackedRequirementsLLM(TruncateLarge(), max_calls=50, targeted_limit=1)
+    agent = ZnPFirstAgent(
+        ai_client=ledger, embedder=EmbeddingService(enabled=False),
+        batch_size=3, max_batches=1,
+    )
+    result = agent.verify_all([requirement(1)], [atom(i) for i in range(1, 5)])
+    details = result.checked_requirements[0].validation_details["targeted_diagnostics"]
+    assert ledger.trace()["attempted_by_phase"]["targeted"] == 1
+    assert details["checked"] is False
+    assert details["unchecked_candidates"] == 4
+    assert details["skip_reason"] == "limit"
+    assert result.trace_info["targeted_limit_reached"] is True
+    assert result.trace_info["degraded"] is True
+
+
+class InvalidResponse(NoLinks):
+    def complete_json(self, *, system_prompt, user_prompt):
+        payload = json.loads(user_prompt)
+        if "znp_candidates" in payload:
+            raise DeepSeekResponseError("DeepSeek returned invalid JSON.")
+        return super().complete_json(
+            system_prompt=system_prompt, user_prompt=user_prompt,
+        )
+
+
+def test_non_truncation_response_error_stays_fatal():
+    ledger = TrackedRequirementsLLM(InvalidResponse(), max_calls=50)
+    agent = ZnPFirstAgent(
+        ai_client=ledger, embedder=EmbeddingService(enabled=False),
+        batch_size=3, max_batches=1,
+    )
+    result = agent.verify_all([requirement(1)], [atom(i) for i in range(1, 5)])
+    assert result.trace_info["model_failure_kind"] == "DeepSeekResponseError"
+    assert "invalid JSON" in result.trace_info["model_failure_reason"]
