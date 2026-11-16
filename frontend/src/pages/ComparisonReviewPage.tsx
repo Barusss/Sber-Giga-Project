@@ -41,6 +41,8 @@ type VerificationItem = {
     targeted_diagnostics?: {
       candidates: number; candidates_total?: number; checked: boolean
       skip_reason?: string|null
+      checked_candidates?: number; unchecked_candidates?: number
+      truncated_responses?: number
     }
     candidate_limit_reached?: boolean
     model_error?: string|null
@@ -350,7 +352,9 @@ export function ComparisonReviewPage({projectId, approved}: {projectId: string; 
                 <p>Вспомогательный обратный поиск: принято связей {stageSummary.targeted.validated_links}.</p>
                 <small>{stageSummary.targeted.limit_reached
                   ? 'Лимит дополнительного поиска достигнут. Основной поиск от этого не становится незавершённым.'
-                  : 'Отдельный этап, не показатель качества основного поиска.'}</small>
+                  : stageSummary.targeted.incomplete_requirements
+                    ? `Дополнительный поиск не завершён для ${stageSummary.targeted.incomplete_requirements} требований ТУ. Нужна проверка инженера.`
+                    : 'Отдельный этап, не показатель качества основного поиска.'}</small>
               </> : <>
                 <strong>Отключён</strong>
                 <p>В тесте 10 × 10 выполняются только поиск ЗнП → ТУ и оценка покрытия.</p>
@@ -522,6 +526,8 @@ export function ComparisonReviewPage({projectId, approved}: {projectId: string; 
                       m.relation === 'supports' || m.relation === 'partial' || m.relation === 'conflicts'
                     ).length || 0}.</p>
                   {targeted?.skip_reason === 'limit' && <small>Внутренний лимит запросов DeepSeek для дополнительного поиска исчерпан.</small>}
+                  {targeted?.skip_reason === 'truncated' && <small>DeepSeek обрезал ответ; после разделения пакета часть кандидатов осталась непроверенной. Нужна проверка инженера.</small>}
+                  {!!targeted?.truncated_responses && <small>Обрезанных ответов: {targeted.truncated_responses}. Проверено кандидатов: {targeted.checked_candidates || 0} из {targeted.candidates}.</small>}
                   {targeted?.skip_reason === 'model_unavailable' && <small>DeepSeek был недоступен на этом этапе.</small>}
                   {targeted?.skip_reason === 'invalid_response' && <small>Ответ DeepSeek не прошёл проверку формата.</small>}
                   {!targeted?.checked && targeted?.skip_reason == null && stageSummary?.targeted.enabled &&
