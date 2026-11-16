@@ -45,6 +45,8 @@ class Model:
             }
         if "candidates" in payload and "requirement" in payload:
             return {"conflicts": [], "uncertain_ids": []}
+        if "znp_candidates" in payload:
+            return {"links": []}
         candidate = payload["tu_candidates"][0]
         unit = payload["znp_atom"]
         assert unit["source_fragments"]
