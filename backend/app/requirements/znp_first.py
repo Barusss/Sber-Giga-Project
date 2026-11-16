@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import time
+from math import isfinite
 from collections import Counter, defaultdict
 from typing import Any, Callable
 from uuid import uuid4
@@ -176,8 +177,14 @@ class ZnPFirstAgent:
             if isinstance(source, dict):
                 return source.get(name)
             return getattr(source, name, None)
+        raw_confidence = proposal.get("confidence")
+        model_confidence_available = False
         try:
-            confidence = max(0.0, min(1.0, float(proposal.get("confidence", 0))))
+            number = float(raw_confidence)
+            model_confidence_available = (
+                raw_confidence is not None and isfinite(number)
+            )
+            confidence = max(0.0, min(1.0, number)) if model_confidence_available else 0.0
         except (ValueError, TypeError):
             confidence = 0.0
         params = tool_verify_engineering_params(requirement.text, atom.text)
@@ -203,6 +210,7 @@ class ZnPFirstAgent:
             "quote": znp_quote,
             "relation": relation,
             "confidence": round(confidence, 3),
+            "model_confidence_available": model_confidence_available,
             "search_score": round(float(similarity), 3),
             "reasoning": str(proposal.get("reasoning") or ""),
             "param_check": params,
@@ -635,6 +643,11 @@ class ZnPFirstAgent:
                         "tu_clause_number": requirement.clause_number,
                         "tu_text": requirement.text[:1000],
                         "relation": link["relation"],
+                        "confidence": (
+                            link["confidence"]
+                            if link.get("model_confidence_available") else None
+                        ),
+                        "search_score": link["search_score"],
                         "tu_quote": link["tu_quote"],
                         "znp_quote": link["quote"],
                         "reasoning": link.get("reasoning", ""),

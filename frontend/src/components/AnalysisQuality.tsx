@@ -37,6 +37,8 @@ export type AnalysisTrace = {
       tu_clause_number: string
       tu_text: string
       relation: string
+      confidence?: number|null
+      search_score?: number|null
       tu_quote: string
       znp_quote: string
       reasoning?: string
@@ -176,26 +178,30 @@ export function AnalysisFallbackNotice({trace, items}: {
   </aside>
 }
 
-function scoreHint(method?:string|null): string {
-  if (method === 'llm') return 'DeepSeek участвовал в анализе. Число показывает оценку подтверждённых доказательств, а не долю пройденных запросов или вероятность правильности вывода.'
-  if (method === 'deterministic') return 'Это сходство найденного текста ЗнП с требованием ТУ. Оно не означает подтверждённого выполнения требования.'
-  return 'Метод оценки не указан в сохранённом результате; показатель нельзя интерпретировать как уверенность ИИ.'
+function scoreHint(method?:string|null, scope: 'link'|'requirement' = 'requirement'): string {
+  if (scope === 'link' && method === 'llm') return 'Оценка конкретной связи ЗнП → ТУ, возвращённая DeepSeek. Цитаты проверены на принадлежность исходным документам, но оценка не является статистической вероятностью достоверности. Статус связи может быть частичным даже при высокой оценке.'
+  if (method === 'llm') return 'Оценка ИИ для подтверждённого требования ТУ. Если итоговая проверка условий не завершена, числовой оценки нет. Процент не является статистической вероятностью.'
+  if (method === 'deterministic') return 'Показатель текстового поиска, не оценка DeepSeek. Он не означает подтверждённого выполнения требования.'
+  return 'Метод оценки не указан; показатель нельзя интерпретировать как уверенность ИИ.'
 }
 
-export function AnalysisConfidence({method, score}: {
+export function AnalysisConfidence({method, score, scope = 'requirement'}: {
   method?: string|null
   score?: number|null
+  scope?: 'link'|'requirement'
 }) {
   const isLLM = method === 'llm'
   const isSearch = method === 'deterministic'
-  const label = isLLM ? 'Оценка ИИ' : isSearch ? 'Сходство текста' : 'Оценка проверки'
+  const label = isLLM
+    ? scope === 'link' ? 'Оценка связи ИИ' : 'Оценка ИИ'
+    : isSearch ? 'Сходство текста' : 'Оценка проверки'
   const valid = typeof score === 'number' && Number.isFinite(score)
   const percent = valid ? Math.round(Math.min(1,Math.max(0,score))*100) : null
   return <div className="workspace-analysis-metrics">
     <span className={'workspace-analysis-method '+(isLLM ? 'llm' : 'local')}>
       {isLLM ? 'ИИ-агент' : isSearch ? 'Поиск и проверка правил' : 'Метод не указан'}
     </span>
-    <div className="workspace-score" title={scoreHint(method)}>
+    <div className="workspace-score" title={scoreHint(method, scope)}>
       <span>{label}</span>
       <strong>{percent === null ? 'Нет данных' : `${percent}%`}</strong>
       {percent !== null && <div className={'workspace-score-track '+(isLLM ? 'llm':'local')}
@@ -210,9 +216,13 @@ export function AnalysisConfidence({method, score}: {
 export function AnalysisScoreExplanation() {
   return <details className="workspace-score-explanation">
     <summary>Как понимать оценку ИИ и сходство текста</summary>
-    <p><strong>Оценка ИИ</strong> — значение, возвращённое моделью и ограниченное
-      проверками цитат и инженерных параметров. Это не статистическая вероятность
-      правильности результата и не основание утверждать требование без проверки.</p>
+    <p><strong>Оценка связи ИИ (ЗнП → ТУ)</strong> — число, которое DeepSeek вернул
+      для конкретной пары положений. Сервер отдельно проверяет цитаты, объекты и
+      параметры; поэтому даже высокая оценка может сопровождаться статусом
+      «частичное соответствие». Это не вероятность правильности.</p>
+    <p><strong>Оценка ИИ (ТУ)</strong> — итоговый показатель подтверждённого требования.
+      Если проверка покрытия не завершена, вместо ложных 0% показываем отсутствие
+      данных. Оценка одной связи и итог по всему требованию — разные показатели.</p>
     <p><strong>Сходство текста</strong> — показатель поиска пунктов ЗнП по требованию ТУ.
       Даже высокий процент не доказывает смыслового соответствия.
       Для итогового решения нужно сверять параметры и исходные цитаты.</p>

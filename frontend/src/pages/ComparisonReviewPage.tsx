@@ -348,7 +348,6 @@ export function ComparisonReviewPage({projectId, approved}: {projectId: string; 
                     atom.model_checked ? 'Подтверждённых связей нет' : 'Не рассмотрено ИИ'}
                 </span>
               </div>
-              <p>{atom.text}</p>
               <p className="muted">
                 {atom.model_checked ? 'DeepSeek проверил кандидатов ТУ' :
                   'DeepSeek не завершил проверку этого положения'}.
@@ -356,20 +355,49 @@ export function ComparisonReviewPage({projectId, approved}: {projectId: string; 
                 {atom.page != null ? ` Страница ЗнП: ${atom.page}.` : ''}
               </p>
               {atom.links.length ? atom.links.map((link, index) =>
-                <div className="workspace-analysis-note" key={link.tu_requirement_id + '-' + index}>
-                  <strong>ТУ {link.tu_clause_number} — {
-                    link.relation === 'supports' ? 'подтверждающая связь' :
-                    link.relation === 'conflicts' ? 'возможное противоречие' :
-                    'частичное соответствие'
-                  }</strong>
-                  <p>{link.tu_text}</p>
-                  <div className="workspace-evidence-grid">
-                    <section><h4>Цитата ЗнП</h4><blockquote>{link.znp_quote}</blockquote></section>
-                    <section><h4>Цитата ТУ</h4><blockquote>{link.tu_quote}</blockquote></section>
+                <div className="workspace-znp-link" key={link.tu_requirement_id + '-' + index}>
+                  <div className="workspace-requirement-head">
+                    <strong>Связь с ТУ {link.tu_clause_number}</strong>
+                    <span className={'workspace-status '+(
+                      link.relation === 'supports' ? 'fulfilled' : 'needs_review'
+                    )}>
+                      {link.relation === 'supports' ? 'Подтверждающая связь' :
+                        link.relation === 'conflicts' ? 'Возможное противоречие' :
+                        'Частичное соответствие'}
+                    </span>
                   </div>
-                  {link.reasoning && <p>{link.reasoning}</p>}
+                  <AnalysisConfidence scope="link" method="llm" score={link.confidence}/>
+                  <div className="workspace-evidence-grid">
+                    <section>
+                      <h4>Задание на проектирование</h4>
+                      <p>{atom.text}</p>
+                      <blockquote>{link.znp_quote}</blockquote>
+                    </section>
+                    <section>
+                      <h4>Технические условия</h4>
+                      <p>{link.tu_text}</p>
+                      <blockquote>{link.tu_quote}</blockquote>
+                    </section>
+                  </div>
+                  <div className="workspace-analysis-note">
+                    <strong>Вывод сопоставления</strong>
+                    <p>{link.reasoning || 'Пояснение модели не сохранено.'}</p>
+                    {typeof link.search_score === 'number' && Number.isFinite(link.search_score) &&
+                      <small title="Поисковая оценка кандидата, не уверенность DeepSeek">
+                        Ранжирование поиска: {Math.round(link.search_score * 100)}%
+                      </small>}
+                  </div>
                 </div>) :
-                <p className="muted">Доказанной связи пока нет. Это не вывод об отсутствии соответствия.</p>}
+                <div className="workspace-evidence-grid">
+                  <section>
+                    <h4>Задание на проектирование</h4>
+                    <p>{atom.text}</p>
+                  </section>
+                  <section>
+                    <h4>Технические условия</h4>
+                    <p className="muted">Проверяемых связей пока нет. Это не вывод об отсутствии соответствия.</p>
+                  </section>
+                </div>}
             </article>)}
             {!filteredAtoms.length && <p className="muted">Положения ЗнП по запросу не найдены.</p>}
           </> : <>
@@ -389,7 +417,10 @@ export function ComparisonReviewPage({projectId, approved}: {projectId: string; 
               <h3>Требование {item.requirement.clause_number}</h3>
               <span className={'workspace-status '+item.status}>{labels[item.status]}</span>
             </div>
-            <AnalysisConfidence method={item.method} score={item.confidence_score}/>
+            <AnalysisConfidence method={item.method} score={
+              item.method === 'llm' && item.automatic_status !== 'fulfilled'
+                ? null : item.confidence_score
+            }/>
             <div className="workspace-evidence-grid">
               <section>
                 <h4>Технические условия</h4>
