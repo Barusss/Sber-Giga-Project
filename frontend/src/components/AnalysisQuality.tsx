@@ -25,7 +25,7 @@ export type AnalysisTrace = {
       fulfilled: number; uncovered: number
     }
     targeted: {
-      enabled: boolean; attempted: number; limit_reached: boolean
+      enabled: boolean; attempted: number; validated_links: number; limit_reached: boolean
     }
   }
   stopped_due_to_invalid_evidence?: boolean

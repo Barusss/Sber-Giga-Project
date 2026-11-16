@@ -234,6 +234,8 @@ class ZnPFirstAgent:
         rejected: Counter[str] = Counter()
         proposed_total = 0
         accepted_total = 0
+        primary_links_total = 0
+        targeted_links_total = 0
         stopped_due_to_invalid_evidence = False
         all_requirements = {item.id: item for item in tu_requirements}
         self._requirements = all_requirements
@@ -346,6 +348,7 @@ class ZnPFirstAgent:
                         seen.add((atom.id, rid))
                         added += 1
                         accepted_total += 1
+                        primary_links_total += 1
                 atom_trace["steps"].append({
                     "tool": "compare_candidates", "candidates": len(candidates),
                     "accepted_links": added,
@@ -464,6 +467,7 @@ class ZnPFirstAgent:
                                     entries.append(entry)
                                     seen.add((atom.id, requirement.id))
                                     accepted_total += 1
+                                    targeted_links_total += 1
                                     targeted.append({"atom_id": atom.id, "result": entry["relation"]})
                                     break
                         if not model_available or targeted_limit_hit:
@@ -554,12 +558,13 @@ class ZnPFirstAgent:
             "total": len(znp_clauses),
             "checked": primary_checked,
             "unreviewed": len(znp_clauses) - primary_checked,
-            "validated_links": accepted_total,
+            "validated_links": primary_links_total,
             "limited": matching_limited,
         }
         targeted_summary = {
             "enabled": self.targeted_enabled,
             "attempted": targeted_calls if self.targeted_enabled else 0,
+            "validated_links": targeted_links_total,
             "limit_reached": targeted_limit_hit,
         }
 

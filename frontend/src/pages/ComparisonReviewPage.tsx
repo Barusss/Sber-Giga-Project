@@ -332,7 +332,7 @@ export function ComparisonReviewPage({projectId, approved}: {projectId: string; 
               <h4>Дополнительный поиск ТУ → ЗнП</h4>
               {stageSummary.targeted.enabled ? <>
                 <strong>{llmUsage?.attempted_by_phase.targeted ?? stageSummary.targeted.attempted} запросов</strong>
-                <p>Вспомогательный обратный поиск для неподтверждённых условий.</p>
+                <p>Вспомогательный обратный поиск: принято связей {stageSummary.targeted.validated_links}.</p>
                 <small>{stageSummary.targeted.limit_reached
                   ? 'Лимит дополнительного поиска достигнут. Основной поиск от этого не становится незавершённым.'
                   : 'Отдельный этап, не показатель качества основного поиска.'}</small>

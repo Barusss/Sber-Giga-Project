@@ -183,7 +183,7 @@ def test_preview_pipeline_never_calls_reverse_targeted_matching():
     assert stages["matching"]["checked"] == 2
     assert stages["matching"]["validated_links"] == 0
     assert stages["targeted"] == {
-        "enabled": False, "attempted": 0, "limit_reached": False,
+        "enabled": False, "attempted": 0, "validated_links": 0, "limit_reached": False,
     }
     assert result.trace_info["targeted_model_calls"] == 0
     assert all(entry["model_checked"] for entry in result.trace_info["znp_atom_results"])
