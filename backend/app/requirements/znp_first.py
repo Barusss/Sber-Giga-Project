@@ -277,6 +277,7 @@ class ZnPFirstAgent:
         links: dict[str, list[dict[str, Any]]] = defaultdict(list)
         seen: set[tuple[str, str]] = set()
         evaluated: Counter[str] = Counter()
+        primary_evaluated: Counter[str] = Counter()
         rejected: Counter[str] = Counter()
         proposed_total = 0
         accepted_total = 0
@@ -371,6 +372,7 @@ class ZnPFirstAgent:
                 # that no match exists; it must not be counted as local fallback.
                 for rid in candidate_by_id:
                     evaluated[rid] += 1
+                    primary_evaluated[rid] += 1
                 added = 0
                 proposed_total += len(reply["links"])
                 for proposal in reply["links"]:
@@ -458,6 +460,7 @@ class ZnPFirstAgent:
             ] if initial else [o.text for o in obligations[requirement.id]]
             targeted: list[dict[str, Any]] = []
             targeted_candidates_count = 0
+            targeted_candidates_total = 0
             targeted_model_checked = False
             targeted_skipped_reason = None
             if self.targeted_enabled and model_available and gap_queries:
@@ -492,6 +495,7 @@ class ZnPFirstAgent:
                         key=lambda row: row["similarity_score"], reverse=True,
                     )[:max(8, self.batch_size * 2)]
                     targeted_candidates_count = len(selected)
+                    targeted_candidates_total = len(candidate_by_id)
                     if selected:
                         targeted_calls += 1
                         try:
@@ -551,6 +555,7 @@ class ZnPFirstAgent:
                 targeted_skipped_reason = "model_unavailable"
             targeted_diagnostics[requirement.id] = {
                 "candidates": targeted_candidates_count,
+                "candidates_total": targeted_candidates_total,
                 "checked": targeted_model_checked,
                 "skip_reason": targeted_skipped_reason,
             }
@@ -667,6 +672,7 @@ class ZnPFirstAgent:
             complete = (
                 all_obligations_covered(obligation_checks)
                 and bool(supported or partial)
+                and not matching_limited
                 # Each obligation was checked against its OWN cited evidence.
                 # Rechecking the concatenated text of different objects as one
                 # parameter set incorrectly rejects valid compound requirements.
@@ -701,6 +707,7 @@ class ZnPFirstAgent:
                 "candidate_limit_reached": bool(limited_atoms),
                 "model_error": model_error,
                 "ai_model_evaluations": evaluated[requirement.id],
+                "primary_candidate_evaluations": primary_evaluated[requirement.id],
                 "validated_links": len(matches),
                 "unmatched": not bool(matches),
             }
