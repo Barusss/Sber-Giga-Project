@@ -8,6 +8,8 @@ deterministic local pipeline when the LLM is not configured. Results are
 persisted as requirements/verifications/findings, and a human verdict remains
 the final decision.
 """
+import logging
+import re
 import threading
 from datetime import datetime, timezone
 from uuid import NAMESPACE_URL, uuid5
@@ -63,6 +65,89 @@ from app.requirements.schemas import (
 from app.requirements.tools import classify_requirement_category
 
 router = APIRouter(prefix="/requirements", tags=["requirements"])
+logger = logging.getLogger(__name__)
+
+
+def _safe_deepseek_error_code(error: object) -> str:
+    """Return only a fixed diagnostic label, never provider or document content."""
+    if not isinstance(error, str):
+        return "unknown"
+    status = re.search(r"\bHTTP\s+([1-5]\d\d)\b", error)
+    if status is not None:
+        return "HTTP_" + status.group(1)
+    for name in (
+        "ConnectError", "ConnectTimeout", "ReadTimeout", "ReadError",
+        "WriteTimeout", "WriteError", "PoolTimeout", "RemoteProtocolError",
+    ):
+        if re.search(r"\b" + name + r"\b", error):
+            return name
+    descriptions = (
+        ("truncated", "response_truncated"),
+        ("invalid json", "invalid_json"),
+        ("malformed", "malformed_response"),
+        ("empty content", "empty_response"),
+        ("did not finish", "incomplete_response"),
+        ("not configured", "not_configured"),
+    )
+    lower = error.casefold()
+    for phrase, label in descriptions:
+        if phrase in lower:
+            return label
+    return "unspecified"
+
+
+def _report_failed_ai_comparison(
+    trace: dict, ledger: TrackedRequirementsLLM | None, *,
+    mode: str,
+) -> str:
+    """Log only error category and numeric progress; no prompts or document data."""
+    failure_kind = trace.get("model_failure_kind")
+    error_text = next(
+        (
+            step.get("reason")
+            for run in reversed(trace.get("agent_runs") or [])
+            for step in reversed(run.get("steps") or [])
+            if step.get("tool") == "llm_fallback"
+        ),
+        None,
+    )
+    code = _safe_deepseek_error_code(trace.get("model_failure_reason") or error_text)
+    if code == "unspecified":
+        if failure_kind == "DeepSeekConnectionError":
+            code = "connection_setup_failed"
+        elif failure_kind == "DeepSeekResponseError":
+            code = "response_error"
+        elif failure_kind == "DeepSeekAPIError":
+            code = "request_or_http_error"
+    usage = ledger.trace() if ledger is not None else (trace.get("llm_usage") or {})
+    successes = usage.get("responses_by_phase") or {}
+    errors = usage.get("errors_by_phase") or {}
+    attempts = usage.get("attempted_by_phase") or {}
+    failed_phases = [name for name, count in errors.items() if count]
+    phase = ",".join(sorted(failed_phases)) if failed_phases else "unknown"
+    checked_atoms = sum(
+        bool(run.get("model_checked"))
+        for run in trace.get("agent_runs") or []
+    )
+    logger.error(
+        "DeepSeek comparison failure mode=%s type=%s code=%s phase=%s "
+        "calls=%d responses=%d errors=%d checked_znp=%d "
+        "validated_links=%d",
+        mode,
+        failure_kind or "unknown",
+        code,
+        phase,
+        sum(attempts.values()),
+        sum(successes.values()),
+        sum(errors.values()),
+        checked_atoms,
+        int(trace.get("validated_links") or 0),
+    )
+    return (
+        f"type={failure_kind or 'unknown'}, code={code}, phase={phase}, "
+        f"responses={sum(successes.values())}"
+    )
+
 
 
 def get_project(db: Session, project_id: str, edit: bool = False) -> Project:
@@ -743,10 +828,13 @@ def _analyze_test_subset(
     if primary_checked != len(znp_schemas):
         # No snapshot is saved and no global analysis rows are modified.
         # A failed mandatory search must not masquerade as a completed test.
+        detail = _report_failed_ai_comparison(
+            result.trace_info or {}, ledger, mode="test",
+        )
         raise HTTPException(
             503,
             f"Test AI matching incomplete: {primary_checked} of "
-            f"{len(znp_schemas)} ZnP atoms checked. "
+            f"{len(znp_schemas)} ZnP atoms checked ({detail}). "
             "The previous comparison result was preserved.",
         )
     _attach_provenance(result.checked_requirements, tu_schemas, znp_schemas)
@@ -1067,21 +1155,6 @@ def _analyze_project_requirements(
     )
     if response.trace_info is None:
         response.trace_info = {}
-    if (
-        not payload.test_mode
-        and isinstance(agent, ZnPFirstAgent)
-        and response.trace_info.get("model_failure_kind") in {
-            "DeepSeekConnectionError", "DeepSeekAPIError", "DeepSeekResponseError"
-        }
-    ):
-        # Do not commit an apparently completed comparison when an essential
-        # provider request failed. The worker/session rolls back all changes,
-        # preserving the previously current run and expert decisions.
-        raise HTTPException(
-            503,
-            "DeepSeek request failed during comparison; no new result was saved. "
-            "The previous comparison remains current. Inspect safe API logs.",
-        )
     if atomization_trace is not None:
         response.trace_info["atomization"] = atomization_trace
         if atomization_trace["degraded"]:
@@ -1090,6 +1163,23 @@ def _analyze_project_requirements(
         response.trace_info["llm_usage"] = llm_ledger.trace()
         if llm_ledger.trace()["limit_reached"]:
             response.trace_info["degraded"] = True
+    if (
+        not payload.test_mode
+        and isinstance(agent, ZnPFirstAgent)
+        and response.trace_info.get("model_failure_kind") in {
+            "DeepSeekConnectionError", "DeepSeekAPIError", "DeepSeekResponseError"
+        }
+    ):
+        # Fail before any new result is committed, but preserve diagnostic
+        # counters even when the surrounding DB transaction rolls back.
+        detail = _report_failed_ai_comparison(
+            response.trace_info, llm_ledger, mode="full",
+        )
+        raise HTTPException(
+            503,
+            f"DeepSeek comparison interrupted ({detail}). "
+            "No new result was saved; the previous result remains current.",
+        )
     if progress_callback:
         progress_callback("persisting", len(tu_schemas), len(tu_schemas), None)
     _attach_provenance(response.checked_requirements, tu_schemas, znp_schemas)

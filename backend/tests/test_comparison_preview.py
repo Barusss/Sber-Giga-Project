@@ -175,7 +175,7 @@ def test_preview_skips_legal_reference_catalog_and_preamble():
 
 
 
-def test_full_comparison_network_failure_preserves_current_run(client, monkeypatch):
+def test_full_comparison_network_failure_preserves_current_run(client, monkeypatch, caplog):
     from app.ai.deepseek import DeepSeekConnectionError
 
     pid, pair_id = project_with_clauses(client, monkeypatch, count=2)
@@ -192,8 +192,39 @@ def test_full_comparison_network_failure_preserves_current_run(client, monkeypat
     monkeypatch.setattr("app.ai.deepseek.DeepSeekClient.complete_json", broken)
     failed = client.post(runs_url)
     assert failed.status_code == 503, failed.text
+    assert "type=DeepSeekConnectionError" in failed.json()["detail"]
+    assert "code=connection_setup_failed" in failed.json()["detail"]
+    assert "DeepSeek comparison failure mode=full" in caplog.text
+    assert "checked_znp=0" in caplog.text
     assert len(client.get(runs_url).json()) == 1
     assert client.get(f"/api/v1/projects/{pid}/comparisons/{pair_id}").json()[
         "current_run_id"] == baseline
     assert client.get(f"/api/v1/requirements/projects/{pid}/verifications").json() == before
     assert client.get(f"/api/v1/projects/{pid}/findings").json() == existing
+
+
+
+def test_full_comparison_reports_http_reason_without_leaking_provider_text(
+    client, monkeypatch, caplog,
+):
+    from app.ai.deepseek import DeepSeekAPIError
+
+    pid, pair_id = project_with_clauses(client, monkeypatch, count=1)
+    url = f"/api/v1/projects/{pid}/comparisons/{pair_id}/runs"
+
+    def rate_limited(self, *, system_prompt, user_prompt):
+        raise DeepSeekAPIError(
+            "DeepSeek API returned HTTP 429; internal-secret-must-not-appear"
+        )
+
+    monkeypatch.setattr("app.ai.deepseek.DeepSeekClient.complete_json", rate_limited)
+    response = client.post(url)
+    assert response.status_code == 503
+    detail = response.json()["detail"]
+    assert "code=HTTP_429" in detail
+    assert "phase=matching" in detail
+    assert "responses=0" in detail
+    assert "code=HTTP_429" in caplog.text
+    assert "internal-secret-must-not-appear" not in caplog.text
+    assert "internal-secret-must-not-appear" not in detail
+    assert client.get(url).json() == []
