@@ -111,3 +111,67 @@ def test_network_timeout_raises_without_key_leak():
 
 def test_key_is_redacted_in_config_repr():
     assert "fake-for-unit-tests" not in repr(cfg())
+
+
+
+def test_transient_connect_error_retries_before_any_response(monkeypatch, caplog):
+    from app.ai.deepseek import DeepSeekConnectionError
+
+    monkeypatch.setattr("app.ai.deepseek.time.sleep", lambda seconds: None)
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        if len(seen) == 1:
+            raise httpx.ConnectError("private network path should not appear")
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": '{"ok":true}'},
+                         "finish_reason": "stop"}],
+        })
+
+    with mock_client(handler) as http:
+        ai = DeepSeekClient(config=cfg(), http_client=http)
+        assert ai.complete_json(system_prompt="S", user_prompt="U") == {"ok": True}
+    assert len(seen) == 2
+    assert "type=ConnectError attempt=1/3" in caplog.text
+    assert "private network path" not in caplog.text
+    assert "fake-for-unit-tests" not in caplog.text
+
+
+def test_persistent_connect_error_stops_after_three_attempts(monkeypatch):
+    from app.ai.deepseek import DeepSeekConnectionError
+
+    monkeypatch.setattr("app.ai.deepseek.time.sleep", lambda seconds: None)
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        raise httpx.ConnectError("do not leak internal hostname")
+
+    with mock_client(handler) as http:
+        ai = DeepSeekClient(config=cfg(), http_client=http)
+        with pytest.raises(DeepSeekConnectionError, match="after 3 attempts") as error:
+            ai.complete(system_prompt="S", user_prompt="U")
+    assert len(calls) == 3
+    assert "internal hostname" not in str(error.value)
+
+
+@pytest.mark.parametrize("exception_type", [
+    httpx.ReadError, httpx.WriteError, httpx.RemoteProtocolError,
+    httpx.ReadTimeout,
+])
+def test_ambiguous_request_delivery_never_retried(exception_type, monkeypatch):
+    monkeypatch.setattr("app.ai.deepseek.time.sleep",
+                        lambda seconds: pytest.fail("Unsafe request retry"))
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        raise exception_type("delivery unknown; should not leak")
+
+    with mock_client(handler) as http:
+        with pytest.raises(DeepSeekAPIError):
+            DeepSeekClient(config=cfg(), http_client=http).complete(
+                system_prompt="S", user_prompt="U",
+            )
+    assert len(seen) == 1

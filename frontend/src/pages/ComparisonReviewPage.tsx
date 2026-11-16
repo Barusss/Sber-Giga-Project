@@ -240,7 +240,7 @@ export function ComparisonReviewPage({projectId, approved}: {projectId: string; 
       </div>
       {pair && !approved && <div className="workspace-row-actions">
         <button type="button" className="secondary" disabled={busy || running}
-          onClick={() => rerun(true)} title="Первые 10 требований ТУ и первые 10 атомарных положений ЗнП. Без изменения основного результата.">
+          onClick={() => rerun(true)} title="До 10 технических требований ТУ и 10 атомарных положений ЗнП. Преамбулы и перечни актов пропускаются. Основной результат не меняется.">
           Тест: 10 ТУ × 10 ЗнП
         </button>
         <button type="button" disabled={busy || running} onClick={() => rerun(false)}>
@@ -286,8 +286,9 @@ export function ComparisonReviewPage({projectId, approved}: {projectId: string; 
             <div><strong>{detail.result.stats.needs_review}</strong><span>Требуют рассмотрения</span></div>
           </div>
           {detail.run.test_mode && <p className="workspace-analysis-note">
-            Тестовый запуск: проверены только первые 10 извлечённых требований ТУ
-            и не более 10 атомарных положений ЗнП. Результат не распространяется
+            Тестовый запуск: выбрано до 10 технических требований ТУ
+            и до 10 атомарных положений ЗнП, без преамбул и перечней нормативных актов.
+            Результат не распространяется
             на остальные пункты документов и не изменяет основные замечания.
           </p>}
           <AnalysisFallbackNotice trace={detail.result.trace_info} items={detail.result.checked_requirements}/>
