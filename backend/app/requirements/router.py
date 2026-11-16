@@ -1068,6 +1068,21 @@ def _analyze_project_requirements(
     )
     if response.trace_info is None:
         response.trace_info = {}
+    if (
+        not payload.test_mode
+        and isinstance(agent, ZnPFirstAgent)
+        and response.trace_info.get("model_failure_kind") in {
+            "DeepSeekConnectionError", "DeepSeekAPIError", "DeepSeekResponseError"
+        }
+    ):
+        # Do not commit an apparently completed comparison when an essential
+        # provider request failed. The worker/session rolls back all changes,
+        # preserving the previously current run and expert decisions.
+        raise HTTPException(
+            503,
+            "DeepSeek request failed during comparison; no new result was saved. "
+            "The previous comparison remains current. Inspect safe API logs.",
+        )
     if atomization_trace is not None:
         response.trace_info["atomization"] = atomization_trace
         if atomization_trace["degraded"]:

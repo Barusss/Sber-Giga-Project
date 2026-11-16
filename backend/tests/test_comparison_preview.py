@@ -172,3 +172,28 @@ def test_preview_skips_legal_reference_catalog_and_preamble():
     assert len(selected) == 2
     assert "мощность" in selected[0].text
     assert "напряжение" in selected[1].text
+
+
+
+def test_full_comparison_network_failure_preserves_current_run(client, monkeypatch):
+    from app.ai.deepseek import DeepSeekConnectionError
+
+    pid, pair_id = project_with_clauses(client, monkeypatch, count=2)
+    runs_url = f"/api/v1/projects/{pid}/comparisons/{pair_id}/runs"
+    full = client.post(runs_url)
+    assert full.status_code == 201, full.text
+    baseline = full.json()["run"]["id"]
+    before = client.get(f"/api/v1/requirements/projects/{pid}/verifications").json()
+    existing = client.get(f"/api/v1/projects/{pid}/findings").json()
+
+    def broken(self, *, system_prompt, user_prompt):
+        raise DeepSeekConnectionError("DeepSeek connection failed after safe retries")
+
+    monkeypatch.setattr("app.ai.deepseek.DeepSeekClient.complete_json", broken)
+    failed = client.post(runs_url)
+    assert failed.status_code == 503, failed.text
+    assert len(client.get(runs_url).json()) == 1
+    assert client.get(f"/api/v1/projects/{pid}/comparisons/{pair_id}").json()[
+        "current_run_id"] == baseline
+    assert client.get(f"/api/v1/requirements/projects/{pid}/verifications").json() == before
+    assert client.get(f"/api/v1/projects/{pid}/findings").json() == existing

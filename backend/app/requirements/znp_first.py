@@ -230,6 +230,7 @@ class ZnPFirstAgent:
         znp_by_id = {item.id: item for item in znp_clauses}
         model_available = True
         model_error: str | None = None
+        model_failure_kind: str | None = None
         limited_atoms: list[str] = []
         matching_limited = False
         if progress_callback:
@@ -298,6 +299,7 @@ class ZnPFirstAgent:
                         })
                         break
                     model_error = str(exc)
+                    model_failure_kind = type(exc).__name__
                     model_available = False
                     atom_trace["steps"].append({"tool": "llm_fallback", "reason": model_error})
                     break
@@ -430,6 +432,7 @@ class ZnPFirstAgent:
                                     targeted_limit_hit = True
                                     break
                                 model_error = str(exc)
+                                model_failure_kind = type(exc).__name__
                                 model_available = False
                                 break
                             if not isinstance(answer, dict) or not isinstance(answer.get("links"), list):
@@ -646,6 +649,7 @@ class ZnPFirstAgent:
                 "rejected_links": dict(rejected),
                 "stopped_due_to_invalid_evidence": stopped_due_to_invalid_evidence,
                 "targeted_limit_reached": targeted_limit_hit,
+                "model_failure_kind": model_failure_kind,
                 "embedding": self.embedder.status(),
                 "degraded": not model_available or targeted_limit_hit or matching_limited,
             },
