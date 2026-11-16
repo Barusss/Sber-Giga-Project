@@ -654,11 +654,18 @@ def _analyze_test_subset(
     if not selected_tu or not source_atoms:
         raise HTTPException(422, "Test mode needs extracted TU and ZnP clauses")
 
+    # One 10-item candidate batch per ZnP atom: all first ten TU clauses
+    # are shown to the matching model, without costly extra search pages.
+    agent.batch_size = 10
+    agent.max_batches = 1
     ledger = TrackedRequirementsLLM(
         agent.ai,
-        max_calls=settings.requirements_llm_max_calls,
+        max_calls=min(45, settings.requirements_llm_max_calls),
         atomization_limit=min(10, settings.requirements_llm_atomization_calls),
-        targeted_limit=min(10, settings.requirements_llm_targeted_calls),
+        matching_limit=10,
+        coverage_limit=15,
+        targeted_limit=min(5, settings.requirements_llm_targeted_calls),
+        contradictions_limit=5,
     )
     agent.ai = ledger
     atomization = semantic_atomize(source_atoms, ledger)

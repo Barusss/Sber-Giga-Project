@@ -64,6 +64,11 @@ def test_preview_limits_both_inputs_and_stays_read_only(client, monkeypatch):
     assert meta["znp_atoms_selected"] == 10
     assert result["stats"]["total"] == 10
     assert len(result["trace_info"]["znp_atom_results"]) == 10
+    assert all(
+        entry["candidates_count"] == 10
+        for entry in result["trace_info"]["znp_atom_results"]
+    )
+    assert result["trace_info"]["llm_usage"]["model_calls_limit"] <= 45
     assert [row["requirement"]["clause_number"] for row in result["checked_requirements"]] == [
         str(i) for i in range(1, 11)
     ]
