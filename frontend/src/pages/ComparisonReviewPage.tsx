@@ -57,6 +57,20 @@ const labels: Record<Status, string> = {
   missing: 'Не соответствует',
   needs_review: 'Требует рассмотрения',
 }
+const atomOutcomes: Record<string,string> = {
+  accepted_links: 'Проверенные связи сохранены',
+  no_links: 'DeepSeek ответил: связей нет',
+  rejected_links: 'Предложенные связи отклонены проверкой',
+  model_error: 'Запрос к DeepSeek завершился ошибкой',
+  targeted_error: 'Дополнительный запрос к DeepSeek завершился ошибкой',
+  audit_error: 'Проверка противоречий завершилась ошибкой',
+  audit_uncertain: 'Проверка противоречий не дала однозначного ответа',
+  model_skipped: 'ИИ-проверка пропущена после ошибки',
+  request_limit: 'Достигнут лимит запросов',
+  invalid_response: 'Ответ DeepSeek имеет неверный формат',
+  no_candidates: 'Поиск не вернул кандидатов',
+  not_checked: 'ИИ-проверка не завершена',
+}
 const date = (stamp: string) => new Date(stamp).toLocaleString('ru-RU', {
   year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit',
 })
@@ -286,10 +300,15 @@ export function ComparisonReviewPage({projectId, approved}: {projectId: string; 
             <div><strong>{detail.result.stats.needs_review}</strong><span>Требуют рассмотрения</span></div>
           </div>
           {detail.run.test_mode && <p className="workspace-analysis-note">
-            Тестовый запуск: проверены только первые 10 извлечённых требований ТУ
-            и не более 10 атомарных положений ЗнП. Результат не распространяется
+            Тестовый запуск: выбраны первые 10 извлечённых требований ТУ
+            и первые 10 исходных положений ЗнП со всеми их атомами. Атомы, оставшиеся
+            за лимитом запросов, помечены как не проверенные ИИ. Результат не распространяется
             на остальные пункты документов и не изменяет основные замечания.
           </p>}
+          {detail.run.test_mode && <details className="workspace-evidence-details">
+            <summary>Выбранные требования ТУ ({items.length})</summary>
+            {items.map(item => <p key={item.id}><strong>ТУ {item.requirement.clause_number}</strong> — {item.requirement.text}</p>)}
+          </details>}
           <AnalysisFallbackNotice trace={detail.result.trace_info} items={detail.result.checked_requirements}/>
           {detail.result.trace_info?.atomization && <details className="workspace-evidence-details">
             <summary>Атомизация ЗнП через DeepSeek: {detail.result.trace_info.atomization.atoms_total} положений</summary>
@@ -349,11 +368,31 @@ export function ComparisonReviewPage({projectId, approved}: {projectId: string; 
               </div>
               <p>{atom.text}</p>
               <p className="muted">
-                {atom.model_checked ? 'DeepSeek проверил кандидатов ТУ' :
-                  'DeepSeek не завершил проверку этого положения'}.
+                {atom.outcome ? atomOutcomes[atom.outcome] || atom.outcome :
+                  atom.model_checked ? 'DeepSeek проверил кандидатов ТУ' :
+                    'DeepSeek не завершил проверку этого положения'}.
                 Кандидатов в первом поиске: {atom.candidates_count}.
                 {atom.page != null ? ` Страница ЗнП: ${atom.page}.` : ''}
               </p>
+              {atom.search_channels?.length === 1 && atom.search_channels[0] === 'lexical' &&
+                <p className="workspace-analysis-note">Семантический поиск недоступен; использован лексический поиск.</p>}
+              {atom.error && <p className="workspace-analysis-note">Ошибка: {atom.error}</p>}
+              {(atom.proposed_links ?? 0) > 0 && <p className="muted">
+                Основной и дополнительный поиск предложили: {atom.proposed_links}.
+                Прошло проверку: {atom.validated_links ?? 0}.
+              </p>}
+              {(atom.independent_conflict_links ?? 0) > 0 &&
+                <p className="workspace-analysis-note">Независимо подтверждено противоречий: {atom.independent_conflict_links}.</p>}
+              {atom.rejected_links && Object.keys(atom.rejected_links).length > 0 &&
+                <p className="workspace-analysis-note">Причины отклонения: {Object.entries(atom.rejected_links).map(
+                  ([reason, count]) => `${reason}: ${count}`
+                ).join('; ')}.</p>}
+              {atom.candidates && atom.candidates.length > 0 && <details className="workspace-evidence-details">
+                <summary>Найденные кандидаты ТУ ({atom.candidates.length})</summary>
+                {atom.candidates.map(candidate => <p key={candidate.requirement_id}>
+                  ТУ {candidate.clause_number} · показатель поиска {Math.round(candidate.similarity_score * 100)}%
+                </p>)}
+              </details>}
               {atom.links.length ? atom.links.map((link, index) =>
                 <div className="workspace-analysis-note" key={link.tu_requirement_id + '-' + index}>
                   <strong>ТУ {link.tu_clause_number} — {

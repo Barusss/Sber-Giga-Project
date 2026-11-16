@@ -247,14 +247,24 @@ class ZnPFirstAgent:
                 "clause_number": atom.clause_number,
                 "page": atom.page,
                 "model_checked": False,
+                "outcome": "not_checked",
+                "candidates": [],
+                "proposed_links": 0,
+                "validated_links": 0,
                 "steps": [],
             }
+            rejected_before = rejected.copy()
             # The mandatory first search never depends on an LLM action.
             page = retriever.search(atom)
             atom_trace["steps"].append({
                 "tool": "search_tu", "candidates_count": len(page["candidates"]),
                 "channels": page["ranking_channels"],
             })
+            atom_trace["candidates"] = [{
+                "requirement_id": candidate["requirement_id"],
+                "clause_number": candidate["clause_number"],
+                "similarity_score": candidate["similarity_score"],
+            } for candidate in page["candidates"]]
             batches = 0
             while page["candidates"] and batches < self.max_batches:
                 if (hasattr(self.ai, "phase_exhausted")
@@ -313,6 +323,7 @@ class ZnPFirstAgent:
                     evaluated[rid] += 1
                 added = 0
                 proposed_total += len(reply["links"])
+                atom_trace["proposed_links"] += len(reply["links"])
                 for proposal in reply["links"]:
                     if not isinstance(proposal, dict):
                         rejected["invalid_link_shape"] += 1
@@ -323,6 +334,7 @@ class ZnPFirstAgent:
                         rejected["unknown_candidate"] += 1
                         continue
                     if (atom.id, rid) in seen:
+                        rejected["duplicate_link"] += 1
                         continue
                     valid = self._validated_link(
                         atom, all_requirements[rid], proposal,
@@ -333,6 +345,7 @@ class ZnPFirstAgent:
                         seen.add((atom.id, rid))
                         added += 1
                         accepted_total += 1
+                        atom_trace["validated_links"] += 1
                 atom_trace["steps"].append({
                     "tool": "compare_candidates", "candidates": len(candidates),
                     "accepted_links": added,
@@ -355,10 +368,33 @@ class ZnPFirstAgent:
                 page = retriever.search(atom, offset=batches * self.batch_size)
             if page["has_more"] and not matching_limited:
                 limited_atoms.append(atom.id)
+            atom_trace["rejected_links"] = {
+                reason: count - rejected_before[reason]
+                for reason, count in rejected.items()
+                if count > rejected_before[reason]
+            }
+            step_tools = {step["tool"] for step in atom_trace["steps"]}
+            if atom_trace["validated_links"]:
+                atom_trace["outcome"] = "accepted_links"
+            elif "llm_fallback" in step_tools:
+                atom_trace["outcome"] = "model_error"
+            elif "matching_budget" in step_tools:
+                atom_trace["outcome"] = "request_limit"
+            elif "invalid_response" in step_tools:
+                atom_trace["outcome"] = "invalid_response"
+            elif atom_trace["proposed_links"]:
+                atom_trace["outcome"] = "rejected_links"
+            elif atom_trace["model_checked"]:
+                atom_trace["outcome"] = "no_links"
+            elif not page["candidates"]:
+                atom_trace["outcome"] = "no_candidates"
+            elif not model_available:
+                atom_trace["outcome"] = "model_skipped"
             traces.append(atom_trace)
             if progress_callback:
                 progress_callback("verifying", number, len(znp_clauses), atom.clause_number)
 
+        traces_by_atom = {trace["atom_id"]: trace for trace in traces}
         # Complete coverage is assessed per TU obligation, not from one merged
         # similarity score. We first look for gaps, then perform a targeted
         # second retrieval pass on ZnP; all resulting citations are revalidated.
@@ -428,27 +464,58 @@ class ZnPFirstAgent:
                                 if (isinstance(exc, LLMCallLimitExceeded)
                                         and exc.scope == "phase"):
                                     targeted_limit_hit = True
+                                    trace = traces_by_atom[atom.id]
+                                    trace["steps"].append({"tool": "targeted_budget", "reason": str(exc)})
+                                    if not trace["validated_links"]:
+                                        trace["outcome"] = "request_limit"
                                     break
                                 model_error = str(exc)
                                 model_available = False
+                                trace = traces_by_atom[atom.id]
+                                trace["steps"].append({"tool": "targeted_error", "reason": model_error})
+                                if not trace["validated_links"]:
+                                    trace["outcome"] = "targeted_error"
                                 break
                             if not isinstance(answer, dict) or not isinstance(answer.get("links"), list):
                                 targeted.append({"atom_id": atom.id, "error": "invalid_response"})
+                                trace = traces_by_atom[atom.id]
+                                trace["steps"].append({
+                                    "tool": "targeted_invalid_response", "reason": "Missing links array",
+                                })
+                                if not trace["validated_links"]:
+                                    trace["outcome"] = "invalid_response"
                                 continue
                             evaluated[requirement.id] += 1
                             targeted_checked_atoms.add(atom.id)
                             proposed_total += len(answer["links"])
+                            traces_by_atom[atom.id]["proposed_links"] += len(answer["links"])
                             for proposal in answer["links"]:
-                                if not isinstance(proposal, dict) or str(proposal.get("requirement_id")) != requirement.id:
+                                if not isinstance(proposal, dict):
+                                    rejected["invalid_link_shape"] += 1
+                                    atom_rejections = traces_by_atom[atom.id]["rejected_links"]
+                                    atom_rejections["invalid_link_shape"] = atom_rejections.get("invalid_link_shape", 0) + 1
                                     continue
+                                if str(proposal.get("requirement_id")) != requirement.id:
+                                    rejected["unknown_candidate"] += 1
+                                    atom_rejections = traces_by_atom[atom.id]["rejected_links"]
+                                    atom_rejections["unknown_candidate"] = atom_rejections.get("unknown_candidate", 0) + 1
+                                    continue
+                                rejection_before = rejected.copy()
                                 entry = self._validated_link(
                                     atom, requirement, proposal,
                                     suggestion["similarity_score"], rejected,
                                 )
+                                for reason, count in rejected.items():
+                                    if count > rejection_before[reason]:
+                                        atom_rejections = traces_by_atom[atom.id]["rejected_links"]
+                                        atom_rejections[reason] = (
+                                            atom_rejections.get(reason, 0) + count - rejection_before[reason]
+                                        )
                                 if entry is not None:
                                     entries.append(entry)
                                     seen.add((atom.id, requirement.id))
                                     accepted_total += 1
+                                    traces_by_atom[atom.id]["validated_links"] += 1
                                     targeted.append({"atom_id": atom.id, "result": entry["relation"]})
                                     break
                         if not model_available or targeted_limit_hit:
@@ -478,12 +545,18 @@ class ZnPFirstAgent:
                 model_available = False
                 model_error = "Достигнут лимит запросов DeepSeek для сверки"
 
+        for trace in traces:
+            if trace["proposed_links"] and not trace["validated_links"] and trace["outcome"] == "no_links":
+                trace["outcome"] = "rejected_links"
+
         # Contradictions are sourced from the ENTIRE ZnP, independently of
         # the supporting-link retrieval. Only already-covered TU obligations
         # need an expensive audit; uncovered requirements cannot be approved.
         # Broad lexical overlap is not itself a contradiction. An incomplete
         # audit must never silently become a clean audit.
         audits: dict[str, dict[str, Any]] = {}
+        audited_atom_ids: set[str] = set()
+        audit_failed = False
         for requirement in tu_requirements:
             covered = all_obligations_covered(coverage_results[requirement.id])
             candidates = (
@@ -495,19 +568,36 @@ class ZnPFirstAgent:
             pending_count = len(candidates) - len(selected)
             confirmed: list[dict[str, Any]] = []
             uncertain: list[str] = []
+            failed_ids: set[str] = set()
             calls = 0
             if selected and model_available and not (
                 hasattr(self.ai, "phase_exhausted")
                 and self.ai.phase_exhausted("contradictions")
             ):
-                confirmed, uncertain, calls = assess_conflicts(
+                confirmed, uncertain, calls, audit_failures = assess_conflicts(
                     requirement, selected, self.ai
                 )
+                failed_ids = {failure["atom_id"] for failure in audit_failures}
+                audit_failed = audit_failed or bool(audit_failures)
+                audited_atom_ids.update(item["atom_id"] for item in selected[:calls * 8]
+                                        if item["atom_id"] not in failed_ids)
+                for failure in audit_failures:
+                    trace = traces_by_atom[failure["atom_id"]]
+                    trace["steps"].append({"tool": "audit_error", "reason": failure["reason"]})
+                    if not trace["validated_links"]:
+                        trace["outcome"] = "audit_error"
+                for atom_id in uncertain:
+                    if atom_id in failed_ids:
+                        continue
+                    trace = traces_by_atom[atom_id]
+                    trace["steps"].append({"tool": "audit_uncertain"})
+                    if trace["outcome"] == "no_links":
+                        trace["outcome"] = "audit_uncertain"
             elif selected:
                 pending_count += len(selected)
             audits[requirement.id] = {
                 "candidate_count": len(candidates),
-                "candidates_checked": min(len(selected), calls * 8),
+                "candidates_checked": max(0, min(len(selected), calls * 8) - len(failed_ids)),
                 "confirmed": confirmed,
                 "uncertain_atom_ids": uncertain,
                 "unreviewed_count": pending_count,
@@ -515,6 +605,21 @@ class ZnPFirstAgent:
                 "complete": not pending_count and not uncertain,
                 "skipped_uncovered": not covered,
             }
+
+        atom_links: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        audit_link_counts: Counter[str] = Counter()
+        for requirement in tu_requirements:
+            for link in [*links[requirement.id], *audits[requirement.id]["confirmed"]]:
+                atom_links[link["atom_id"]].append({
+                    "tu_requirement_id": requirement.id,
+                    "tu_clause_number": requirement.clause_number,
+                    "tu_text": requirement.text[:1000],
+                    "relation": link["relation"],
+                    "tu_quote": link["tu_quote"],
+                    "znp_quote": link["quote"],
+                    "reasoning": link.get("reasoning", ""),
+                })
+            audit_link_counts.update(link["atom_id"] for link in audits[requirement.id]["confirmed"])
 
         checked: list[RequirementCheckItem] = []
         for requirement in tu_requirements:
@@ -594,6 +699,7 @@ class ZnPFirstAgent:
                 channels=["lexical", "semantic"] if retriever.vectors is not None else ["lexical"],
             ))
 
+        linked_atom_ids = set(atom_links)
         stats = {
             key: sum(item.status.value == key for item in checked)
             for key in ("fulfilled", "missing", "needs_review")
@@ -611,6 +717,7 @@ class ZnPFirstAgent:
                 "tu_obligations_total": sum(len(items) for items in obligations.values()),
                 "targeted_model_calls": targeted_calls,
                 "independent_conflict_candidates": sum(a["candidate_count"] for a in audits.values()),
+                "independent_conflict_links": sum(len(a["confirmed"]) for a in audits.values()),
                 "uncovered_obligations": sum(sum(r["status"] != "fulfilled" for r in rows)
                                             for rows in coverage_results.values()),
                 "retrieval_limited_atoms": len(set(limited_atoms)),
@@ -622,22 +729,25 @@ class ZnPFirstAgent:
                     "page": atom.page,
                     "model_checked": (
                         trace["model_checked"] or atom.id in targeted_checked_atoms
+                        or atom.id in audited_atom_ids
                     ),
+                    "outcome": "accepted_links" if atom.id in linked_atom_ids else trace["outcome"],
+                    "candidates": trace["candidates"],
+                    "search_channels": trace["steps"][0].get("channels", []) if trace["steps"] else [],
+                    "proposed_links": trace["proposed_links"],
+                    "validated_links": trace["validated_links"],
+                    "rejected_links": trace["rejected_links"],
+                    "independent_conflict_links": audit_link_counts[atom.id],
+                    "error": next((step.get("reason") for step in reversed(trace["steps"])
+                                   if step["tool"] in {"llm_fallback", "invalid_response",
+                                                       "matching_budget", "targeted_error",
+                                                       "targeted_budget", "targeted_invalid_response",
+                                                       "audit_error"}), None),
                     "candidates_count": (
                         trace["steps"][0].get("candidates_count", 0)
                         if trace["steps"] else 0
                     ),
-                    "links": [{
-                        "tu_requirement_id": requirement.id,
-                        "tu_clause_number": requirement.clause_number,
-                        "tu_text": requirement.text[:1000],
-                        "relation": link["relation"],
-                        "tu_quote": link["tu_quote"],
-                        "znp_quote": link["quote"],
-                        "reasoning": link.get("reasoning", ""),
-                    } for requirement in tu_requirements
-                    for link in links.get(requirement.id, [])
-                    if link["atom_id"] == atom.id],
+                    "links": atom_links.get(atom.id, []),
                 } for atom, trace in zip(znp_clauses, traces)],
                 "matching_limit_reached": matching_limited,
                 "ai_evaluated_requirements": sum(bool(v) for v in evaluated.values()),
@@ -647,6 +757,6 @@ class ZnPFirstAgent:
                 "stopped_due_to_invalid_evidence": stopped_due_to_invalid_evidence,
                 "targeted_limit_reached": targeted_limit_hit,
                 "embedding": self.embedder.status(),
-                "degraded": not model_available or targeted_limit_hit or matching_limited,
+                "degraded": not model_available or targeted_limit_hit or matching_limited or audit_failed,
             },
         )

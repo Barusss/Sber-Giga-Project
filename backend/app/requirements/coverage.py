@@ -12,6 +12,7 @@ from dataclasses import asdict, dataclass
 from hashlib import sha256
 from typing import Any
 
+from app.ai.deepseek import DeepSeekError
 from app.requirements.schemas import TURequirement
 from app.requirements.tools import _list_items, _extract_search_parameters
 
@@ -286,10 +287,11 @@ def assess_conflicts(
     requirement: TURequirement, candidates: list[dict[str, Any]], ai: Any,
     *,
     batch_size: int = 8,
-) -> tuple[list[dict[str, Any]], list[str], int]:
+) -> tuple[list[dict[str, Any]], list[str], int, list[dict[str, str]]]:
     """Validate a complete independent contradiction candidate scan in batches."""
     confirmed = []
     uncertain = []
+    errors: list[dict[str, str]] = []
     calls = 0
     for i in range(0, len(candidates), batch_size):
         batch = candidates[i:i + batch_size]
@@ -303,11 +305,14 @@ def assess_conflicts(
                 system_prompt=CONFLICT_PROMPT,
                 user_prompt=json.dumps(payload, ensure_ascii=False),
             )
-        except Exception:
+        except Exception as exc:
             uncertain.extend(x["atom_id"] for x in batch)
+            reason = str(exc)[:150] if isinstance(exc, DeepSeekError) else "DeepSeek audit request failed"
+            errors.extend({"atom_id": x["atom_id"], "reason": reason} for x in batch)
             continue
         if not isinstance(response, dict) or not isinstance(response.get("conflicts"), list) or not isinstance(response.get("uncertain_ids"), list):
             uncertain.extend(x["atom_id"] for x in batch)
+            errors.extend({"atom_id": x["atom_id"], "reason": "Invalid DeepSeek audit response"} for x in batch)
             continue
         by_id = {x["atom_id"]: x for x in batch}
         seen = set()
@@ -368,4 +373,4 @@ def assess_conflicts(
                 seen.add(key)
         # Do not equate omission from an LLM response with confirmed safety:
         # explicit empty conflicts + empty uncertain means candidates cleared.
-    return confirmed, sorted(set(uncertain)), calls
+    return confirmed, sorted(set(uncertain)), calls, errors

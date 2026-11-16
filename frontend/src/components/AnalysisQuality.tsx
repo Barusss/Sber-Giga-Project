@@ -13,6 +13,7 @@ export type AnalysisTrace = {
   ai_evaluated_requirements?: number
   proposed_links?: number
   validated_links?: number
+  independent_conflict_links?: number
   rejected_links?: Record<string, number>
   targeted_limit_reached?: boolean
   stopped_due_to_invalid_evidence?: boolean
@@ -31,7 +32,15 @@ export type AnalysisTrace = {
     text: string
     page?: number|null
     model_checked: boolean
+    outcome?: string
     candidates_count: number
+    candidates?: Array<{requirement_id: string; clause_number: string; similarity_score: number}>
+    search_channels?: string[]
+    proposed_links?: number
+    validated_links?: number
+    independent_conflict_links?: number
+    rejected_links?: Record<string,number>
+    error?: string|null
     links: Array<{
       tu_requirement_id: string
       tu_clause_number: string
@@ -95,7 +104,8 @@ const explanations: Record<Cause,{title:string; action:string}> = {
 }
 
 function causeFor(tool: string|undefined, reason: string|undefined): Cause|null {
-  if (tool !== 'llm_fallback' && tool !== 'invalid_response') return null
+  if (!['llm_fallback', 'invalid_response', 'targeted_error', 'audit_error',
+    'targeted_invalid_response'].includes(tool || '')) return null
   const message = (reason || '').toLowerCase()
   if (message.includes('deepseek_api_key') || message.includes('not configured')) return 'key'
   if (message.includes('http 401')) return 'auth'
@@ -104,7 +114,8 @@ function causeFor(tool: string|undefined, reason: string|undefined): Cause|null 
   if (message.includes('timed out') || message.includes('timeout')) return 'timeout'
   if (message.includes('cannot connect')) return 'network'
   if (message.includes('truncated') || message.includes('max_tokens')) return 'truncated'
-  if (tool === 'invalid_response' || message.includes('json') || message.includes('malformed')
+  if (tool === 'invalid_response' || tool === 'targeted_invalid_response'
+      || message.includes('json') || message.includes('malformed')
       || message.includes('empty content') || message.includes('did not finish')) return 'response'
   if (message.includes('http ')) return 'server'
   return 'other'
@@ -148,8 +159,14 @@ export function AnalysisFallbackNotice({trace, items}: {
           ([name, count]) => `${name}: ${count}`
         ).join('; ') || 'нет'}.</p>
       <p>Ответов от DeepSeek: {Object.values(trace.llm_usage.responses_by_phase).reduce((a, b) => a + b, 0)}.
-        Связей предложено: {trace.proposed_links ?? 0}.
-        Подтверждено исходными цитатами: {trace.validated_links ?? 0}.</p>
+        Основной и дополнительный поиск предложили связей: {trace.proposed_links ?? 0}.
+        Проверено цитатами: {trace.validated_links ?? 0}.</p>
+      {Object.keys(trace.llm_usage.errors_by_phase || {}).length > 0 &&
+        <p>Ошибки запросов по этапам: {Object.entries(trace.llm_usage.errors_by_phase).map(
+          ([name, count]) => `${name}: ${count}`
+        ).join('; ')}.</p>}
+      {(trace.independent_conflict_links ?? 0) > 0 &&
+        <p>Дополнительно подтверждено противоречий независимой проверкой: {trace.independent_conflict_links}.</p>}
       {trace.rejected_links && Object.keys(trace.rejected_links).length > 0 &&
         <p>Причины отклонения: {Object.entries(trace.rejected_links).map(
           ([reason, count]) => `${reason}: ${count}`

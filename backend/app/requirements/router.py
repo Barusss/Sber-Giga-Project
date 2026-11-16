@@ -640,9 +640,8 @@ def _analyze_test_subset(
 ) -> CheckRequirementsResponse:
     """Read-only 10 x 10 preview. Never write requirements, findings or verdicts.
 
-    Restrict inputs BEFORE DeepSeek atomization, matching, or coverage. The
-    selected ten ZnP source clauses can split into more atomic propositions;
-    cap those at ten as well, so matching never sees more than ten.
+    Restrict source inputs BEFORE DeepSeek atomization. Keep every child atom
+    of those ten source clauses so splitting cannot silently drop evidence.
     """
     selected_tu = tu_raw[:10]
     znp_fragments = db.scalars(
@@ -662,14 +661,14 @@ def _analyze_test_subset(
         agent.ai,
         max_calls=min(45, settings.requirements_llm_max_calls),
         atomization_limit=min(10, settings.requirements_llm_atomization_calls),
-        matching_limit=10,
+        matching_limit=20,
         coverage_limit=15,
         targeted_limit=min(5, settings.requirements_llm_targeted_calls),
         contradictions_limit=5,
     )
     agent.ai = ledger
     atomization = semantic_atomize(source_atoms, ledger)
-    chosen_atoms = atomization.atoms[:10]
+    chosen_atoms = atomization.atoms
 
     tu_schemas: list[TURequirement] = []
     tu_by_id: dict[str, Clause] = {}
@@ -757,7 +756,7 @@ def _analyze_test_subset(
         "znp_source_clauses_selected": len(source_atoms),
         "znp_atoms_selected": len(znp_schemas),
         "znp_atoms_after_split": len(atomization.atoms),
-        "truncated_after_atomization": len(atomization.atoms) > len(chosen_atoms),
+        "truncated_after_atomization": False,
         "isolated": True,
     }
     result.trace_info["atomization"] = atomization.trace()
