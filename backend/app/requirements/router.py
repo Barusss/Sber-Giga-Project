@@ -749,6 +749,9 @@ def _analyze_test_subset(
     # input. Nontechnical legal catalogs are excluded before paid work.
     agent.batch_size = 10
     agent.max_batches = 1
+    # Preview tests the primary ZnP -> TU route and TU coverage only.
+    # Reverse targeted matching is a separate, costly full-run fallback.
+    agent.targeted_enabled = False
     expected_obligations = sum(
         max(1, len(_list_items(clause.text))) for clause in selected_tu
     )
@@ -759,7 +762,7 @@ def _analyze_test_subset(
         atomization_limit=min(7, settings.requirements_llm_atomization_calls),
         matching_limit=10,
         coverage_limit=coverage_budget,
-        targeted_limit=min(5, settings.requirements_llm_targeted_calls),
+        targeted_limit=0,
         contradictions_limit=3,
     )
     agent.ai = ledger
@@ -867,6 +870,7 @@ def _analyze_test_subset(
         "tu_selected": len(tu_schemas),
         "tu_obligations_estimated": expected_obligations,
         "coverage_call_budget": coverage_budget,
+        "targeted_enabled": False,
         "technical_selection": True,
         "znp_source_clauses_selected": len(source_atoms),
         "znp_atoms_selected": len(znp_schemas),

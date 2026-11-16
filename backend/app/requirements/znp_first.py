@@ -72,6 +72,7 @@ class ZnPFirstAgent:
         *,
         batch_size: int = 6,
         max_batches: int = 5,
+        targeted_enabled: bool = True,
     ) -> None:
         if batch_size < 1 or max_batches < 1:
             raise ValueError("Search limits must be positive")
@@ -79,6 +80,7 @@ class ZnPFirstAgent:
         self.embedder = embedder or EmbeddingService()
         self.batch_size = batch_size
         self.max_batches = max_batches
+        self.targeted_enabled = targeted_enabled
 
     def _judge(self, atom: ZNPClause, candidates: list[dict[str, Any]], context: list[dict[str, Any]], phase: str = "primary") -> dict[str, Any]:
         payload = {
@@ -339,6 +341,7 @@ class ZnPFirstAgent:
                         candidate["similarity_score"], rejected,
                     )
                     if valid is not None:
+                        valid["source_phase"] = "matching"
                         links[rid].append(valid)
                         seen.add((atom.id, rid))
                         added += 1
@@ -382,7 +385,7 @@ class ZnPFirstAgent:
         # are unavailable, targeted retrieval falls back to lexical ranking.
         znp_vectors = (
             self.embedder.embed_documents([atom.text for atom in znp_clauses])
-            if znp_clauses and self.embedder.enabled else []
+            if self.targeted_enabled and znp_clauses and self.embedder.enabled else []
         )
         if len(znp_vectors) != len(znp_clauses) or not self.embedder.enabled:
             znp_vectors = None
@@ -404,10 +407,10 @@ class ZnPFirstAgent:
                 if result["status"] != "fulfilled"
             ] if initial else [o.text for o in obligations[requirement.id]]
             targeted: list[dict[str, Any]] = []
-            if model_available and gap_queries and not (
+            if (self.targeted_enabled and model_available and gap_queries and not (
                 hasattr(self.ai, "phase_exhausted")
                 and self.ai.phase_exhausted("targeted")
-            ):
+            )):
                 for query in list(dict.fromkeys(gap_queries))[:6]:
                     # Searching the opposite way here is a fallback exclusively
                     # for uncovered TU obligations, not the main architecture.
@@ -457,6 +460,7 @@ class ZnPFirstAgent:
                                     suggestion["similarity_score"], rejected,
                                 )
                                 if entry is not None:
+                                    entry["source_phase"] = "targeted"
                                     entries.append(entry)
                                     seen.add((atom.id, requirement.id))
                                     accepted_total += 1
@@ -466,6 +470,12 @@ class ZnPFirstAgent:
                             break
                     if not model_available or targeted_limit_hit:
                         break
+            if (
+                self.targeted_enabled and model_available and gap_queries
+                and hasattr(self.ai, "phase_exhausted")
+                and self.ai.phase_exhausted("targeted")
+            ):
+                targeted_limit_hit = True
             targeted_results[requirement.id] = targeted
             evidence = [x for x in entries if x["relation"] in {"supports", "partial"}
                         and x.get("scope_consistent", True)]
@@ -526,6 +536,32 @@ class ZnPFirstAgent:
                 "complete": not pending_count and not uncertain,
                 "skipped_uncovered": not covered,
             }
+
+        obligation_rows = [
+            row
+            for requirement in tu_requirements
+            for row in coverage_results[requirement.id]
+        ]
+        coverage_summary = {
+            "total": len(obligation_rows),
+            "checked": sum(row.get("checked", False) for row in obligation_rows),
+            "unreviewed": sum(not row.get("checked", False) for row in obligation_rows),
+            "fulfilled": sum(row.get("status") == "fulfilled" for row in obligation_rows),
+            "uncovered": sum(row.get("status") == "uncovered" for row in obligation_rows),
+        }
+        primary_checked = sum(bool(trace["model_checked"]) for trace in traces)
+        matching_summary = {
+            "total": len(znp_clauses),
+            "checked": primary_checked,
+            "unreviewed": len(znp_clauses) - primary_checked,
+            "validated_links": accepted_total,
+            "limited": matching_limited,
+        }
+        targeted_summary = {
+            "enabled": self.targeted_enabled,
+            "attempted": targeted_calls if self.targeted_enabled else 0,
+            "limit_reached": targeted_limit_hit,
+        }
 
         checked: list[RequirementCheckItem] = []
         for requirement in tu_requirements:
@@ -631,9 +667,10 @@ class ZnPFirstAgent:
                     "clause_number": atom.clause_number,
                     "text": atom.text[:1800],
                     "page": atom.page,
-                    "model_checked": (
-                        trace["model_checked"] or atom.id in targeted_checked_atoms
-                    ),
+                    # This is PRIMARY ZnP -> TU only. A later TU -> ZnP
+                    # targeted pass must not make the primary search look complete.
+                    "model_checked": trace["model_checked"],
+                    "targeted_checked": atom.id in targeted_checked_atoms,
                     "candidates_count": (
                         trace["steps"][0].get("candidates_count", 0)
                         if trace["steps"] else 0
@@ -643,6 +680,7 @@ class ZnPFirstAgent:
                         "tu_clause_number": requirement.clause_number,
                         "tu_text": requirement.text[:1000],
                         "relation": link["relation"],
+                        "source_phase": link.get("source_phase", "unknown"),
                         "confidence": (
                             link["confidence"]
                             if link.get("model_confidence_available") else None
@@ -656,6 +694,11 @@ class ZnPFirstAgent:
                     if link["atom_id"] == atom.id],
                 } for atom, trace in zip(znp_clauses, traces)],
                 "matching_limit_reached": matching_limited,
+                "comparison_stages": {
+                    "matching": matching_summary,
+                    "coverage": coverage_summary,
+                    "targeted": targeted_summary,
+                },
                 "ai_evaluated_requirements": sum(bool(v) for v in evaluated.values()),
                 "proposed_links": proposed_total,
                 "validated_links": accepted_total,

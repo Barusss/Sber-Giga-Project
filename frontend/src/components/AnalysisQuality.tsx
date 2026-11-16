@@ -15,6 +15,19 @@ export type AnalysisTrace = {
   validated_links?: number
   rejected_links?: Record<string, number>
   targeted_limit_reached?: boolean
+  comparison_stages?: {
+    matching: {
+      total: number; checked: number; unreviewed: number
+      validated_links: number; limited: boolean
+    }
+    coverage: {
+      total: number; checked: number; unreviewed: number
+      fulfilled: number; uncovered: number
+    }
+    targeted: {
+      enabled: boolean; attempted: number; limit_reached: boolean
+    }
+  }
   stopped_due_to_invalid_evidence?: boolean
   llm_usage?: {
     model_calls_total: number
@@ -31,12 +44,14 @@ export type AnalysisTrace = {
     text: string
     page?: number|null
     model_checked: boolean
+    targeted_checked?: boolean
     candidates_count: number
     links: Array<{
       tu_requirement_id: string
       tu_clause_number: string
       tu_text: string
       relation: string
+      source_phase?: 'matching'|'targeted'|'unknown'
       confidence?: number|null
       search_score?: number|null
       tu_quote: string

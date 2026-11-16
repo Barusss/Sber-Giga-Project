@@ -71,6 +71,15 @@ def test_preview_limits_both_inputs_and_stays_read_only(client, monkeypatch):
         for entry in result["trace_info"]["znp_atom_results"]
     )
     assert result["trace_info"]["llm_usage"]["model_calls_limit"] <= 55
+    stages = result["trace_info"]["comparison_stages"]
+    assert stages["targeted"]["enabled"] is False
+    assert stages["targeted"]["attempted"] == 0
+    assert stages["targeted"]["limit_reached"] is False
+    assert result["trace_info"]["llm_usage"]["attempted_by_phase"].get("targeted", 0) == 0
+    assert stages["matching"]["checked"] == 10
+    assert stages["matching"]["total"] == 10
+    assert stages["coverage"]["total"] >= 10
+    assert stages["coverage"]["checked"] + stages["coverage"]["unreviewed"] == stages["coverage"]["total"]
     assert [row["requirement"]["clause_number"] for row in result["checked_requirements"]] == [
         str(i) for i in range(1, 11)
     ]
