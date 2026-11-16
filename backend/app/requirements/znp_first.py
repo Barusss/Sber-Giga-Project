@@ -62,6 +62,18 @@ znp_atom.source_fragments[].text. Аналогично tu_quote должен н�
 """
 
 
+TARGETED_PROMPT = """Ты проверяешь одно требование ТУ по нескольким кандидатам ЗнП.
+Кандидаты найдены Python и не являются доказательствами без смысловой проверки.
+Для каждой подтверждающей, частичной или противоречащей связи верни atom_id,
+relation (supports|partial|conflicts), точные непрерывные цитаты из исходных
+фрагментов ТУ и ЗнП и объяснение. Не придумывай идентификаторы и цитаты.
+Не смешивай объекты, исключения, альтернативы и параметры.
+Если подтверждений нет, верни {"links":[]}. Строгий JSON:
+{"links":[{"atom_id":"...","relation":"supports","tu_quote":"...",
+"znp_quote":"...","confidence":0.0,"reasoning":"..."}]}
+"""
+
+
 class ZnPFirstAgent:
     """End-to-end comparison using conservative ZnP statements as search queries."""
 
@@ -118,6 +130,40 @@ class ZnPFirstAgent:
         }
         return self.ai.complete_json(
             system_prompt=MATCH_PROMPT,
+            user_prompt=json.dumps(payload, ensure_ascii=False),
+        )
+
+    def _judge_targeted(
+        self, requirement: TURequirement, candidates: list[dict[str, Any]],
+        znp_by_id: dict[str, ZNPClause],
+    ) -> dict[str, Any]:
+        payload = {
+            "phase": "targeted",
+            "tu_requirement": {
+                "id": requirement.id,
+                "clause_number": requirement.clause_number,
+                "text": requirement.text,
+                "source_fragments": [
+                    {"fragment_id": source.get("fragment_id"),
+                     "text": str(source.get("text", ""))[:1600]}
+                    for source in (requirement.sources or [])[:3]
+                    if isinstance(source, dict)
+                ],
+            },
+            "znp_candidates": [{
+                "atom_id": item["clause_id"],
+                "clause_number": znp_by_id[item["clause_id"]].clause_number,
+                "text": znp_by_id[item["clause_id"]].text[:1800],
+                "source_fragments": [
+                    {"fragment_id": source.get("fragment_id"),
+                     "text": str(source.get("text", ""))[:1200]}
+                    for source in (znp_by_id[item["clause_id"]].sources or [])[:3]
+                    if isinstance(source, dict)
+                ],
+            } for item in candidates],
+        }
+        return self.ai.complete_json(
+            system_prompt=TARGETED_PROMPT,
             user_prompt=json.dumps(payload, ensure_ascii=False),
         )
 
@@ -381,6 +427,7 @@ class ZnPFirstAgent:
         obligations = {item.id: build_obligations(item) for item in tu_requirements}
         coverage_results: dict[str, list[dict[str, Any]]] = {}
         targeted_results: dict[str, list[dict[str, Any]]] = {}
+        targeted_diagnostics: dict[str, dict[str, Any]] = {}
         targeted_calls = 0
         targeted_checked_atoms = set()
         targeted_limit_hit = False
@@ -410,76 +457,103 @@ class ZnPFirstAgent:
                 if result["status"] != "fulfilled"
             ] if initial else [o.text for o in obligations[requirement.id]]
             targeted: list[dict[str, Any]] = []
-            if (self.targeted_enabled and model_available and gap_queries and not (
-                hasattr(self.ai, "phase_exhausted")
-                and self.ai.phase_exhausted("targeted")
-            )):
-                for query in list(dict.fromkeys(gap_queries))[:6]:
-                    # Searching the opposite way here is a fallback exclusively
-                    # for uncovered TU obligations, not the main architecture.
-                    query_vector = (
-                        self.embedder.embed_query(query) if znp_vectors is not None else None
-                    )
-                    candidates = tool_search_znp_clauses(
-                        query, znp_clauses, top_k=min(len(znp_clauses), self.batch_size * 3),
-                        query_embedding=query_vector,
-                        clause_embeddings=znp_vectors if self.embedder.enabled else None,
-                    )
-                    for index in range(0, len(candidates), self.batch_size):
-                        batch = candidates[index:index + self.batch_size]
-                        for suggestion in batch:
-                            atom = znp_by_id[suggestion["clause_id"]]
-                            if (atom.id, requirement.id) in seen:
+            targeted_candidates_count = 0
+            targeted_model_checked = False
+            targeted_skipped_reason = None
+            if self.targeted_enabled and model_available and gap_queries:
+                if (hasattr(self.ai, "phase_exhausted")
+                        and self.ai.phase_exhausted("targeted")):
+                    targeted_limit_hit = True
+                    targeted_skipped_reason = "limit"
+                else:
+                    candidate_by_id: dict[str, dict[str, Any]] = {}
+                    # Gather gaps into one bounded candidate batch per TU.
+                    # This avoids an individual DeepSeek call for each pair.
+                    for query in list(dict.fromkeys(gap_queries))[:6]:
+                        query_vector = (
+                            self.embedder.embed_query(query) if znp_vectors is not None else None
+                        )
+                        suggestions = tool_search_znp_clauses(
+                            query, znp_clauses,
+                            top_k=min(len(znp_clauses), self.batch_size * 2),
+                            query_embedding=query_vector,
+                            clause_embeddings=znp_vectors if self.embedder.enabled else None,
+                        )
+                        for suggestion in suggestions:
+                            aid = suggestion["clause_id"]
+                            if (aid, requirement.id) in seen:
                                 continue
-                            target = {
-                                "requirement_id": requirement.id,
-                                "clause_number": requirement.clause_number,
-                                "text": requirement.text,
-                                "similarity_score": suggestion["similarity_score"],
-                            }
-                            targeted_calls += 1
-                            try:
-                                answer = self._judge(atom, [target], [], phase="targeted")
-                            except DeepSeekError as exc:
-                                if (isinstance(exc, LLMCallLimitExceeded)
-                                        and exc.scope == "phase"):
-                                    targeted_limit_hit = True
-                                    break
+                            previous = candidate_by_id.get(aid)
+                            if (previous is None or
+                                    suggestion["similarity_score"] > previous["similarity_score"]):
+                                candidate_by_id[aid] = suggestion
+                    selected = sorted(
+                        candidate_by_id.values(),
+                        key=lambda row: row["similarity_score"], reverse=True,
+                    )[:max(8, self.batch_size * 2)]
+                    targeted_candidates_count = len(selected)
+                    if selected:
+                        targeted_calls += 1
+                        try:
+                            answer = self._judge_targeted(requirement, selected, znp_by_id)
+                        except LLMCallLimitExceeded as exc:
+                            if exc.scope in {"phase", "global"}:
+                                targeted_limit_hit = True
+                                targeted_skipped_reason = "limit"
+                            else:
                                 model_error = str(exc)
                                 model_failure_kind = type(exc).__name__
                                 model_available = False
-                                break
+                        except DeepSeekError as exc:
+                            model_error = str(exc)
+                            model_failure_kind = type(exc).__name__
+                            model_available = False
+                        else:
                             if not isinstance(answer, dict) or not isinstance(answer.get("links"), list):
-                                targeted.append({"atom_id": atom.id, "error": "invalid_response"})
-                                continue
-                            evaluated[requirement.id] += 1
-                            targeted_checked_atoms.add(atom.id)
-                            proposed_total += len(answer["links"])
-                            for proposal in answer["links"]:
-                                if not isinstance(proposal, dict) or str(proposal.get("requirement_id")) != requirement.id:
-                                    continue
-                                entry = self._validated_link(
-                                    atom, requirement, proposal,
-                                    suggestion["similarity_score"], rejected,
+                                targeted_skipped_reason = "invalid_response"
+                            else:
+                                targeted_model_checked = True
+                                evaluated[requirement.id] += 1
+                                targeted_checked_atoms.update(
+                                    row["clause_id"] for row in selected
                                 )
-                                if entry is not None:
+                                selected_by_id = {
+                                    row["clause_id"]: row for row in selected
+                                }
+                                proposed_total += len(answer["links"])
+                                for proposal in answer["links"]:
+                                    if not isinstance(proposal, dict):
+                                        rejected["invalid_link_shape"] += 1
+                                        continue
+                                    aid = str(proposal.get("atom_id") or "")
+                                    suggestion = selected_by_id.get(aid)
+                                    if suggestion is None:
+                                        rejected["unknown_candidate"] += 1
+                                        continue
+                                    if (aid, requirement.id) in seen:
+                                        continue
+                                    atom = znp_by_id[aid]
+                                    entry = self._validated_link(
+                                        atom, requirement, proposal,
+                                        suggestion["similarity_score"], rejected,
+                                    )
+                                    if entry is None:
+                                        continue
                                     entry["source_phase"] = "targeted"
                                     entries.append(entry)
-                                    seen.add((atom.id, requirement.id))
+                                    seen.add((aid, requirement.id))
                                     accepted_total += 1
                                     targeted_links_total += 1
-                                    targeted.append({"atom_id": atom.id, "result": entry["relation"]})
-                                    break
-                        if not model_available or targeted_limit_hit:
-                            break
-                    if not model_available or targeted_limit_hit:
-                        break
-            if (
-                self.targeted_enabled and model_available and gap_queries
-                and hasattr(self.ai, "phase_exhausted")
-                and self.ai.phase_exhausted("targeted")
-            ):
-                targeted_limit_hit = True
+                                    targeted.append({
+                                        "atom_id": aid, "result": entry["relation"],
+                                    })
+            elif self.targeted_enabled and not model_available:
+                targeted_skipped_reason = "model_unavailable"
+            targeted_diagnostics[requirement.id] = {
+                "candidates": targeted_candidates_count,
+                "checked": targeted_model_checked,
+                "skip_reason": targeted_skipped_reason,
+            }
             targeted_results[requirement.id] = targeted
             evidence = [x for x in entries if x["relation"] in {"supports", "partial"}
                         and x.get("scope_consistent", True)]
@@ -621,11 +695,13 @@ class ZnPFirstAgent:
                 "coverage_check": coverage,
                 "param_check": params,
                 "targeted_search": targeted_results[requirement.id],
+                "targeted_diagnostics": targeted_diagnostics[requirement.id],
                 "contradiction_audit": audit,
                 "znp_atoms_processed": len(znp_clauses),
                 "candidate_limit_reached": bool(limited_atoms),
                 "model_error": model_error,
                 "ai_model_evaluations": evaluated[requirement.id],
+                "validated_links": len(matches),
                 "unmatched": not bool(matches),
             }
             result_clause = znp_by_id.get(matched["clause_id"]) if matched else None
