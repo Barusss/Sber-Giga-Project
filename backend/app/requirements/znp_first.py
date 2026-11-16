@@ -13,7 +13,7 @@ from collections import Counter, defaultdict
 from typing import Any, Callable
 from uuid import uuid4
 
-from app.ai.deepseek import DeepSeekClient, DeepSeekError
+from app.ai.deepseek import DeepSeekClient, DeepSeekError, DeepSeekResponseError
 from app.ai.embeddings import EmbeddingService
 from app.requirements.retrieval import RequirementRetriever
 from app.requirements.llm_tracking import LLMCallLimitExceeded
@@ -64,11 +64,13 @@ znp_atom.source_fragments[].text. Аналогично tu_quote должен н�
 
 TARGETED_PROMPT = """Ты проверяешь одно требование ТУ по нескольким кандидатам ЗнП.
 Кандидаты найдены Python и не являются доказательствами без смысловой проверки.
-Для каждой подтверждающей, частичной или противоречащей связи верни atom_id,
-relation (supports|partial|conflicts), точные непрерывные цитаты из исходных
-фрагментов ТУ и ЗнП и объяснение. Не придумывай идентификаторы и цитаты.
-Не смешивай объекты, исключения, альтернативы и параметры.
-Если подтверждений нет, верни {"links":[]}. Строгий JSON:
+Для каждого кандидата верни не более одной доказуемой связи: atom_id,
+relation (supports|partial|conflicts), короткие, но достаточные непрерывные
+цитаты из исходных фрагментов ТУ и ЗнП (включая существенные параметры)
+и reasoning не длиннее 120 символов. Не пересказывай документы.
+Не придумывай идентификаторы и цитаты, не смешивай объекты,
+исключения, альтернативы и параметры.
+Если подтверждений нет, верни {"links":[]}. Строгий компактный JSON:
 {"links":[{"atom_id":"...","relation":"supports","tu_quote":"...",
 "znp_quote":"...","confidence":0.0,"reasoning":"..."}]}
 """
@@ -166,6 +168,64 @@ class ZnPFirstAgent:
             system_prompt=TARGETED_PROMPT,
             user_prompt=json.dumps(payload, ensure_ascii=False),
         )
+
+    def _judge_targeted_adaptive(
+        self, requirement: TURequirement, candidates: list[dict[str, Any]],
+        znp_by_id: dict[str, ZNPClause],
+    ) -> dict[str, Any]:
+        """Retry only truncated targeted responses with smaller candidate batches.
+
+        A single candidate that still truncates remains unverified; other batches
+        can finish normally. Request caps are respected by the tracked LLM.
+        """
+        pending = [candidates]
+        answers: list[tuple[list[dict[str, Any]], dict[str, Any]]] = []
+        checked_ids: set[str] = set()
+        failed_ids: set[str] = set()
+        requests = 0
+        truncated = 0
+        invalid_response = False
+        limit_reached = False
+
+        while pending:
+            batch = pending.pop(0)
+            try:
+                reply = self._judge_targeted(requirement, batch, znp_by_id)
+            except LLMCallLimitExceeded:
+                limit_reached = True
+                failed_ids.update(row["clause_id"] for row in batch)
+                for remainder in pending:
+                    failed_ids.update(row["clause_id"] for row in remainder)
+                break
+            except DeepSeekResponseError as exc:
+                if "truncated" not in str(exc).casefold():
+                    raise
+                requests += 1
+                truncated += 1
+                if len(batch) == 1:
+                    failed_ids.add(batch[0]["clause_id"])
+                else:
+                    midpoint = len(batch) // 2
+                    pending = [batch[:midpoint], batch[midpoint:]] + pending
+                continue
+
+            requests += 1
+            if not isinstance(reply, dict) or not isinstance(reply.get("links"), list):
+                invalid_response = True
+                failed_ids.update(row["clause_id"] for row in batch)
+                continue
+            answers.append((batch, reply))
+            checked_ids.update(row["clause_id"] for row in batch)
+
+        return {
+            "answers": answers,
+            "checked_ids": checked_ids,
+            "failed_ids": failed_ids,
+            "requests": requests,
+            "truncated": truncated,
+            "invalid_response": invalid_response,
+            "limit_reached": limit_reached,
+        }
 
     @staticmethod
     def _validated_link(
@@ -433,6 +493,8 @@ class ZnPFirstAgent:
         targeted_calls = 0
         targeted_checked_atoms = set()
         targeted_limit_hit = False
+        targeted_truncated_responses = 0
+        incomplete_targeted_requirements: set[str] = set()
         # Build the reverse-side semantic candidates once; if local embeddings
         # are unavailable, targeted retrieval falls back to lexical ranking.
         znp_vectors = (
@@ -463,6 +525,9 @@ class ZnPFirstAgent:
             targeted_candidates_total = 0
             targeted_model_checked = False
             targeted_skipped_reason = None
+            targeted_truncated_for_requirement = 0
+            targeted_checked_count = 0
+            targeted_failed_count = 0
             if self.targeted_enabled and model_available and gap_queries:
                 if (hasattr(self.ai, "phase_exhausted")
                         and self.ai.phase_exhausted("targeted")):
@@ -497,32 +562,41 @@ class ZnPFirstAgent:
                     targeted_candidates_count = len(selected)
                     targeted_candidates_total = len(candidate_by_id)
                     if selected:
-                        targeted_calls += 1
                         try:
-                            answer = self._judge_targeted(requirement, selected, znp_by_id)
-                        except LLMCallLimitExceeded as exc:
-                            if exc.scope in {"phase", "global"}:
-                                targeted_limit_hit = True
-                                targeted_skipped_reason = "limit"
-                            else:
-                                model_error = str(exc)
-                                model_failure_kind = type(exc).__name__
-                                model_available = False
+                            batch_result = self._judge_targeted_adaptive(
+                                requirement, selected, znp_by_id,
+                            )
                         except DeepSeekError as exc:
                             model_error = str(exc)
                             model_failure_kind = type(exc).__name__
                             model_available = False
                         else:
-                            if not isinstance(answer, dict) or not isinstance(answer.get("links"), list):
-                                targeted_skipped_reason = "invalid_response"
-                            else:
-                                targeted_model_checked = True
+                            targeted_calls += batch_result["requests"]
+                            targeted_truncated_responses += batch_result["truncated"]
+                            targeted_truncated_for_requirement = batch_result["truncated"]
+                            targeted_checked_count = len(batch_result["checked_ids"])
+                            targeted_failed_count = len(batch_result["failed_ids"])
+                            targeted_limit_hit = (
+                                targeted_limit_hit or batch_result["limit_reached"]
+                            )
+                            failed_ids = batch_result["failed_ids"]
+                            targeted_model_checked = (
+                                bool(batch_result["checked_ids"]) and not failed_ids
+                            )
+                            targeted_checked_atoms.update(batch_result["checked_ids"])
+                            if batch_result["checked_ids"]:
                                 evaluated[requirement.id] += 1
-                                targeted_checked_atoms.update(
-                                    row["clause_id"] for row in selected
-                                )
+                            if failed_ids:
+                                incomplete_targeted_requirements.add(requirement.id)
+                                if batch_result["limit_reached"]:
+                                    targeted_skipped_reason = "limit"
+                                elif batch_result["truncated"]:
+                                    targeted_skipped_reason = "truncated"
+                                else:
+                                    targeted_skipped_reason = "invalid_response"
+                            for batch, answer in batch_result["answers"]:
                                 selected_by_id = {
-                                    row["clause_id"]: row for row in selected
+                                    row["clause_id"]: row for row in batch
                                 }
                                 proposed_total += len(answer["links"])
                                 for proposal in answer["links"]:
@@ -558,6 +632,9 @@ class ZnPFirstAgent:
                 "candidates_total": targeted_candidates_total,
                 "checked": targeted_model_checked,
                 "skip_reason": targeted_skipped_reason,
+                "checked_candidates": targeted_checked_count,
+                "unchecked_candidates": targeted_failed_count,
+                "truncated_responses": targeted_truncated_for_requirement,
             }
             targeted_results[requirement.id] = targeted
             evidence = [x for x in entries if x["relation"] in {"supports", "partial"}
@@ -645,6 +722,8 @@ class ZnPFirstAgent:
             "attempted": targeted_calls if self.targeted_enabled else 0,
             "validated_links": targeted_links_total,
             "limit_reached": targeted_limit_hit,
+            "truncated_responses": targeted_truncated_responses,
+            "incomplete_requirements": len(incomplete_targeted_requirements),
         }
 
         checked: list[RequirementCheckItem] = []
@@ -673,6 +752,7 @@ class ZnPFirstAgent:
                 all_obligations_covered(obligation_checks)
                 and bool(supported or partial)
                 and not matching_limited
+                and requirement.id not in incomplete_targeted_requirements
                 # Each obligation was checked against its OWN cited evidence.
                 # Rechecking the concatenated text of different objects as one
                 # parameter set incorrectly rejects valid compound requirements.
@@ -689,6 +769,8 @@ class ZnPFirstAgent:
                 reason = f"Контроль противоречий не завершён ({remaining_audit} кандидатов)."
             elif complete:
                 reason = f"Все {len(obligation_checks)} обязательных условия ТУ подтверждены и проверены."
+            elif requirement.id in incomplete_targeted_requirements:
+                reason = "Дополнительная проверка ТУ → ЗнП завершена не полностью; требуется проверка инженера."
             else:
                 remaining = sum(row["status"] != "fulfilled" for row in obligation_checks)
                 reason = f"Не подтверждено условий ТУ: {remaining} из {len(obligation_checks)}."
@@ -793,9 +875,14 @@ class ZnPFirstAgent:
                 "rejected_links": dict(rejected),
                 "stopped_due_to_invalid_evidence": stopped_due_to_invalid_evidence,
                 "targeted_limit_reached": targeted_limit_hit,
+                "targeted_truncated_responses": targeted_truncated_responses,
+                "targeted_incomplete_requirements": len(incomplete_targeted_requirements),
                 "model_failure_kind": model_failure_kind,
                 "model_failure_reason": model_error,
                 "embedding": self.embedder.status(),
-                "degraded": not model_available or targeted_limit_hit or matching_limited,
+                "degraded": (
+                    not model_available or targeted_limit_hit or matching_limited
+                    or bool(incomplete_targeted_requirements)
+                ),
             },
         )
