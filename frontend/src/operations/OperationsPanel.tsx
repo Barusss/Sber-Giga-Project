@@ -12,6 +12,7 @@ export type Operation = {
   filename?: string|null
   document_id?: string|null
   pair_ids: string[]
+  test_mode?: boolean
   progress_current: number|null
   progress_total: number|null
   error: string|null
@@ -25,6 +26,7 @@ type OperationInput = {
   document_id?: string
   pair_ids?: string[]
   refresh?: boolean
+  test_mode?: boolean
 }
 
 type ContextValue = {
@@ -216,7 +218,7 @@ function ComparisonProgress({job}: {job: Operation}) {
   return <div className="operation-comparison-detail">
     <div className="operation-comparison-heading">
       <strong>Пара {data.pair_index} из {data.pair_total}</strong>
-      {hasCount && <span>Требований ТУ: {total}</span>}
+      {hasCount && <span>{job.test_mode ? 'Положений ЗнП в тесте' : 'Положений ЗнП'}: {total}</span>}
     </div>
     <ol className="operation-stage-list" aria-label="Этапы сверки">
       {comparisonSteps.map((step,index) => <li key={step.stage}
@@ -228,29 +230,29 @@ function ComparisonProgress({job}: {job: Operation}) {
     </ol>
     {hasCount && stage >= 2 && <div className="operation-requirements-progress">
       <div className="operation-requirements-head">
-        <strong>Обработано {current} из {total} требований</strong>
+        <strong>Обработано {current} из {total} положений ЗнП</strong>
         <span>{percent}%</span>
       </div>
       <div className="operation-progress" role="progressbar"
-        aria-label="Проверено требований в текущей паре"
+        aria-label="Проверено положений ЗнП в текущей паре"
         aria-valuemin={0} aria-valuemax={total} aria-valuenow={current}>
         <span className="operation-progress-fill" style={{width:`${percent}%`}}/>
       </div>
       <div className="operation-requirements-foot">
         {data.current_clause && stage === 2
-          ? <span>Сейчас: пункт ТУ {data.current_clause}</span>
-          : <span>{stage === 2 ? `Осталось требований: ${total-current}` : 'Проверка требований завершена'}</span>}
+          ? <span>Сейчас: положение ЗнП {data.current_clause}</span>
+          : <span>{stage === 2 ? `Осталось положений: ${total-current}` : 'Проверка положений завершена'}</span>}
         {stage === 2 && data.remaining_seconds !== null &&
           <span>Примерно осталось: {formatRemaining(data.remaining_seconds)}</span>}
       </div>
       {data.current_clause && stage === 2 && <p className="operation-remaining-note">
-        Осталось требований: {total-current}. Время оценивается по уже проверенным требованиям.
+        Осталось положений ЗнП: {total-current}. Время оценивается по уже обработанным положениям.
       </p>}
     </div>}
     {!hasCount && stage >= 0 && stage < 2 &&
-      <p className="operation-waiting-detail">Число требований определяется по содержимому документов.</p>}
+      <p className="operation-waiting-detail">Число положений определяется по содержимому документов.</p>}
     {hasCount && stage === 1 && <p className="operation-waiting-detail">
-      Найдено {total} требований. Подготавливается поиск соответствующих пунктов в ЗнП.
+      Выделено {total} положений ЗнП. Подготавливается поиск соответствующих требований ТУ.
     </p>}
   </div>
 }

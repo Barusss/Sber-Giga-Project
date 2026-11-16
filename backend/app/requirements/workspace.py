@@ -78,6 +78,7 @@ def _summary(run: ComparisonRun) -> dict:
         "created_at": run.created_at,
         "is_current": run.is_current,
         "stats": stats,
+        "test_mode": bool((result.get("trace_info") or {}).get("test_mode", {}).get("enabled")),
         "confirmed": sum(bool(item.get("is_confirmed_by_human")) for item in items),
     }
 
@@ -200,13 +201,16 @@ def get_comparison(project_id: str, pair_id: str, db: Session = Depends(get_db))
 
 
 @router.post("/projects/{project_id}/comparisons/{pair_id}/runs", status_code=201)
-def execute_comparison(project_id: str, pair_id: str, db: Session = Depends(get_db)):
-    return run_comparison(project_id, pair_id, db)
+def execute_comparison(project_id: str, pair_id: str, test_mode: bool = False,
+                       db: Session = Depends(get_db)):
+    return run_comparison(project_id, pair_id, db, test_mode=test_mode)
 
 
 def run_comparison(
     project_id: str, pair_id: str, db: Session,
     progress_callback: Callable[[str, int, int, str | None], None] | None = None,
+    *,
+    test_mode: bool = False,
 ):
     pair = _pair(db, project_id, pair_id, edit=True)
     with _analysis_lock(project_id):
@@ -216,16 +220,30 @@ def run_comparison(
             tu_document_id=pair.tu_document_id,
             znp_document_id=pair.znp_document_id,
             force=False,
+            test_mode=test_mode,
         ), db, ZnPFirstAgent(), progress_callback=progress_callback)
         if progress_callback:
             progress_callback("snapshot", response.stats["total"], response.stats["total"], None)
-        persisted = get_project_requirements(project_id, pair.tu_document_id, pair.znp_document_id, db)
-        persisted.trace_info = response.trace_info
-        for old in db.scalars(select(ComparisonRun).where(
-            ComparisonRun.pair_id == pair.id, ComparisonRun.is_current.is_(True)
-        )).all():
-            old.is_current = False
-        run = ComparisonRun(pair_id=pair.id, result=persisted.model_dump(mode="json"), is_current=True)
+        if test_mode:
+            # A preview is a read-only historical snapshot. It cannot replace
+            # the current full run or modify confirmations and project findings.
+            run = ComparisonRun(
+                pair_id=pair.id, result=response.model_dump(mode="json"),
+                is_current=False,
+            )
+        else:
+            persisted = get_project_requirements(
+                project_id, pair.tu_document_id, pair.znp_document_id, db,
+            )
+            persisted.trace_info = response.trace_info
+            for old in db.scalars(select(ComparisonRun).where(
+                ComparisonRun.pair_id == pair.id, ComparisonRun.is_current.is_(True)
+            )).all():
+                old.is_current = False
+            run = ComparisonRun(
+                pair_id=pair.id, result=persisted.model_dump(mode="json"),
+                is_current=True,
+            )
         db.add(run)
         db.commit()
         db.refresh(run)

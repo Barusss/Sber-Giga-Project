@@ -7,6 +7,7 @@ export type RunSummary = {
   id: string
   created_at: string
   is_current: boolean
+  test_mode?: boolean
   confirmed: number
   stats: {total?: number; fulfilled?: number; missing?: number; needs_review?: number}
 }
@@ -118,7 +119,7 @@ export function ComparisonsPage({projectId, approved}: {projectId: string; appro
     finally {setBusy(false)}
   }
 
-  async function run(ids: string[]) {
+  async function run(ids: string[], testMode = false) {
     if (!ids.length || busy || ids.some(id => runningPairs.has(id))) return
     setBusy(true)
     setError('')
@@ -127,6 +128,7 @@ export function ComparisonsPage({projectId, approved}: {projectId: string; appro
       await start({
         kind: ids.length === 1 ? 'comparison' : 'comparison_batch',
         pair_ids: ids,
+        test_mode: testMode,
       })
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -215,7 +217,12 @@ export function ComparisonsPage({projectId, approved}: {projectId: string; appro
                   {pair.status === 'queued' ? 'Открыть' : 'Замечания и история'}
                 </Link>
                 {pair.status === 'queued' && !approved &&
-                  <button type="button" className="secondary" disabled={busy || runningPairs.has(pair.id)} onClick={() => run([pair.id])}>Запустить</button>}
+                  <button type="button" className="secondary" disabled={busy || runningPairs.has(pair.id)}
+                    onClick={() => run([pair.id])}>Запустить</button>}
+                {!approved && <button type="button" className="secondary"
+                  title="Только первые 10 ТУ и 10 положений ЗнП; основная проверка не меняется"
+                  disabled={busy || runningPairs.has(pair.id)}
+                  onClick={() => run([pair.id], true)}>Тест 10 × 10</button>
                 {!approved && <button type="button" className="workspace-danger" disabled={busy || runningPairs.has(pair.id)}
                   onClick={() => remove(pair)}>Удалить</button>}
               </div></td>

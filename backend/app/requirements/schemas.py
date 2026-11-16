@@ -111,6 +111,7 @@ class AnalyzeProjectRequirementsRequest(BaseModel):
     tu_document_id: Optional[str] = None
     znp_document_id: Optional[str] = None
     force: bool = False
+    test_mode: bool = False
 
 
 # REST schemas for the persisted DPazY models (manual storage and human review).

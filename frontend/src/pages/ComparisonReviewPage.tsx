@@ -178,12 +178,12 @@ export function ComparisonReviewPage({projectId, approved}: {projectId: string; 
     }
   }, [operations, pairId, requestedRun, pair?.current_run_id])
 
-  async function rerun() {
+  async function rerun(testMode = false) {
     if (busy || approved || running) return
     setBusy(true)
     setError('')
     try {
-      await start({kind:'comparison', pair_ids:[pairId!]})
+      await start({kind:'comparison', pair_ids:[pairId!], test_mode:testMode})
     } catch(e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -238,9 +238,15 @@ export function ComparisonReviewPage({projectId, approved}: {projectId: string; 
         <h2>Сверка документов</h2>
         {pair && <p>{pair.tu_filename} / {pair.znp_filename}</p>}
       </div>
-      {pair && !approved && <button disabled={busy || running} onClick={rerun}>
-        {running ? 'Проверка выполняется' : busy ? 'Запускаем…' : 'Повторить проверку'}
-      </button>}
+      {pair && !approved && <div className="workspace-row-actions">
+        <button type="button" className="secondary" disabled={busy || running}
+          onClick={() => rerun(true)} title="Первые 10 требований ТУ и первые 10 атомарных положений ЗнП. Без изменения основного результата.">
+          Тест: 10 ТУ × 10 ЗнП
+        </button>
+        <button type="button" disabled={busy || running} onClick={() => rerun(false)}>
+          {running ? 'Проверка выполняется' : busy ? 'Запускаем…' : 'Полная проверка'}
+        </button>
+      </div>}
     </div>
     {error && <p role="alert" className="error">{error}</p>}
     {!pair ? <p className="muted">Загружаем сверку…</p> :
@@ -254,6 +260,7 @@ export function ComparisonReviewPage({projectId, approved}: {projectId: string; 
               <button type="button" className="workspace-run-select" onClick={() => setSearchParams({run:run.id})}>
                 <strong>{date(run.created_at)}</strong>
                 <small>{run.is_current ? 'Текущий результат' : 'Исторический снимок'} ·
+                  {run.test_mode ? 'Тест 10 × 10 · ' : ''}
                   {run.stats.total || 0} требований · {run.confirmed} решений инженера
                 </small>
               </button>
@@ -266,7 +273,11 @@ export function ComparisonReviewPage({projectId, approved}: {projectId: string; 
         {detail && <div className="workspace-verification">
           <div className="workspace-section-heading">
             <div><h3>Замечания и соответствия</h3><p>Результат от {date(detail.run.created_at)}</p></div>
-            {!detail.run.is_current && <span className="workspace-status queued">Исторический результат, только чтение</span>}
+            {detail.run.test_mode && <span className="workspace-status queued">
+              Тест 10 ТУ × 10 ЗнП · только чтение · основная проверка не изменена
+            </span>}
+            {!detail.run.is_current && !detail.run.test_mode &&
+              <span className="workspace-status queued">Исторический результат, только чтение</span>}
           </div>
           <div className="workspace-stats">
             <div><strong>{detail.result.stats.total}</strong><span>Требований</span></div>
@@ -274,6 +285,11 @@ export function ComparisonReviewPage({projectId, approved}: {projectId: string; 
             <div><strong>{detail.result.stats.missing}</strong><span>Не соответствуют</span></div>
             <div><strong>{detail.result.stats.needs_review}</strong><span>Требуют рассмотрения</span></div>
           </div>
+          {detail.run.test_mode && <p className="workspace-analysis-note">
+            Тестовый запуск: проверены только первые 10 извлечённых требований ТУ
+            и не более 10 атомарных положений ЗнП. Результат не распространяется
+            на остальные пункты документов и не изменяет основные замечания.
+          </p>}
           <AnalysisFallbackNotice trace={detail.result.trace_info} items={detail.result.checked_requirements}/>
           {detail.result.trace_info?.atomization && <details className="workspace-evidence-details">
             <summary>Атомизация ЗнП через DeepSeek: {detail.result.trace_info.atomization.atoms_total} положений</summary>

@@ -10,6 +10,7 @@ the final decision.
 """
 import threading
 from datetime import datetime, timezone
+from uuid import NAMESPACE_URL, uuid5
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
@@ -627,6 +628,138 @@ def analyze_requirements(
         return _analyze_project_requirements(payload, db, agent)
 
 
+
+
+def _analyze_test_subset(
+    tu_doc: Document,
+    znp_doc: Document,
+    tu_raw: list[Clause],
+    db: Session,
+    agent: ZnPFirstAgent,
+    progress_callback: Callable[[str, int, int, str | None], None] | None,
+) -> CheckRequirementsResponse:
+    """Read-only 10 x 10 preview. Never write requirements, findings or verdicts.
+
+    Restrict inputs BEFORE DeepSeek atomization, matching, or coverage. The
+    selected ten ZnP source clauses can split into more atomic propositions;
+    cap those at ten as well, so matching never sees more than ten.
+    """
+    selected_tu = tu_raw[:10]
+    znp_fragments = db.scalars(
+        select(Fragment).where(Fragment.document_id == znp_doc.id)
+        .order_by(Fragment.page, Fragment.position)
+    ).all()
+    original_atoms = atomize_fragments(znp_doc.id, znp_fragments)
+    source_atoms = original_atoms[:10]
+    if not selected_tu or not source_atoms:
+        raise HTTPException(422, "Test mode needs extracted TU and ZnP clauses")
+
+    ledger = TrackedRequirementsLLM(
+        agent.ai,
+        max_calls=settings.requirements_llm_max_calls,
+        atomization_limit=min(10, settings.requirements_llm_atomization_calls),
+        targeted_limit=min(10, settings.requirements_llm_targeted_calls),
+    )
+    agent.ai = ledger
+    atomization = semantic_atomize(source_atoms, ledger)
+    chosen_atoms = atomization.atoms[:10]
+
+    tu_schemas: list[TURequirement] = []
+    tu_by_id: dict[str, Clause] = {}
+    for index, clause in enumerate(selected_tu, start=1):
+        rid = str(uuid5(
+            NAMESPACE_URL,
+            f"preview:{tu_doc.id}:{index}:{clause.clause_number}:{clause.text}",
+        ))
+        tu_by_id[rid] = clause
+        tu_schemas.append(TURequirement(
+            id=rid,
+            clause_number=clause.clause_number,
+            category=classify_requirement_category(clause.text),
+            text=clause.text,
+            fragment_id=clause.fragment_id,
+            page=clause.page,
+            fragment_text=clause.fragment_text,
+            section_path=clause.section_path,
+            sources=[{
+                "fragment_id": fid,
+                "page": fragment.page,
+                "text": fragment.text.strip(),
+            } for fid in clause.fragment_ids
+              if (fragment := db.get(Fragment, fid)) is not None],
+        ))
+
+    znp_schemas: list[ZNPClause] = []
+    znp_by_id: dict[str, Clause] = {}
+    for atom in chosen_atoms:
+        first = atom.sources[0]
+        znp_by_id[atom.id] = Clause(
+            clause_number=atom.clause_number,
+            text=atom.text,
+            page=first.page,
+            fragment_id=first.fragment_id,
+            fragment_ids=[source.fragment_id for source in atom.sources],
+            section_path=atom.section_path,
+            fragment_text=first.text,
+        )
+        znp_schemas.append(ZNPClause(
+            id=atom.id,
+            clause_number=atom.clause_number,
+            text=atom.text,
+            fragment_id=first.fragment_id,
+            page=first.page,
+            fragment_text=first.text,
+            section_path=atom.section_path,
+            sources=[asdict(source) for source in atom.sources],
+            context_sources=[asdict(source) for source in atom.context_sources],
+            warnings=list(atom.warnings),
+        ))
+
+    if progress_callback:
+        progress_callback("preparing", 0, len(tu_schemas), None)
+    result = agent.verify_all(
+        tu_schemas, znp_schemas, progress_callback=progress_callback,
+    )
+    _attach_provenance(result.checked_requirements, tu_schemas, znp_schemas)
+    fragments = {
+        fragment.id: fragment
+        for fragment in db.scalars(select(Fragment).where(
+            Fragment.id.in_({
+                fid for clause in selected_tu for fid in clause.fragment_ids
+            } | {
+                source.fragment_id for atom in chosen_atoms for source in atom.sources
+            })
+        )).all()
+    }
+    _apply_quote_provenance(
+        result.checked_requirements, tu_by_id, znp_by_id, fragments, znp_doc.id,
+    )
+    # Provenance validation may downgrade a status; recompute the snapshot stats.
+    result.stats = {
+        status.value: sum(row.status == status for row in result.checked_requirements)
+        for status in RequirementStatus
+    }
+    result.stats["total"] = len(result.checked_requirements)
+    if result.trace_info is None:
+        result.trace_info = {}
+    result.trace_info["test_mode"] = {
+        "enabled": True,
+        "tu_limit": 10,
+        "znp_limit": 10,
+        "tu_selected": len(tu_schemas),
+        "znp_source_clauses_selected": len(source_atoms),
+        "znp_atoms_selected": len(znp_schemas),
+        "znp_atoms_after_split": len(atomization.atoms),
+        "truncated_after_atomization": len(atomization.atoms) > len(chosen_atoms),
+        "isolated": True,
+    }
+    result.trace_info["atomization"] = atomization.trace()
+    result.trace_info["llm_usage"] = ledger.trace()
+    if atomization.degraded or ledger.trace()["limit_reached"]:
+        result.trace_info["degraded"] = True
+    return result
+
+
 def _analyze_project_requirements(
     payload: AnalyzeProjectRequirementsRequest,
     db: Session,
@@ -685,6 +818,13 @@ def _analyze_project_requirements(
             if fragment_ids else []
         )
     }
+
+    if payload.test_mode:
+        if not isinstance(agent, ZnPFirstAgent):
+            raise HTTPException(422, "Test mode requires ZnP-first agent")
+        return _analyze_test_subset(
+            tu_doc, znp_doc, tu_raw, db, agent, progress_callback,
+        )
 
     # The project-workspace comparison uses conservative ZnP atoms, not the
     # legacy numbered-clause splitting. Each atom retains exact source spans.

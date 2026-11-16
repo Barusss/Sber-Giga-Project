@@ -47,6 +47,7 @@ class OperationRequest(BaseModel):
     document_id: str | None = None
     pair_ids: list[str] = Field(default_factory=list, max_length=100)
     refresh: bool = False
+    test_mode: bool = False
 
 
 def _project(db: Session, project_id: str) -> Project:
@@ -64,6 +65,7 @@ def _out(job: OperationJob) -> dict:
         "status": job.status, "stage": job.stage, "message": job.message,
         "document_id": job.params.get("document_id"),
         "pair_ids": job.params.get("pair_ids", []),
+        "test_mode": bool(job.params.get("test_mode", False)),
         "filename": job.params.get("filename"),
         "progress_current": job.progress_current,
         "progress_total": job.progress_total,
@@ -179,8 +181,8 @@ def _run_check(db: Session, job: OperationJob) -> dict:
 COMPARISON_STAGES = {
     "reading": "Чтение и разбор пунктов ТУ и ЗнП",
     "preparing": "Формирование перечня требований ТУ",
-    "embedding": "Подготовка поиска соответствий в ЗнП",
-    "verifying": "Сопоставление требований ТУ с ЗнП",
+    "embedding": "Подготовка поиска соответствий ЗнП → ТУ",
+    "verifying": "Сопоставление положений ЗнП с требованиями ТУ",
     "persisting": "Формирование и сохранение замечаний",
     "snapshot": "Сохранение результата в историю",
 }
@@ -227,7 +229,7 @@ def _run_comparisons(db: Session, job: OperationJob) -> dict:
             }
             message = COMPARISON_STAGES[stage]
             if stage == "verifying" and clause_number:
-                message = f"Анализ пункта ТУ {clause_number}"
+                message = f"Анализ положения ЗнП {clause_number}"
             # Independent short transaction: the analysis session may hold a
             # project lock and uncommitted findings. Never commit that session
             # just to publish progress or silently persist partial analysis.
@@ -237,6 +239,7 @@ def _run_comparisons(db: Session, job: OperationJob) -> dict:
 
         result = execute_comparison(
             job.project_id, pair_id, db, progress_callback=report,
+            test_mode=bool(job.params.get("test_mode", False)),
         )
         results.append({"pair_id": pair_id, "run_id": result["run"]["id"]})
         _update(db, job.id, stage="comparing",
@@ -342,6 +345,8 @@ def enqueue_operation(project_id: str, payload: OperationRequest, db: Session = 
     _project(db, project_id)
     if payload.kind not in KINDS:
         raise HTTPException(422, "Unsupported operation")
+    if payload.test_mode and payload.kind != "comparison":
+        raise HTTPException(422, "Test mode supports one comparison pair only")
     if payload.kind in ("normative_extract", "normative_check"):
         document = db.get(Document, payload.document_id) if payload.document_id else None
         if document is None or document.project_id != project_id:
@@ -356,7 +361,10 @@ def enqueue_operation(project_id: str, payload: OperationRequest, db: Session = 
         )).all()
         if len(pairs) != len(set(payload.pair_ids)):
             raise HTTPException(422, "All pairs must belong to this project")
-        params = {"pair_ids": list(dict.fromkeys(payload.pair_ids))}
+        params = {
+            "pair_ids": list(dict.fromkeys(payload.pair_ids)),
+            "test_mode": payload.test_mode,
+        }
     return _out(_enqueue(db, project_id, payload.kind, params))
 
 
