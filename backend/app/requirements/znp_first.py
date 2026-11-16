@@ -663,6 +663,7 @@ class ZnPFirstAgent:
                 "stopped_due_to_invalid_evidence": stopped_due_to_invalid_evidence,
                 "targeted_limit_reached": targeted_limit_hit,
                 "model_failure_kind": model_failure_kind,
+                "model_failure_reason": model_error,
                 "embedding": self.embedder.status(),
                 "degraded": not model_available or targeted_limit_hit or matching_limited,
             },
