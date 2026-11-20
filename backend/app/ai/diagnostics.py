@@ -14,6 +14,7 @@ import os
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
+from functools import wraps
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
@@ -185,3 +186,21 @@ def diagnostic_run(
 def trace_directory() -> str | None:
     ctx = _context()
     return str(ctx.directory) if ctx is not None else None
+
+
+def trace_comparison(func):
+    """Opt-in trace root for background/API comparisons on their worker thread."""
+    @wraps(func)
+    def wrapped(*args, **kwargs):
+        with diagnostic_run(
+            capture_payloads=os.environ.get("DEEPSEEK_TRACE_CAPTURE_PAYLOADS") == "1",
+        ):
+            payload = args[0] if args else kwargs.get("payload")
+            record(
+                "comparison.entry",
+                test_mode=bool(getattr(payload, "test_mode", False)),
+                tu_document_sha=sha(str(getattr(payload, "tu_document_id", ""))),
+                znp_document_sha=sha(str(getattr(payload, "znp_document_id", ""))),
+            )
+            return func(*args, **kwargs)
+    return wrapped
