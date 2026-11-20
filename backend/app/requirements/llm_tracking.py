@@ -6,7 +6,10 @@ The cap limits *requests*, not billing cost (which also depends on token usage).
 from __future__ import annotations
 
 import json
+import time
 from collections import Counter
+
+from app.ai import diagnostics
 from typing import Any
 
 from app.ai.deepseek import DeepSeekError
@@ -79,23 +82,65 @@ class TrackedRequirementsLLM:
 
     def complete_json(self, *, system_prompt: str, user_prompt: str) -> dict:
         phase = self.phase(user_prompt)
-        if self.exhausted:
-            self.rejected_by_limit[phase] += 1
-            raise LLMCallLimitExceeded(phase, "global")
-        if self.phase_exhausted(phase):
-            self.rejected_by_limit[phase] += 1
-            raise LLMCallLimitExceeded(phase, "phase")
+        subject = ""
+        candidate_count = None
+        if diagnostics.enabled():
+            try:
+                payload = json.loads(user_prompt)
+                if isinstance(payload, dict):
+                    item = payload.get("znp_atom") or payload.get("tu_requirement")
+                    if isinstance(item, dict):
+                        subject = str(item.get("id") or "")
+                    if "znp_candidates" in payload:
+                        candidate_count = len(payload["znp_candidates"])
+                    elif "tu_candidates" in payload:
+                        candidate_count = len(payload["tu_candidates"])
+            except (ValueError, TypeError):
+                pass
+        with diagnostics.phase_scope(phase, subject):
+            if self.exhausted:
+                self.rejected_by_limit[phase] += 1
+                diagnostics.record(
+                    "ledger.limit", scope="global", used=self.total,
+                    limit=self.max_calls, attempted_phase=self.attempted[phase],
+                )
+                raise LLMCallLimitExceeded(phase, "global")
+            if self.phase_exhausted(phase):
+                self.rejected_by_limit[phase] += 1
+                diagnostics.record(
+                    "ledger.limit", scope="phase", used=self.attempted[phase],
+                    limit=self.phase_limits[phase], attempted_total=self.total,
+                )
+                raise LLMCallLimitExceeded(phase, "phase")
 
-        self.attempted[phase] += 1
-        try:
-            response = self.model.complete_json(
-                system_prompt=system_prompt, user_prompt=user_prompt,
+            self.attempted[phase] += 1
+            started = time.monotonic()
+            diagnostics.record(
+                "ledger.request", phase_index=self.attempted[phase],
+                total_index=self.total, candidate_count=candidate_count,
+                prompt_chars=len(user_prompt), phase_cap=self.phase_limits.get(phase),
+                total_cap=self.max_calls,
             )
-        except Exception:
-            self.errors[phase] += 1
-            raise
-        self.succeeded[phase] += 1
-        return response
+            try:
+                response = self.model.complete_json(
+                    system_prompt=system_prompt, user_prompt=user_prompt,
+                )
+            except Exception as exc:
+                self.errors[phase] += 1
+                diagnostics.record(
+                    "ledger.failure", error_type=type(exc).__name__,
+                    truncated="truncated" in str(exc).casefold(),
+                    elapsed_ms=round((time.monotonic() - started) * 1000),
+                )
+                raise
+            self.succeeded[phase] += 1
+            diagnostics.record(
+                "ledger.success", response_keys=sorted(response) if isinstance(response, dict) else [],
+                elapsed_ms=round((time.monotonic() - started) * 1000),
+                links_count=len(response["links"]) if isinstance(response, dict)
+                    and isinstance(response.get("links"), list) else None,
+            )
+            return response
 
     def trace(self) -> dict:
         return {

@@ -13,6 +13,7 @@ from collections import Counter, defaultdict
 from typing import Any, Callable
 from uuid import uuid4
 
+from app.ai import diagnostics
 from app.ai.deepseek import DeepSeekClient, DeepSeekError, DeepSeekResponseError
 from app.ai.embeddings import EmbeddingService
 from app.requirements.retrieval import RequirementRetriever
@@ -179,6 +180,14 @@ class ZnPFirstAgent:
         can finish normally. Request caps are respected by the tracked LLM.
         """
         pending = [candidates]
+        diagnostics.record(
+            "targeted.adaptive.begin",
+            requirement_sha=diagnostics.sha(requirement.id),
+            candidate_count=len(candidates),
+            candidate_total_chars=sum(
+                len(znp_by_id[row["clause_id"]].text) for row in candidates
+            ),
+        )
         answers: list[tuple[list[dict[str, Any]], dict[str, Any]]] = []
         checked_ids: set[str] = set()
         failed_ids: set[str] = set()
@@ -189,9 +198,20 @@ class ZnPFirstAgent:
 
         while pending:
             batch = pending.pop(0)
+            diagnostics.record(
+                "targeted.batch.begin",
+                batch_size=len(batch), queue_length=len(pending),
+                candidate_shas=[diagnostics.sha(row["clause_id"]) for row in batch],
+                text_chars=sum(
+                    len(znp_by_id[row["clause_id"]].text) for row in batch
+                ),
+            )
             try:
                 reply = self._judge_targeted(requirement, batch, znp_by_id)
             except LLMCallLimitExceeded:
+                diagnostics.record(
+                    "targeted.batch.limit", batch_size=len(batch), requests=requests,
+                )
                 limit_reached = True
                 failed_ids.update(row["clause_id"] for row in batch)
                 for remainder in pending:
@@ -202,14 +222,29 @@ class ZnPFirstAgent:
                     raise
                 requests += 1
                 truncated += 1
+                diagnostics.record(
+                    "targeted.batch.truncated",
+                    batch_size=len(batch), errors_so_far=truncated,
+                )
                 if len(batch) == 1:
                     failed_ids.add(batch[0]["clause_id"])
                 else:
                     midpoint = len(batch) // 2
+                    diagnostics.record(
+                        "targeted.batch.split", before=len(batch),
+                        left=midpoint, right=len(batch) - midpoint,
+                    )
                     pending = [batch[:midpoint], batch[midpoint:]] + pending
                 continue
 
             requests += 1
+            diagnostics.record(
+                "targeted.batch.reply", batch_size=len(batch),
+                valid_format=isinstance(reply, dict)
+                and isinstance(reply.get("links"), list),
+                links=len(reply["links"]) if isinstance(reply, dict)
+                and isinstance(reply.get("links"), list) else None,
+            )
             if not isinstance(reply, dict) or not isinstance(reply.get("links"), list):
                 invalid_response = True
                 failed_ids.update(row["clause_id"] for row in batch)
@@ -217,6 +252,12 @@ class ZnPFirstAgent:
             answers.append((batch, reply))
             checked_ids.update(row["clause_id"] for row in batch)
 
+        diagnostics.record(
+            "targeted.adaptive.end",
+            checked=len(checked_ids), unchecked=len(failed_ids),
+            total_requests=requests, truncated=truncated,
+            limit_reached=limit_reached,
+        )
         return {
             "answers": answers,
             "checked_ids": checked_ids,
@@ -333,6 +374,11 @@ class ZnPFirstAgent:
         progress_callback: Callable[[str, int, int, str | None], None] | None = None,
     ) -> CheckRequirementsResponse:
         start = time.perf_counter()
+        diagnostics.record(
+            "matching.start", tu_count=len(tu_requirements),
+            znp_atoms=len(znp_clauses), batch_size=self.batch_size,
+            max_batches=self.max_batches, targeted_enabled=self.targeted_enabled,
+        )
         traces: list[dict[str, Any]] = []
         links: dict[str, list[dict[str, Any]]] = defaultdict(list)
         seen: set[tuple[str, str]] = set()
@@ -375,7 +421,23 @@ class ZnPFirstAgent:
             }
             rejected_before = rejected.copy()
             # The mandatory first search never depends on an LLM action.
+            diagnostics.record(
+                "matching.atom.begin", ordinal=number, total=len(znp_clauses),
+                atom_sha=diagnostics.sha(atom.id), atom_chars=len(atom.text),
+                source_fragments=len(atom.sources), warnings=len(atom.warnings),
+            )
             page = retriever.search(atom)
+            diagnostics.record(
+                "matching.retrieval",
+                ordinal=number, found=len(page["candidates"]),
+                has_more=page["has_more"],
+                channels=page["ranking_channels"],
+                candidates=[{
+                    "requirement_sha": diagnostics.sha(row["requirement_id"]),
+                    "chars": len(row["text"]),
+                    "score": round(float(row["similarity_score"]), 4),
+                } for row in page["candidates"]],
+            )
             atom_trace["steps"].append({
                 "tool": "search_tu", "candidates_count": len(page["candidates"]),
                 "channels": page["ranking_channels"],
@@ -418,6 +480,11 @@ class ZnPFirstAgent:
                         candidate_by_id[rid] = {
                             **neighbor, "similarity_score": 0.0,
                         }
+                diagnostics.record(
+                    "matching.batch.begin", atom_index=number, batch=batches,
+                    candidate_count=len(candidates), context_count=len(context),
+                    text_chars=sum(len(row["text"]) for row in candidates),
+                )
                 try:
                     reply = self._judge(atom, candidates, context)
                 except DeepSeekError as exc:
@@ -429,9 +496,22 @@ class ZnPFirstAgent:
                         break
                     model_error = str(exc)
                     model_failure_kind = type(exc).__name__
+                    diagnostics.record(
+                        "matching.llm_failure", atom_index=number,
+                        error_type=model_failure_kind,
+                        truncated="truncated" in model_error.casefold(),
+                    )
                     model_available = False
                     atom_trace["steps"].append({"tool": "llm_fallback", "reason": model_error})
                     break
+                diagnostics.record(
+                    "matching.batch.reply", atom_index=number, batch=batches,
+                    valid_format=isinstance(reply, dict)
+                    and isinstance(reply.get("links"), list),
+                    proposed_links=len(reply["links"]) if isinstance(reply, dict)
+                    and isinstance(reply.get("links"), list) else None,
+                    search_more=bool(reply.get("search_more")) if isinstance(reply, dict) else None,
+                )
                 if not isinstance(reply, dict) or not isinstance(reply.get("links"), list):
                     atom_trace["steps"].append({
                         "tool": "invalid_response", "reason": "Missing links array",
@@ -474,6 +554,11 @@ class ZnPFirstAgent:
                     "tool": "compare_candidates", "candidates": len(candidates),
                     "accepted_links": added,
                 })
+                diagnostics.record(
+                    "matching.batch.validated", atom_index=number,
+                    batch=batches, accepted=added, total_rejected=sum(rejected.values()),
+                    rejection_reasons=dict(rejected),
+                )
                 if sum(rejected.values()) >= 12 and accepted_total == 0:
                     stopped_due_to_invalid_evidence = True
                     model_available = False
@@ -523,6 +608,11 @@ class ZnPFirstAgent:
         # similarity score. We first look for gaps, then perform a targeted
         # second retrieval pass on ZnP; all resulting citations are revalidated.
         obligations = {item.id: build_obligations(item) for item in tu_requirements}
+        diagnostics.record(
+            "coverage.obligations_built",
+            tu_requirements=len(tu_requirements),
+            total=sum(len(items) for items in obligations.values()),
+        )
         coverage_results: dict[str, list[dict[str, Any]]] = {}
         targeted_results: dict[str, list[dict[str, Any]]] = {}
         targeted_diagnostics: dict[str, dict[str, Any]] = {}
@@ -542,6 +632,12 @@ class ZnPFirstAgent:
 
         for requirement in tu_requirements:
             entries = links[requirement.id]
+            diagnostics.record(
+                "coverage.requirement.begin",
+                tu_sha=diagnostics.sha(requirement.id),
+                obligations=len(obligations[requirement.id]),
+                source_links=len(entries),
+            )
             evidence = [x for x in entries if x["relation"] in {"supports", "partial"}
                         and x.get("scope_consistent", True)]
             initial = [
@@ -597,6 +693,17 @@ class ZnPFirstAgent:
                     )[:max(8, self.batch_size * 2)]
                     targeted_candidates_count = len(selected)
                     targeted_candidates_total = len(candidate_by_id)
+                    diagnostics.record(
+                        "targeted.candidates_selected",
+                        tu_sha=diagnostics.sha(requirement.id),
+                        gap_queries=len(gap_queries),
+                        unique_candidates=len(candidate_by_id),
+                        selected=len(selected),
+                        selected_chars=sum(
+                            len(znp_by_id[row["clause_id"]].text) for row in selected
+                        ),
+                        selected_scores=[round(float(row["similarity_score"]), 4) for row in selected],
+                    )
                     if selected:
                         try:
                             batch_result = self._judge_targeted_adaptive(
@@ -705,6 +812,15 @@ class ZnPFirstAgent:
                 "truncated_responses": targeted_truncated_for_requirement,
             }
             targeted_results[requirement.id] = targeted
+            diagnostics.record(
+                "targeted.requirement.end",
+                tu_sha=diagnostics.sha(requirement.id),
+                checked=targeted_model_checked,
+                selected=targeted_candidates_count,
+                skip_reason=targeted_skipped_reason,
+                truncated=targeted_truncated_for_requirement,
+                accepted=len(targeted),
+            )
             evidence = [x for x in entries if x["relation"] in {"supports", "partial"}
                         and x.get("scope_consistent", True)]
             # Never pay for the same coverage analysis twice when targeted
@@ -730,6 +846,14 @@ class ZnPFirstAgent:
         for trace in traces:
             if trace["proposed_links"] and not trace["validated_links"] and trace["outcome"] == "no_links":
                 trace["outcome"] = "rejected_links"
+
+        diagnostics.record(
+            "coverage.completed",
+            requirements=len(coverage_results),
+            statuses=dict(Counter(
+                row["status"] for rows in coverage_results.values() for row in rows
+            )),
+        )
 
         # Contradictions are sourced from the ENTIRE ZnP, independently of
         # the supporting-link retrieval. Only already-covered TU obligations
@@ -777,6 +901,12 @@ class ZnPFirstAgent:
                         trace["outcome"] = "audit_uncertain"
             elif selected:
                 pending_count += len(selected)
+            diagnostics.record(
+                "contradictions.audit", tu_sha=diagnostics.sha(requirement.id),
+                candidates=len(candidates), checked=min(len(selected), calls * 8),
+                pending=pending_count, confirmed=len(confirmed),
+                uncertain=len(uncertain),
+            )
             audits[requirement.id] = {
                 "candidate_count": len(candidates),
                 "candidates_checked": max(0, min(len(selected), calls * 8) - len(failed_ids)),
@@ -929,6 +1059,15 @@ class ZnPFirstAgent:
             for key in ("fulfilled", "missing", "needs_review")
         }
         stats["total"] = len(checked)
+        diagnostics.record(
+            "matching.finished",
+            status_counts=stats, matched_links=accepted_total,
+            rejected_links=dict(rejected), limited_matching=matching_limited,
+            limited_targeted=targeted_limit_hit,
+            truncated_targeted=targeted_truncated_responses,
+            model_failure_kind=model_failure_kind,
+            elapsed_ms=round((time.perf_counter() - start) * 1000),
+        )
         return CheckRequirementsResponse(
             checked_requirements=checked,
             stats=stats,

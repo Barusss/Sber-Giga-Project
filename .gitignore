@@ -12,3 +12,7 @@ coverage/
 *.tsbuildinfo
 .DS_Store
 .vscode/
+# DeepSeek forensic outputs and source document pairs (never commit)
+/diagnostics/
+/diagnostic-inputs/
+/backend/diagnostics/
