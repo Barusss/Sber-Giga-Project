@@ -48,6 +48,24 @@ class TrackedRequirementsLLM:
         self.errors: Counter[str] = Counter()
         self.rejected_by_limit: Counter[str] = Counter()
 
+    def configure_full_run_limits(
+        self, *, atom_count: int, obligation_count: int,
+        requirement_count: int, matching_batches: int,
+    ) -> None:
+        # Matching visits each atom up to max_batches times; coverage may run
+        # once before and once after targeted search. The audit checks at most
+        # ten candidates per TU in batches of eight. The global cap still wins.
+        self.phase_limits["matching"] = min(
+            self.max_calls, max(1, atom_count * matching_batches),
+        )
+        self.phase_limits["coverage"] = min(
+            self.max_calls, max(1, obligation_count * 2),
+        )
+        self.phase_limits["contradictions"] = min(
+            self.max_calls, max(1, requirement_count * 2),
+        )
+        diagnostics.record("ledger.full_run_limits", phase_caps=self.phase_limits)
+
     @staticmethod
     def phase(user_prompt: str) -> str:
         try:

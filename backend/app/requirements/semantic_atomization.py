@@ -179,6 +179,32 @@ def _parse_splits(parent: DocumentAtom, reply: Any, max_atoms: int) -> list[Docu
     return result
 
 
+def atomization_skip_reason(parent: DocumentAtom, max_chars: int = 10000) -> str | None:
+    """Mirror the actual deterministic semantic-atomization eligibility rules."""
+    if parent.warnings:
+        return "ambiguous_source_context"
+    if _DEPENDENCIES.search(parent.text):
+        return "conditional_or_alternative_clause"
+    if len(parent.text) > max_chars:
+        return "oversized_clause"
+    if not _likely_composite(parent.text):
+        return "simple_clause_no_split_needed"
+    return None
+
+
+def atomization_workload(parents: Sequence[DocumentAtom], max_chars: int = 10000) -> dict[str, int]:
+    """No-model estimate used before any paid calls; no document text is retained."""
+    reasons: Counter[str] = Counter()
+    eligible = 0
+    for parent in parents:
+        reason = atomization_skip_reason(parent, max_chars)
+        if reason is None:
+            eligible += 1
+        else:
+            reasons[reason] += 1
+    return {"eligible": eligible, "total": len(parents), **dict(reasons)}
+
+
 def semantic_atomize(
     parents: Sequence[DocumentAtom],
     model: Any,
@@ -209,25 +235,13 @@ def semantic_atomize(
             reasons["provider_unavailable"] += 1
             diagnostics.record("atomization.parent.skipped", ordinal=ordinal, reason="provider_unavailable")
             continue
-        if parent.warnings:
+        skip_reason = atomization_skip_reason(parent, max_chars)
+        if skip_reason is not None:
             output.append(parent)
-            reasons["ambiguous_source_context"] += 1
-            diagnostics.record("atomization.parent.skipped", ordinal=ordinal, reason="ambiguous_source_context")
-            continue
-        if _DEPENDENCIES.search(parent.text):
-            output.append(parent)
-            reasons["conditional_or_alternative_clause"] += 1
-            diagnostics.record("atomization.parent.skipped", ordinal=ordinal, reason="conditional_or_alternative_clause")
-            continue
-        if len(parent.text) > max_chars:
-            output.append(parent)
-            reasons["oversized_clause"] += 1
-            diagnostics.record("atomization.parent.skipped", ordinal=ordinal, reason="oversized_clause")
-            continue
-        if not _likely_composite(parent.text):
-            output.append(parent)
-            reasons["simple_clause_no_split_needed"] += 1
-            diagnostics.record("atomization.parent.skipped", ordinal=ordinal, reason="simple_clause_no_split_needed")
+            reasons[skip_reason] += 1
+            diagnostics.record(
+                "atomization.parent.skipped", ordinal=ordinal, reason=skip_reason,
+            )
             continue
         payload = {
             "clause_number": parent.clause_number,

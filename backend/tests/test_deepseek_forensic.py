@@ -78,6 +78,29 @@ def test_two_real_docx_files_dry_run_never_calls_model(tmp_path):
     assert "extraction.completed" in names
 
 
+
+def test_budget_preflight_blocks_before_even_a_paid_probe(tmp_path):
+    tu, znp = pair(tmp_path)
+
+    class Never:
+        def complete_json(self, **kwargs):
+            pytest.fail("No DeepSeek calls, including probe, before budget approval")
+
+    with diagnostics.diagnostic_run(tmp_path / "logs", strict=True):
+        directory = Path(diagnostics.trace_directory())
+        with pytest.raises(ValueError, match="Full TU/ZnP run blocked"):
+            run_pair(
+                tu, znp, max_calls=1, probe=True,
+                client=Never(), no_embeddings=True,
+            )
+
+    names = {entry["event"] for entry in events(directory)}
+    assert "pipeline.budget_preflight_refused" in names
+    assert "probe.start" not in names
+    assert "ledger.request" not in names
+    assert "provider.request.start" not in names
+
+
 def test_full_two_file_pipeline_logs_all_phases_without_leaking_text(tmp_path):
     tu, znp = pair(tmp_path)
     with diagnostics.diagnostic_run(tmp_path / "logs", strict=True):

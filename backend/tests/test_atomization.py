@@ -182,3 +182,34 @@ def test_duplicate_parent_number_uses_latest_preceding_parent():
     ids = {s.fragment_id for s in child.context_sources}
     assert "p1" in ids
     assert "p0" not in ids
+
+
+def test_title_preamble_keeps_provenance_without_poisoning_all_clauses():
+    title = fragment("title", 1, "АО «ТГК-16»\nФилиал АО «ТГК-16» — Уруссинская ГРЭС")
+    heading = fragment("h", 2, "1. Кабельные линии")
+    heading.block_type = "heading"
+    heading.section_path = "Кабели"
+    body = fragment("b", 3, "1.1. Для КЛ-1 предусмотреть кабель 10 кВ.")
+    body.section_path = "Кабели"
+    atoms = atomize_fragments("doc", [title, heading, body])
+    child = atoms[-1]
+    assert "context_scope_requires_review" not in child.warnings
+    assert "title" in {s.fragment_id for s in child.context_sources}
+    assert child.sources[0].fragment_id == "b"
+
+
+@pytest.mark.parametrize("preamble", [
+    "При наличии двух линий допускается:",
+    "Для КЛ-1 или КЛ-2 предусмотреть:",
+    "Для всех линий, за исключением КЛ-2:",
+    "АО «ТГК-16»\nТолько при наличии двух линий:",
+])
+def test_meaningful_preamble_still_requires_scope_review(preamble):
+    heading = fragment("h", 2, "1. Кабели")
+    heading.block_type = "heading"
+    heading.section_path = "Кабели"
+    body = fragment("b", 3, "1.1. Кабель 95 мм².")
+    body.section_path = "Кабели"
+    child = atomize_fragments("doc", [fragment("p",1,preamble),heading,body])[-1]
+    assert "context_scope_requires_review" in child.warnings
+    assert "p" in {s.fragment_id for s in child.context_sources}

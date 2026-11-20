@@ -157,6 +157,10 @@ def test_single_candidate_truncation_is_incomplete_not_a_global_failure():
     assert result.trace_info["targeted_incomplete_requirements"] == 1
     assert result.trace_info["model_failure_kind"] is None
     assert result.trace_info["degraded"] is True
+    failed_atom = next(row for row in result.trace_info["znp_atom_results"]
+                       if row["atom_id"] == "a1")
+    assert failed_atom["outcome"] == "invalid_response"
+    assert "truncated" in failed_atom["error"]
     assert item.status.value == "needs_review"
 
 

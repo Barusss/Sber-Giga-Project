@@ -127,10 +127,9 @@ class DeepSeekClient:
         )
         # Body capture contains document text: never includes Authorization.
         diagnostics.capture(call_id, "request", body)
-        # Retries are limited to connection establishment failures, before
-        # a request can have reached the provider. Never replay ReadTimeout,
-        # ReadError, WriteError, RemoteProtocolError, or an HTTP response:
-        # provider-side processing/billing could already have occurred.
+        # Retry connection failures and one observed transient response failure.
+        # A timed-out request may already have been billed by the provider.
+        # Never replay WriteError, ReadError, or an HTTP response.
         for attempt in range(1, 4):
             started = time.monotonic()
             try:
@@ -157,6 +156,26 @@ class DeepSeekClient:
                         f"({type(exc).__name__}); check container network or retry."
                     ) from exc
                 time.sleep((0.3, 0.8)[attempt - 1])
+            except (httpx.ReadTimeout, httpx.RemoteProtocolError) as exc:
+                elapsed_ms = round((time.monotonic() - request_started) * 1000)
+                diagnostics.record(
+                    "provider.network.error", call_id=call_id, stage="request",
+                    error_type=type(exc).__name__, attempt=attempt,
+                    elapsed_ms=elapsed_ms, retrying=attempt == 1,
+                )
+                logger.warning(
+                    "DeepSeek network error: stage=request type=%s attempt=%d/2 elapsed_ms=%d",
+                    type(exc).__name__, attempt, elapsed_ms,
+                )
+                if attempt == 1:
+                    continue
+                reason = "connection closed unexpectedly"
+                if isinstance(exc, httpx.ReadTimeout):
+                    reason = "timed out"
+                raise DeepSeekAPIError(
+                    f"DeepSeek request {reason} after {attempt} attempts "
+                    f"({type(exc).__name__})."
+                ) from exc
             except httpx.TimeoutException as exc:
                 logger.warning(
                     "DeepSeek network error: stage=request type=%s attempt=1/1 elapsed_ms=%d",
@@ -275,12 +294,33 @@ class DeepSeekClient:
         try:
             value = json.loads(raw)
         except json.JSONDecodeError as exc:
+            value = None
+            try:
+                links_object, end = json.JSONDecoder().raw_decode(raw)
+                suffix = raw[end:].strip()
+                if (isinstance(links_object, dict)
+                        and set(links_object) == {"links"}
+                        and isinstance(links_object["links"], list)
+                        and suffix.startswith(",")):
+                    search_object = json.loads("{" + suffix[1:])
+                    if (isinstance(search_object, dict)
+                            and set(search_object) == {"search_more"}
+                            and isinstance(search_object["search_more"], bool)):
+                        links_object["search_more"] = search_object["search_more"]
+                        value = links_object
+            except json.JSONDecodeError:
+                pass
+            if value is None:
+                diagnostics.record(
+                    "provider.json.invalid", raw_sha=diagnostics.sha(raw),
+                    raw_chars=len(raw), error_line=exc.lineno, error_column=exc.colno,
+                    error_position=exc.pos,
+                )
+                raise DeepSeekResponseError("DeepSeek returned invalid JSON.") from exc
             diagnostics.record(
-                "provider.json.invalid", raw_sha=diagnostics.sha(raw),
-                raw_chars=len(raw), error_line=exc.lineno, error_column=exc.colno,
-                error_position=exc.pos,
+                "provider.json.repaired", code="search_more_outside_object",
+                raw_sha=diagnostics.sha(raw), raw_chars=len(raw),
             )
-            raise DeepSeekResponseError("DeepSeek returned invalid JSON.") from exc
         if not isinstance(value, dict):
             diagnostics.record("provider.json.invalid_type", type=type(value).__name__)
             raise DeepSeekResponseError("DeepSeek JSON response must be an object.")
