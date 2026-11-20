@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from typing import Any, Sequence
 from uuid import NAMESPACE_URL, uuid5
 
+from app.ai import diagnostics
 from app.ai.deepseek import DeepSeekError
 from app.requirements.atomization import DocumentAtom
 
@@ -196,26 +197,37 @@ def semantic_atomize(
     split = 0
     degraded = False
     unavailable = False
-    for parent in parents:
+    diagnostics.record("atomization.begin", clauses=len(parents), max_chars=max_chars)
+    for ordinal, parent in enumerate(parents, start=1):
+        diagnostics.record(
+            "atomization.parent.begin", ordinal=ordinal, total=len(parents),
+            atom_sha=diagnostics.sha(parent.id), text_chars=len(parent.text),
+            warnings_count=len(parent.warnings),
+        )
         if unavailable:
             output.append(parent)
             reasons["provider_unavailable"] += 1
+            diagnostics.record("atomization.parent.skipped", ordinal=ordinal, reason="provider_unavailable")
             continue
         if parent.warnings:
             output.append(parent)
             reasons["ambiguous_source_context"] += 1
+            diagnostics.record("atomization.parent.skipped", ordinal=ordinal, reason="ambiguous_source_context")
             continue
         if _DEPENDENCIES.search(parent.text):
             output.append(parent)
             reasons["conditional_or_alternative_clause"] += 1
+            diagnostics.record("atomization.parent.skipped", ordinal=ordinal, reason="conditional_or_alternative_clause")
             continue
         if len(parent.text) > max_chars:
             output.append(parent)
             reasons["oversized_clause"] += 1
+            diagnostics.record("atomization.parent.skipped", ordinal=ordinal, reason="oversized_clause")
             continue
         if not _likely_composite(parent.text):
             output.append(parent)
             reasons["simple_clause_no_split_needed"] += 1
+            diagnostics.record("atomization.parent.skipped", ordinal=ordinal, reason="simple_clause_no_split_needed")
             continue
         payload = {
             "clause_number": parent.clause_number,
@@ -224,29 +236,53 @@ def semantic_atomize(
             "heading_context": [source.text for source in parent.context_sources[:4]],
         }
         model_calls += 1
+        diagnostics.record(
+            "atomization.model.begin", ordinal=ordinal,
+            heading_context=len(payload["heading_context"]),
+            source_chars=len(parent.text), call_number=model_calls,
+        )
         try:
             reply = model.complete_json(
                 system_prompt=ATOMIZATION_PROMPT,
                 user_prompt=json.dumps(payload, ensure_ascii=False),
             )
         except DeepSeekError as exc:
+            diagnostics.record(
+                "atomization.model.error", ordinal=ordinal,
+                error_type=type(exc).__name__,
+                truncated="truncated" in str(exc).casefold(),
+                disables_future_calls=True,
+            )
             unavailable = True
             degraded = True
             reason = "request_budget_reached" if hasattr(exc, "scope") else "provider_unavailable"
             reasons[reason] += 1
             output.append(parent)
             continue
-        except (TypeError, ValueError):
+        except (TypeError, ValueError) as exc:
+            diagnostics.record(
+                "atomization.model.invalid_response", ordinal=ordinal,
+                error_type=type(exc).__name__,
+            )
             reasons["invalid_model_response"] += 1
             output.append(parent)
             continue
         atoms = _parse_splits(parent, reply, max_atoms_per_clause)
         if atoms is None:
+            diagnostics.record("atomization.model.invalid_spans", ordinal=ordinal)
             reasons["unsplit_or_invalid_spans"] += 1
             output.append(parent)
             continue
         output.extend(atoms)
         split += 1
+        diagnostics.record(
+            "atomization.parent.split", ordinal=ordinal, output_atoms=len(atoms),
+        )
+    diagnostics.record(
+        "atomization.end", input_count=len(parents), output_count=len(output),
+        split_count=split, calls=model_calls, degraded=degraded,
+        reasons=dict(reasons),
+    )
     return AtomizationResult(
         atoms=output,
         total_clauses=len(parents),
