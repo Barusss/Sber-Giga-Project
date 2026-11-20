@@ -37,7 +37,8 @@ from app.core.models import (
 from app.ai import diagnostics
 from app.requirements.agent import RequirementsAgent
 from app.requirements.atomization import atomize_fragments
-from app.requirements.semantic_atomization import semantic_atomize
+from app.requirements.semantic_atomization import semantic_atomize, atomization_workload
+from app.requirements.budget_planning import plan_full_run
 from app.requirements.preview_selection import select_technical_preview
 from app.requirements.tools import _list_items
 from app.requirements.llm_tracking import TrackedRequirementsLLM
@@ -990,6 +991,25 @@ def _analyze_project_requirements(
                 "comparison.source_atoms", count=len(original_atoms),
                 max_chars=max((len(a.text) for a in original_atoms), default=0),
             )
+            # Evaluate affordability before the FIRST paid LLM call.
+            workload = atomization_workload(original_atoms)
+            plan = plan_full_run(
+                tu_clauses=tu_raw,
+                znp_source_atoms=len(original_atoms),
+                atomization_eligible=workload["eligible"],
+                max_calls=llm_ledger.max_calls,
+                atomization_limit=llm_ledger.phase_limits["atomization"],
+                targeted_limit=llm_ledger.phase_limits["targeted"],
+                matching_batches=agent.max_batches,
+                targeted_enabled=agent.targeted_enabled,
+            )
+            diagnostics.record("comparison.budget_preflight", **plan.as_dict())
+            if plan.blockers:
+                diagnostics.record(
+                    "comparison.budget_preflight_refused",
+                    blockers=plan.blockers, no_paid_calls=True,
+                )
+                raise HTTPException(status_code=422, detail=plan.refusal_message())
             semantic_result = semantic_atomize(original_atoms, agent.ai)
             conservative_atoms = semantic_result.atoms
             atomization_trace = semantic_result.trace()
@@ -1010,6 +1030,26 @@ def _analyze_project_requirements(
                 raise HTTPException(
                     422, "No traceable ZnP statements extracted; check document structure"
                 )
+        else:
+            # Legacy chunk fallback: no semantic atomization, but still check
+            # the full-run global cap before any model call.
+            plan = plan_full_run(
+                tu_clauses=tu_raw,
+                znp_source_atoms=len(znp_raw),
+                atomization_eligible=0,
+                max_calls=llm_ledger.max_calls,
+                atomization_limit=llm_ledger.phase_limits["atomization"],
+                targeted_limit=llm_ledger.phase_limits["targeted"],
+                matching_batches=agent.max_batches,
+                targeted_enabled=agent.targeted_enabled,
+            )
+            diagnostics.record("comparison.budget_preflight", **plan.as_dict())
+            if plan.blockers:
+                diagnostics.record(
+                    "comparison.budget_preflight_refused",
+                    blockers=plan.blockers, no_paid_calls=True,
+                )
+                raise HTTPException(status_code=422, detail=plan.refusal_message())
 
     existing_requirements = db.scalars(
         select(DBTURequirement).where(DBTURequirement.project_id == project_id,

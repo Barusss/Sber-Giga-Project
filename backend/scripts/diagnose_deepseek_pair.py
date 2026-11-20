@@ -27,7 +27,8 @@ from app.requirements.extraction import extract_clauses, is_service_clause
 from app.requirements.llm_tracking import TrackedRequirementsLLM
 from app.requirements.coverage import build_obligations
 from app.requirements.schemas import TURequirement, ZNPClause
-from app.requirements.semantic_atomization import semantic_atomize
+from app.requirements.semantic_atomization import semantic_atomize, atomization_workload
+from app.requirements.budget_planning import plan_full_run
 from app.requirements.tools import classify_requirement_category
 from app.requirements.znp_first import ZnPFirstAgent
 
@@ -99,12 +100,31 @@ def run_pair(
     if not tu_raw or not znp_original:
         raise ValueError("No useful requirements/atoms: inspect parser and OCR stages")
 
+    budget = plan_full_run(
+        tu_clauses=tu_raw,
+        znp_source_atoms=len(znp_original),
+        atomization_eligible=atomization_workload(znp_original)["eligible"],
+        max_calls=max_calls if max_calls is not None
+            else settings.requirements_llm_max_calls,
+        atomization_limit=settings.requirements_llm_atomization_calls,
+        targeted_limit=targeted_calls if targeted_calls is not None
+            else settings.requirements_llm_targeted_calls,
+        matching_batches=5,
+    )
+    diagnostics.record("pipeline.budget_preflight", **budget.as_dict())
     if dry_run:
         return {
             "mode": "dry-run", "tu_clauses": len(tu_raw),
             "znp_atoms": len(znp_original),
             "deepseek_calls": 0,
+            "budget_plan": budget.as_dict(),
         }
+    if budget.blockers:
+        diagnostics.record(
+            "pipeline.budget_preflight_refused", blockers=budget.blockers,
+            no_paid_calls=True,
+        )
+        raise ValueError(budget.refusal_message())
 
     model = client if client is not None else DeepSeekClient()
     if probe:
@@ -120,12 +140,9 @@ def run_pair(
 
     ledger = TrackedRequirementsLLM(
         model,
-        max_calls=max_calls or settings.requirements_llm_max_calls,
+        max_calls=budget.max_calls,
         atomization_limit=settings.requirements_llm_atomization_calls,
-        targeted_limit=(
-            targeted_calls if targeted_calls is not None
-            else settings.requirements_llm_targeted_calls
-        ),
+        targeted_limit=budget.targeted_limit,
     )
     diagnostics.record(
         "pipeline.start", max_calls=ledger.max_calls,
@@ -204,6 +221,7 @@ def run_pair(
     stages = info.get("comparison_stages", {})
     report = {
         "mode": "live-or-injected",
+        "budget_plan": budget.as_dict(),
         "tu_requirements": len(tu_items),
         "znp_atoms": len(znp_items),
         "atomization": semantic.trace(),
