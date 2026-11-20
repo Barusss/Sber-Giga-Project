@@ -1132,6 +1132,7 @@ class ZnPFirstAgent:
                 "degraded": (
                     not model_available or targeted_limit_hit or matching_limited
                     or bool(incomplete_targeted_requirements) or audit_failed
+                    or bool(coverage_summary["unreviewed"])
                 ),
             },
         )

@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     deepseek_model: str = "deepseek-flash"
     deepseek_thinking: Literal["enabled", "disabled"] = "disabled"
     deepseek_timeout_seconds: float = Field(default=60.0, gt=0)
-    deepseek_max_tokens: int = Field(default=3000, ge=1)
+    deepseek_max_tokens: int = Field(default=6000, ge=1)
 
     # Guardrails for a single TU/ZnP comparison. Request limits are not
     # a monetary limit: individual calls can use different token volumes.

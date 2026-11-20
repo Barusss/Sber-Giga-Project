@@ -25,6 +25,7 @@ from app.documents.parser import extract_blocks
 from app.requirements.atomization import atomize_fragments
 from app.requirements.extraction import extract_clauses, is_service_clause
 from app.requirements.llm_tracking import TrackedRequirementsLLM
+from app.requirements.coverage import build_obligations
 from app.requirements.schemas import TURequirement, ZNPClause
 from app.requirements.semantic_atomization import semantic_atomize
 from app.requirements.tools import classify_requirement_category
@@ -178,6 +179,12 @@ def run_pair(
 
     agent = ZnPFirstAgent(
         ai_client=ledger, embedder=EmbeddingService(enabled=not no_embeddings),
+    )
+    ledger.configure_full_run_limits(
+        atom_count=len(znp_items),
+        obligation_count=sum(len(build_obligations(item)) for item in tu_items),
+        requirement_count=len(tu_items),
+        matching_batches=agent.max_batches,
     )
 
     def progress(stage: str, done: int, total: int, current: str | None):

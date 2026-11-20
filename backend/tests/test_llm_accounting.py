@@ -65,6 +65,29 @@ def agent(model):
     return ZnPFirstAgent(ai_client=model, embedder=EmbeddingService(enabled=False))
 
 
+def test_full_pair_phase_budget_does_not_stop_at_small_document_defaults():
+    class Counted:
+        def complete_json(self, **kwargs):
+            return {}
+
+    ledger = TrackedRequirementsLLM(Counted(), max_calls=25000)
+    ledger.configure_full_run_limits(
+        atom_count=320, obligation_count=328,
+        requirement_count=176, matching_batches=5,
+    )
+    for _ in range(121):
+        ledger.complete_json(system_prompt="", user_prompt='{"znp_atom":{},"tu_candidates":[]}')
+    for _ in range(66):
+        ledger.complete_json(system_prompt="", user_prompt='{"obligation":{}}')
+
+    assert ledger.attempted["matching"] == 121
+    assert ledger.attempted["coverage"] == 66
+    assert ledger.phase_limits["matching"] == 1600
+    assert ledger.phase_limits["coverage"] == 656
+    assert ledger.phase_limits["contradictions"] == 352
+    assert ledger.phase_limits["targeted"] == 35
+
+
 def test_late_provider_failure_does_not_relabel_successful_analysis_as_local():
     class FailsSecond(Model):
         def complete_json(self, *, system_prompt, user_prompt):
@@ -81,6 +104,21 @@ def test_late_provider_failure_does_not_relabel_successful_analysis_as_local():
     assert check.status.value == "needs_review"
     assert result.trace_info["ai_evaluated_requirements"] == 1
     assert result.trace_info["validated_links"] == 1
+    assert result.trace_info["degraded"] is True
+
+
+def test_unchecked_coverage_marks_full_comparison_degraded():
+    class CoverageFails(Model):
+        def complete_json(self, *, system_prompt, user_prompt):
+            if "obligation" in json.loads(user_prompt):
+                raise DeepSeekError("DeepSeek request timed out.")
+            return super().complete_json(
+                system_prompt=system_prompt, user_prompt=user_prompt,
+            )
+
+    result = agent(CoverageFails()).verify_all([req()], [atom(1)])
+
+    assert result.trace_info["comparison_stages"]["coverage"]["unreviewed"] == 1
     assert result.trace_info["degraded"] is True
 
 

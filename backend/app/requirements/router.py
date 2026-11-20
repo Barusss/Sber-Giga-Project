@@ -41,6 +41,7 @@ from app.requirements.semantic_atomization import semantic_atomize
 from app.requirements.preview_selection import select_technical_preview
 from app.requirements.tools import _list_items
 from app.requirements.llm_tracking import TrackedRequirementsLLM
+from app.requirements.coverage import build_obligations
 from app.core.config import settings
 from app.requirements.znp_first import ZnPFirstAgent
 from app.requirements.extraction import (
@@ -1172,6 +1173,14 @@ def _analyze_project_requirements(
             )
         )
 
+    if llm_ledger is not None and isinstance(agent, ZnPFirstAgent):
+        llm_ledger.configure_full_run_limits(
+            atom_count=len(znp_schemas),
+            obligation_count=sum(len(build_obligations(item)) for item in tu_schemas),
+            requirement_count=len(tu_schemas),
+            matching_batches=agent.max_batches,
+        )
+
     diagnostics.record(
         "comparison.verification_start", tu_count=len(tu_schemas),
         znp_count=len(znp_schemas),
@@ -1198,21 +1207,31 @@ def _analyze_project_requirements(
         response.trace_info["llm_usage"] = llm_ledger.trace()
         if llm_ledger.trace()["limit_reached"]:
             response.trace_info["degraded"] = True
+    coverage_unreviewed = (
+        (response.trace_info.get("comparison_stages") or {})
+        .get("coverage", {}).get("unreviewed", 0)
+    )
     if (
         not payload.test_mode
         and isinstance(agent, ZnPFirstAgent)
-        and response.trace_info.get("model_failure_kind") in {
-            "DeepSeekConnectionError", "DeepSeekAPIError", "DeepSeekResponseError"
-        }
+        and (
+            coverage_unreviewed
+            or response.trace_info.get("model_failure_kind") in {
+                "DeepSeekConnectionError", "DeepSeekAPIError", "DeepSeekResponseError"
+            }
+        )
     ):
         # Fail before any new result is committed, but preserve diagnostic
         # counters even when the surrounding DB transaction rolls back.
         detail = _report_failed_ai_comparison(
             response.trace_info, llm_ledger, mode="full",
         )
+        if coverage_unreviewed and not response.trace_info.get("model_failure_kind"):
+            detail = f"coverage_incomplete:{coverage_unreviewed}"
         diagnostics.record(
             "comparison.persistence_blocked",
             failure_kind=response.trace_info.get("model_failure_kind"),
+            coverage_unreviewed=coverage_unreviewed,
             llm_usage=llm_ledger.trace() if llm_ledger is not None else {},
         )
         raise HTTPException(

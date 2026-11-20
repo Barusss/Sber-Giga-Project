@@ -1,10 +1,19 @@
 """Project workspace: multiple TU/ZnP pairs, immutable run history and deletion."""
+import json
 from io import BytesIO
 
 from app.documents.parser import ExtractedBlock
 
 
 def prepare(client, monkeypatch, tu_count=1, znp_count=1):
+    def model(self, *, system_prompt, user_prompt):
+        payload = json.loads(user_prompt)
+        if "znp_atom" in payload or "znp_candidates" in payload:
+            return {"links": [], "search_more": False}
+        return {"atoms": []}
+
+    monkeypatch.setattr("app.ai.deepseek.DeepSeekClient.complete_json", model)
+
     def blocks(data, suffix):
         if data.startswith(b"tu"):
             return [ExtractedBlock(1, 0, "1.1. Предусмотреть максимальную мощность 150 кВт.")]
@@ -69,6 +78,29 @@ def test_run_history_and_deleting_one_snapshot(client, monkeypatch):
     assert client.delete(runs_url + "/" + first_id).status_code == 204
     assert len(client.get(runs_url).json()) == 1
     assert client.get(url + "/" + pair["id"]).json()["current_run_id"] == second_id
+
+
+def test_incomplete_coverage_does_not_save_snapshot(client, monkeypatch):
+    project_id, docs = prepare(client, monkeypatch)
+
+    def unchecked(requirement, obligation, evidence, ai):
+        return {
+            "obligation_id": obligation.id, "text": obligation.text,
+            "status": "needs_review", "evidence_ids": [], "checked": False,
+        }
+
+    monkeypatch.setattr("app.requirements.znp_first.assess_coverage", unchecked)
+    url = f"/api/v1/projects/{project_id}/comparisons"
+    pair = client.post(url, json={"pairs": [{
+        "tu_document_id": docs["tu"][0], "znp_document_id": docs["znp"][0],
+    }]}).json()[0]
+    runs_url = f"{url}/{pair['id']}/runs"
+
+    response = client.post(runs_url)
+
+    assert response.status_code == 503
+    assert "coverage_incomplete:1" in response.json()["detail"]
+    assert client.get(runs_url).json() == []
 
 
 def test_review_updates_current_snapshot_and_preserves_previous(client, monkeypatch):

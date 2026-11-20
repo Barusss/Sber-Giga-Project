@@ -34,6 +34,7 @@ def test_json_mode_uses_server_side_secret_and_thinking_disabled():
         assert payload["model"] == "deepseek-flash"
         assert payload["thinking"] == {"type": "disabled"}
         assert payload["temperature"] == 0
+        assert payload["max_tokens"] == 6000
         assert payload["response_format"] == {"type": "json_object"}
         assert "JSON" in payload["messages"][0]["content"]
         assert payload["stream"] is False
@@ -97,8 +98,32 @@ def test_invalid_json_and_unexpected_payload_raise():
             )
 
 
+def test_matching_json_accepts_observed_search_more_suffix():
+    calls = 0
+
+    def handler(request):
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json={"choices": [{
+            "message": {"content": '{"links":[{"requirement_id":"r1"}]} ,"search_more":false}'},
+            "finish_reason": "stop",
+        }]})
+
+    with mock_client(handler) as http:
+        result = DeepSeekClient(config=cfg(), http_client=http).complete_json(
+            system_prompt="S", user_prompt="U",
+        )
+
+    assert result == {"links": [{"requirement_id": "r1"}], "search_more": False}
+    assert calls == 1
+
+
 def test_network_timeout_raises_without_key_leak():
+    calls = 0
+
     def timeout(request):
+        nonlocal calls
+        calls += 1
         raise httpx.ReadTimeout("timeout")
 
     with mock_client(timeout) as http:
@@ -107,6 +132,29 @@ def test_network_timeout_raises_without_key_leak():
                 system_prompt="S", user_prompt="U",
             )
         assert "fake-for-unit-tests" not in str(error.value)
+        assert calls == 2
+
+
+@pytest.mark.parametrize("exception_type", [httpx.ReadTimeout, httpx.RemoteProtocolError])
+def test_transient_response_failure_retries_once_then_uses_valid_response(exception_type):
+    calls = 0
+
+    def handler(request):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise exception_type("temporary response failure")
+        return httpx.Response(200, json={"choices": [{
+            "message": {"content": '{"ok":true}'}, "finish_reason": "stop",
+        }]})
+
+    with mock_client(handler) as http:
+        result = DeepSeekClient(config=cfg(), http_client=http).complete_json(
+            system_prompt="S", user_prompt="U",
+        )
+
+    assert result == {"ok": True}
+    assert calls == 2
 
 
 def test_key_is_redacted_in_config_repr():
@@ -157,8 +205,7 @@ def test_persistent_connect_error_stops_after_three_attempts(monkeypatch):
 
 
 @pytest.mark.parametrize("exception_type", [
-    httpx.ReadError, httpx.WriteError, httpx.RemoteProtocolError,
-    httpx.ReadTimeout,
+    httpx.ReadError, httpx.WriteError,
 ])
 def test_ambiguous_request_delivery_never_retried(exception_type, monkeypatch):
     monkeypatch.setattr("app.ai.deepseek.time.sleep",
