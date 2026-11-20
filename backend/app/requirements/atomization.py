@@ -1,5 +1,6 @@
 """Conservative, traceable document statements for the new comparison flow."""
 import json
+import re
 from dataclasses import dataclass, asdict
 from typing import Sequence
 from uuid import NAMESPACE_URL, uuid5
@@ -71,7 +72,23 @@ def atomize_fragments(document_id: str, fragments: Sequence[Fragment]) -> list[D
         warnings = ()
         if clause.section_path and clause.section_path not in headings:
             warnings = ("section_context_unresolved",)
-        uncertain_context = list(preamble_sources)
+        # Title labels remain traceable, but do not impose engineering scope.
+        title_only = bool(preamble_sources) and all(
+            re.fullmatch(
+                r'(?:АО|ПАО|ООО)\s+«[^»\n]+»|Филиал\s+(?:АО|ПАО|ООО)\s+«[^»\n]+»\s*[—–-]\s*(?:[А-ЯЁ][а-яё-]+\s+){1,4}(?:ГРЭС|ГЭС|ТЭЦ)',
+                line,
+            )
+            for source in preamble_sources for line in source.text.splitlines()
+        )
+        title_only = title_only and not any(
+            re.search(r"\b(?:если|при|кроме|исключени\w*|долж\w*|необходим\w*|предусмотр\w*|только|либо|или)\b", source.text, re.IGNORECASE)
+            for source in preamble_sources
+        )
+        uncertain_context = []
+        if not title_only:
+            uncertain_context.extend(preamble_sources)
+        context += tuple(source for source in preamble_sources
+                         if source.fragment_id not in {item.fragment_id for item in context})
         uncertain_context.extend(_source(fragment) for fragment in unscoped_headings)
         number_parts = clause.clause_number.split("#", 1)[0].split(".")
         for length in range(1, len(number_parts)):

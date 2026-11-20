@@ -226,3 +226,34 @@ def test_targeted_phase_limit_does_not_spend_additional_calls():
         ledger.complete_json(system_prompt="test", user_prompt=payload)
     assert exc.value.scope == "phase"
     assert underlying.calls == 1
+
+
+def test_targeted_conflict_does_not_repeat_unchanged_coverage():
+    class ConflictOnly(Model):
+        def __init__(self):
+            super().__init__()
+            self.coverage_calls = 0
+
+        def complete_json(self, *, system_prompt, user_prompt):
+            payload = json.loads(user_prompt)
+            if "obligation" in payload:
+                self.coverage_calls += 1
+                return {"covered": False, "object_consistent": True,
+                        "evidence_ids": [], "reasoning": "partial"}
+            if "znp_atom" in payload and payload["znp_atom"]["id"] == "a2":
+                return {"links": [], "search_more": False}
+            if "znp_candidates" in payload:
+                return {"links": [{"atom_id": "a2", "relation": "conflicts",
+                    "tu_quote": "напряжение 10 кВ", "znp_quote": "напряжение 20 кВ",
+                    "confidence": 0.9, "reasoning": "conflict"}]}
+            return super().complete_json(system_prompt=system_prompt, user_prompt=user_prompt)
+
+    model = ConflictOnly()
+    second = atom(2)
+    second.text = second.text.replace("10", "20")
+    second.fragment_text = second.text
+    second.sources[0]["text"] = second.text
+    result = agent(model).verify_all([req()], [atom(1), second])
+    assert result.trace_info["comparison_stages"]["targeted"]["validated_links"] == 1
+    assert model.coverage_calls == 1
+    assert result.checked_requirements[0].status.value == "needs_review"

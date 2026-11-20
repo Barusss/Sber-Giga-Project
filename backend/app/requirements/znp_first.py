@@ -640,6 +640,7 @@ class ZnPFirstAgent:
             )
             evidence = [x for x in entries if x["relation"] in {"supports", "partial"}
                         and x.get("scope_consistent", True)]
+            initial_evidence = json.dumps(evidence, ensure_ascii=False, sort_keys=True)
             initial = [
                 assess_coverage(requirement, obligation, evidence, self.ai)
                 for obligation in obligations[requirement.id]
@@ -825,7 +826,7 @@ class ZnPFirstAgent:
                         and x.get("scope_consistent", True)]
             # Never pay for the same coverage analysis twice when targeted
             # retrieval added no new evidence.
-            if initial and not any(row.get("result") for row in targeted):
+            if initial and initial_evidence == json.dumps(evidence, ensure_ascii=False, sort_keys=True):
                 coverage_results[requirement.id] = initial
             elif model_available:
                 coverage_results[requirement.id] = [
