@@ -6,7 +6,10 @@ analysis keeps working with the lexical channel and reports the reason in trace.
 from __future__ import annotations
 
 import math
+import time
 from collections import OrderedDict
+
+from app.ai import diagnostics
 from typing import Callable, Sequence
 
 from app.core.config import settings
@@ -76,6 +79,11 @@ class EmbeddingService:
         return text
 
     def _embed(self, texts: list[str]) -> list[list[float]]:
+        started = time.monotonic()
+        diagnostics.record(
+            "embedding.begin", count=len(texts), chars=sum(len(text) for text in texts),
+            model=self.model_id, enabled=self.enabled,
+        )
         result: list[list[float] | None] = [None] * len(texts)
         missing: list[tuple[int, str]] = []
         for index, text in enumerate(texts):
@@ -104,13 +112,23 @@ class EmbeddingService:
                     self._cache.move_to_end(text)
                     result[index] = values
         except Exception as exc:  # optional channel must never break the analysis
+            diagnostics.record(
+                "embedding.disabled", error_type=type(exc).__name__,
+                model=self.model_id,
+                elapsed_ms=round((time.monotonic() - started) * 1000),
+            )
             self.enabled = False
             self.reason = str(exc) or exc.__class__.__name__
             return []
 
         while len(self._cache) > _CACHE_LIMIT:
             self._cache.popitem(last=False)
-        return [vector for vector in result if vector is not None]
+        vectors = [vector for vector in result if vector is not None]
+        diagnostics.record(
+            "embedding.finished", count=len(vectors), cache_misses=len(missing),
+            elapsed_ms=round((time.monotonic() - started) * 1000),
+        )
+        return vectors
 
     def _call_provider(self, texts: list[str]) -> list[Sequence[float]]:
         if self._provider is not None:

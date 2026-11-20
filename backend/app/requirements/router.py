@@ -34,6 +34,7 @@ from app.core.models import (
     ReviewStatus as FindingReviewStatus,
     TURequirement as DBTURequirement,
 )
+from app.ai import diagnostics
 from app.requirements.agent import RequirementsAgent
 from app.requirements.atomization import atomize_fragments
 from app.requirements.semantic_atomization import semantic_atomize
@@ -732,6 +733,10 @@ def _analyze_test_subset(
     cap those at ten as well, so matching never sees more than ten.
     """
     selected_tu = select_technical_preview(tu_raw, limit=10)
+    diagnostics.record(
+        "comparison.preview_selected", tu_count=len(selected_tu),
+        targeted_disabled=True,
+    )
     znp_fragments = db.scalars(
         select(Fragment).where(Fragment.document_id == znp_doc.id)
         .order_by(Fragment.page, Fragment.position)
@@ -885,6 +890,7 @@ def _analyze_test_subset(
     return result
 
 
+@diagnostics.trace_comparison
 def _analyze_project_requirements(
     payload: AnalyzeProjectRequirementsRequest,
     db: Session,
@@ -925,6 +931,14 @@ def _analyze_project_requirements(
         if not is_service_clause(clause.text)
     ]
     znp_raw = _extract_clauses_from_doc(db, znp_doc)
+    diagnostics.record(
+        "comparison.clauses_extracted",
+        tu_clauses=len(tu_raw), znp_clauses=len(znp_raw),
+        tu_chars=sum(len(x.text) for x in tu_raw),
+        znp_chars=sum(len(x.text) for x in znp_raw),
+        tu_longest=max((len(x.text) for x in tu_raw), default=0),
+        znp_longest=max((len(x.text) for x in znp_raw), default=0),
+    )
     if not tu_raw or not znp_raw:
         raise HTTPException(422, "No useful TU requirements or ZNP clauses extracted; check OCR and document structure")
     if progress_callback:
@@ -972,9 +986,14 @@ def _analyze_project_requirements(
         fragments_by_id.update({fragment.id: fragment for fragment in znp_fragments})
         if znp_fragments:
             original_atoms = atomize_fragments(znp_doc.id, znp_fragments)
+            diagnostics.record(
+                "comparison.source_atoms", count=len(original_atoms),
+                max_chars=max((len(a.text) for a in original_atoms), default=0),
+            )
             semantic_result = semantic_atomize(original_atoms, agent.ai)
             conservative_atoms = semantic_result.atoms
             atomization_trace = semantic_result.trace()
+            diagnostics.record("comparison.atomization_complete", **atomization_trace)
             znp_raw = [
                 Clause(
                     clause_number=atom.clause_number,
@@ -1154,9 +1173,21 @@ def _analyze_project_requirements(
             )
         )
 
+    diagnostics.record(
+        "comparison.verification_start", tu_count=len(tu_schemas),
+        znp_count=len(znp_schemas),
+        budget=llm_ledger.trace() if llm_ledger is not None else {},
+    )
     response = (
         agent.verify_all(tu_schemas, znp_schemas, progress_callback=progress_callback)
         if progress_callback else agent.verify_all(tu_schemas, znp_schemas)
+    )
+    diagnostics.record(
+        "comparison.verification_complete",
+        status_counts=response.stats,
+        degraded=bool((response.trace_info or {}).get("degraded")),
+        provider_failure_type=(response.trace_info or {}).get("model_failure_kind"),
+        llm_usage=llm_ledger.trace() if llm_ledger is not None else {},
     )
     if response.trace_info is None:
         response.trace_info = {}
@@ -1179,6 +1210,11 @@ def _analyze_project_requirements(
         # counters even when the surrounding DB transaction rolls back.
         detail = _report_failed_ai_comparison(
             response.trace_info, llm_ledger, mode="full",
+        )
+        diagnostics.record(
+            "comparison.persistence_blocked",
+            failure_kind=response.trace_info.get("model_failure_kind"),
+            llm_usage=llm_ledger.trace() if llm_ledger is not None else {},
         )
         raise HTTPException(
             503,

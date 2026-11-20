@@ -20,6 +20,7 @@ services:
     volumes:
       - uploads:/data/uploads
       - ocr_models:/root/.paddlex
+      - ./diagnostics:/data/diagnostics
     ports:
       - "8000:8000"
     depends_on:
