@@ -146,6 +146,17 @@ def test_prompt_or_model_change_invalidates_replay(database, monkeypatch):
     assert original != request_fingerprint("system", '{"znp_atom":{}}')
 
 
+def test_compact_and_strict_flags_change_checkpoint_fingerprint(monkeypatch):
+    from app.requirements.checkpoints import request_fingerprint
+    base = request_fingerprint("system", '{"znp_atom":{}}')
+    monkeypatch.setattr(settings, "requirements_evidence_id_mode", True)
+    compact = request_fingerprint("system", '{"znp_atom":{}}')
+    assert compact != base
+    monkeypatch.setattr(settings, "deepseek_strict_evidence_tools", True)
+    strict = request_fingerprint("system", '{"znp_atom":{}}')
+    assert strict != compact
+
+
 def test_restart_requeues_safe_job_and_pauses_uncertain_one(database, monkeypatch):
     Factory, first_id = database
     with Factory() as db:
