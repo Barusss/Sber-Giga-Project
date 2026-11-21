@@ -299,6 +299,7 @@ export function ComparisonReviewPage({projectId, approved}: {projectId: string; 
     setBusy(true)
     setError('')
     try {
+      let allowIncompleteSources = false
       if (!testMode) {
         // Fresh audit prevents spending on a document changed after page load.
         const audit = await request<SourceCoveragePreflight>(`${root}/source-coverage`)
@@ -312,8 +313,12 @@ export function ComparisonReviewPage({projectId, approved}: {projectId: string; 
           'а результат не получит автоматические подтверждения соответствия. ' +
           'Продолжить платную сверку с этими ограничениями?'
         )) return
+        allowIncompleteSources = audit.unclassified_count > 0
       }
-      await start({kind:'comparison', pair_ids:[pairId!], test_mode:testMode})
+      await start({
+        kind:'comparison', pair_ids:[pairId!], test_mode:testMode,
+        allow_incomplete_sources:allowIncompleteSources,
+      })
     } catch(e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
