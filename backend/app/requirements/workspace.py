@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.core.db import get_db
 from app.core.models import (
-    ComparisonPair, ComparisonRun, Document, DocumentKind, Finding, Project,
+    ComparisonPair, ComparisonRun, ComparisonAtomReview, Document, DocumentKind, Finding, Project,
     RequirementAnalysis, RequirementVerification, TURequirement, ReviewState,
 )
 from app.requirements.router import (
@@ -300,6 +300,22 @@ def get_run(project_id: str, pair_id: str, run_id: str, db: Session = Depends(ge
     pair = _pair(db, project_id, pair_id)
     run = _run(db, pair, run_id)
     return {"run": _summary(run), "result": run.result}
+
+
+@router.get("/projects/{project_id}/comparisons/{pair_id}/runs/{run_id}/atom-reviews")
+def list_atom_reviews(project_id: str, pair_id: str, run_id: str,
+                      atom_id: str | None = None, db: Session = Depends(get_db)):
+    pair = _pair(db, project_id, pair_id)
+    _run(db, pair, run_id)
+    rows = db.scalars(select(ComparisonAtomReview).where(
+        ComparisonAtomReview.run_id == run_id,
+    ).order_by(ComparisonAtomReview.created_at.desc())).all()
+    if atom_id is not None:
+        rows = [row for row in rows if row.atom_id == atom_id]
+    return [{
+        "id": row.id, "atom_id": row.atom_id,
+        "created_at": row.created_at, "result": row.result,
+    } for row in rows]
 
 
 @router.post("/projects/{project_id}/comparisons/{pair_id}/runs/{run_id}/confirm")
