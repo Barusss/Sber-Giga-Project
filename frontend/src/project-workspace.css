@@ -279,10 +279,12 @@
 .operation-row.completed { background:#f6faf8; border-color:#dcebe3; }
 .operation-row.failed { background:#fff7f5; border-color:#f0dad7; }
 .operation-row.cancelled { background:#f7f8f9; border-color:#e4e8eb; }
+.operation-row.paused { background:#fffaf0; border-color:#e8ddc1; }
 .operation-spinner { position:relative; display:block; width:19px; height:19px; margin-top:2px; flex:0 0 19px; border:2px solid #c8e4ee; border-top-color:#078fbe; border-radius:50%; animation:operation-spin .8s linear infinite; }
 .operation-result-dot { display:block; width:10px; height:10px; margin:6px 4px 0; flex:0 0 10px; border-radius:50%; background:#5caa7b; }
 .operation-result-dot.failed { background:#cd7370; }
 .operation-result-dot.cancelled { background:#9aabb4; }
+.operation-result-dot.paused { background:#c79b4c; }
 .operation-row-body { flex:1 1 auto; min-width:0; }
 .operation-row-title { display:flex; align-items:baseline; gap:9px; flex-wrap:wrap; }
 .operation-row-title strong { font-size:13px; font-weight:690; color:#2c536c; }
