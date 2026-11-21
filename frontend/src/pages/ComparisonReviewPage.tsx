@@ -62,6 +62,14 @@ type AnalysisResult = {
   trace_info?: AnalysisTrace|null
 }
 type RunDetail = {run: RunSummary; result: AnalysisResult}
+type SourceCoveragePreflight = {
+  available: boolean
+  complete: boolean
+  total_fragments?: number
+  unclassified_count: number
+  unclassified_by_block_type?: Record<string, number>
+  message?: string
+}
 type AtomReview = {
   id:string
   atom_id:string
@@ -119,6 +127,7 @@ export function ComparisonReviewPage({projectId, approved}: {projectId: string; 
   const [runs, setRuns] = useState<RunSummary[]>([])
   const [detail, setDetail] = useState<RunDetail|null>(null)
   const [atomReviews, setAtomReviews] = useState<AtomReview[]>([])
+  const [sourceCoverage, setSourceCoverage] = useState<SourceCoveragePreflight|null>(null)
   const [status, setStatus] = useState<'all'|Status>('all')
   const [perspective, setPerspective] = useState<'znp'|'tu'>('znp')
   const [search, setSearch] = useState('')
@@ -185,6 +194,16 @@ export function ComparisonReviewPage({projectId, approved}: {projectId: string; 
       }).catch(e => {if (active) setError(e instanceof Error ? e.message : String(e))})
     return () => {active = false}
   }, [root, requestedRun])
+
+  useEffect(() => {
+    if (!pairId) return
+    let active = true
+    setSourceCoverage(null)
+    void request<SourceCoveragePreflight>(`${root}/source-coverage`)
+      .then(result => {if (active) setSourceCoverage(result)})
+      .catch(() => {if (active) setSourceCoverage(null)})
+    return () => {active = false}
+  }, [root, pairId])
 
   const items = detail?.result.checked_requirements || []
   const atomResults = detail?.result.trace_info?.znp_atom_results || []
@@ -280,6 +299,20 @@ export function ComparisonReviewPage({projectId, approved}: {projectId: string; 
     setBusy(true)
     setError('')
     try {
+      if (!testMode) {
+        // Fresh audit prevents spending on a document changed after page load.
+        const audit = await request<SourceCoveragePreflight>(`${root}/source-coverage`)
+        setSourceCoverage(audit)
+        if (!audit.available) throw new Error(
+          'Нет индексированных исходных фрагментов ЗнП. Сверку запускать нельзя.'
+        )
+        if (audit.unclassified_count > 0 && !window.confirm(
+          `В ЗнП осталось ${audit.unclassified_count} исходных фрагментов без проверенной роли. ` +
+          'Они могут содержать технические требования. DeepSeek не проверит их автоматически, ' +
+          'а результат не получит автоматические подтверждения соответствия. ' +
+          'Продолжить платную сверку с этими ограничениями?'
+        )) return
+      }
       await start({kind:'comparison', pair_ids:[pairId!], test_mode:testMode})
     } catch(e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -345,6 +378,17 @@ export function ComparisonReviewPage({projectId, approved}: {projectId: string; 
         </button>
       </div>}
     </div>
+    {sourceCoverage && sourceCoverage.available && sourceCoverage.unclassified_count > 0 &&
+      <p className="workspace-analysis-note">
+        Исходный ЗнП: {sourceCoverage.total_fragments} фрагментов,
+        {sourceCoverage.unclassified_count} не классифицированы после извлечения.
+        В них могут содержаться параметры и ограничения из приложений.
+        Полная сверка потребует подтверждения этих ограничений перед платным запуском.
+      </p>}
+    {sourceCoverage && !sourceCoverage.available &&
+      <p className="workspace-analysis-note">
+        В ЗнП нет индексированных фрагментов. Проверьте загрузку и извлечение документа.
+      </p>}
     {error && <p role="alert" className="error">{error}</p>}
     {!pair ? <p className="muted">Загружаем сверку…</p> :
       <>
