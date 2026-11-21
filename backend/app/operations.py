@@ -1,8 +1,9 @@
 """Background operations whose progress survives browser refreshes.
 
-Operations run in a server thread with their own database session. Each stage
-is committed so the UI polls real state rather than a simulated timer. This
-supports browser disconnects; process restarts require a separate task queue.
+Operations run in a server thread with their own database session. Progress is
+committed for browser polling. Comparisons additionally checkpoint each LLM
+response and can be paused/resumed across restarts in the single-API deployment;
+other operation kinds still use the existing non-resumable worker.
 """
 import logging
 import time
