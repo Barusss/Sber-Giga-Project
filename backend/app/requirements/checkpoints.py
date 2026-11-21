@@ -11,7 +11,7 @@ import hashlib
 import json
 from copy import deepcopy
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 
 from app.ai import diagnostics
 from app.core.config import settings
@@ -65,19 +65,29 @@ def request_fingerprint(system_prompt: str, user_prompt: str) -> str:
 
 
 def checkpoint_counts(job_id: str, session_factory=None) -> dict:
+    """SQL aggregation only: never load hundreds of private responses to poll UI."""
     factory = session_factory or SessionLocal
     with factory() as db:
-        rows = db.scalars(select(ComparisonLLMCheckpoint).where(
+        totals = db.execute(select(
+            func.coalesce(func.sum(case(
+                (ComparisonLLMCheckpoint.status == "succeeded", 1), else_=0,
+            )), 0),
+            func.coalesce(func.sum(case(
+                (ComparisonLLMCheckpoint.status.in_(("sent", "failed")), 1), else_=0,
+            )), 0),
+            func.coalesce(func.sum(ComparisonLLMCheckpoint.attempts), 0),
+        ).where(ComparisonLLMCheckpoint.job_id == job_id)).one()
+        phases = db.execute(select(
+            ComparisonLLMCheckpoint.phase, func.count(),
+        ).where(
             ComparisonLLMCheckpoint.job_id == job_id,
-        )).all()
+            ComparisonLLMCheckpoint.status == "succeeded",
+        ).group_by(ComparisonLLMCheckpoint.phase)).all()
         return {
-            "saved": sum(row.status == "succeeded" for row in rows),
-            "uncertain": sum(row.status in ("sent", "failed") for row in rows),
-            "requests_attempted": sum(row.attempts for row in rows),
-            "by_phase": {
-                name: sum(row.status == "succeeded" and row.phase == name for row in rows)
-                for name in {row.phase for row in rows}
-            },
+            "saved": int(totals[0]),
+            "uncertain": int(totals[1]),
+            "requests_attempted": int(totals[2]),
+            "by_phase": {name: count for name, count in phases},
         }
 
 
@@ -153,23 +163,30 @@ class CheckpointedDeepSeek:
         fingerprint, phase = self._identity(system_prompt, user_prompt)
         with self.session_factory() as db:
             job = _control(db, self.job_id)
-            rows = db.scalars(select(ComparisonLLMCheckpoint).where(
-                ComparisonLLMCheckpoint.job_id == self.job_id,
-            )).all()
-            attempted = sum(row.attempts for row in rows)
+            attempted = db.scalar(select(
+                func.coalesce(func.sum(ComparisonLLMCheckpoint.attempts), 0),
+            ).where(ComparisonLLMCheckpoint.job_id == self.job_id)) or 0
             if attempted >= settings.requirements_llm_max_calls:
                 raise ComparisonInterrupted(
                     f"Общий лимит платных запросов исчерпан ({attempted}). "
                     "Увеличьте его осознанно и возобновите работу."
                 )
             if self.ledger is not None:
-                phase_count = sum(row.attempts for row in rows if row.phase == phase)
+                phase_count = db.scalar(select(
+                    func.coalesce(func.sum(ComparisonLLMCheckpoint.attempts), 0),
+                ).where(
+                    ComparisonLLMCheckpoint.job_id == self.job_id,
+                    ComparisonLLMCheckpoint.phase == phase,
+                )) or 0
                 cap = self.ledger.phase_limits.get(phase)
                 if cap is not None and phase_count >= cap:
                     raise ComparisonInterrupted(
                         f"Лимит этапа {phase} исчерпан ({phase_count}/{cap})"
                     )
-            row = next((row for row in rows if row.fingerprint == fingerprint), None)
+            row = db.scalar(select(ComparisonLLMCheckpoint).where(
+                ComparisonLLMCheckpoint.job_id == self.job_id,
+                ComparisonLLMCheckpoint.fingerprint == fingerprint,
+            ))
             if row is None:
                 row = ComparisonLLMCheckpoint(
                     job_id=self.job_id, fingerprint=fingerprint, phase=phase,
