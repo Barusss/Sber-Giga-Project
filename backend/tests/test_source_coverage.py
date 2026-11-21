@@ -208,3 +208,24 @@ def test_short_numeric_and_table_cells_are_not_silently_excluded(source_text, ki
     ledger = source_coverage_ledger([value], [])
     assert ledger["by_role"].get("excluded", 0) == 0
     assert ledger["unclassified_fragment_ids"] == ["table-value"]
+
+
+
+def test_source_ledger_ids_match_prior_parent_scope_audit(tmp_path):
+    """Exact old audit ID scheme lets Codex reconcile all original fragments."""
+    from scripts.audit_znp_parent_scope import audit_znp
+
+    word = WordDocument()
+    word.add_heading("Раздел 1", level=1)
+    word.add_paragraph("1.1. Для КЛ-1 предусмотреть 10 кВ.")
+    path = tmp_path / "same.docx"
+    word.save(path)
+    ledger, _ = audit_file(path)
+    previous = audit_znp(path)
+    assert ledger["source_sha256"] == previous["source_sha256"]
+    assert [row["fragment_id"] for row in ledger["records"]] == [
+        row["id"] for row in previous["fragments"]
+    ]
+    assert [row["text_sha256"] for row in ledger["records"]] == [
+        row["text_hash"] for row in previous["fragments"]
+    ]
