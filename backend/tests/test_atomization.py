@@ -321,3 +321,44 @@ def test_known_table_cannot_inherit_prose_parent_without_scope_proof():
     assert len(result) == 2
     assert "intro" not in {x.fragment_id for x in result[-1].context_sources}
     assert "parent_scope_unresolved" in result[-1].warnings
+
+
+
+def test_unresolved_parent_scope_prevents_automatic_support_even_with_identical_quotes():
+    from app.requirements.schemas import TURequirement, ZNPClause, RequirementCategory
+    from app.requirements.znp_first import ZnPFirstAgent
+
+    parent = fragment("parent", 1, "1. Только при наличии резервной КЛ-2.")
+    parent.section_path = "Раздел А"
+    child = fragment("child", 2, "1.1. Для КЛ-1 предусмотреть кабель 10 кВ.")
+    child.section_path = "Раздел Б"
+    source = atomize_fragments("doc", [parent, child])[-1]
+
+    requirement = TURequirement(
+        id="tu1", clause_number="1.1", category=RequirementCategory.other,
+        text=source.text, sources=[{
+            "fragment_id": "tu1", "page": 1, "text": source.text,
+        }],
+    )
+    atom = ZNPClause(
+        id=source.id, clause_number=source.clause_number, text=source.text,
+        sources=[{"fragment_id": s.fragment_id, "page": s.page, "text": s.text}
+                 for s in source.sources],
+        context_sources=[{"fragment_id": s.fragment_id, "page": s.page, "text": s.text}
+                         for s in source.context_sources],
+        warnings=list(source.warnings),
+    )
+    link = ZnPFirstAgent._validated_link(
+        atom, requirement, {
+            "relation": "supports",
+            "tu_quote": source.text,
+            "znp_quote": source.text,
+            "confidence": 0.99,
+            "reasoning": "identical",
+        }, 0.95,
+    )
+    assert link is not None
+    assert link["param_check"]["params_match"]
+    assert link["scope_consistent"]
+    assert link["relation"] == "partial"
+    assert "parent_scope_unresolved" in link["warnings"]
