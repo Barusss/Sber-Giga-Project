@@ -38,15 +38,16 @@ def _source(fragment: Fragment) -> AtomSource:
 
 def _scope_key(
     number: str, section_path: str | None, fragment: Fragment,
-) -> tuple[str, str, str, str | None] | None:
+    heading_id: str | None,
+) -> tuple[str, str, str, str | None, str | None] | None:
     """Only explicit section and, for tables, explicit table identity are safe."""
     if not section_path:
         return None
     if fragment.block_type == "table_row":
         if not fragment.container_id:
             return None
-        return (number, section_path, "table", fragment.container_id)
-    return (number, section_path, "prose", None)
+        return (number, section_path, "table", fragment.container_id, heading_id)
+    return (number, section_path, "prose", None, heading_id)
 
 
 def _section_ancestors(section_path: str | None) -> list[str]:
@@ -72,7 +73,9 @@ def atomize_fragments(document_id: str, fragments: Sequence[Fragment]) -> list[D
     unscoped_headings = []
     # Never index parents by bare number across a whole document: distinct
     # tables/sections frequently restart their own 1 / 1.1 numbering.
-    scoped_parents: dict[tuple[str, str, str, str | None], DocumentAtom] = {}
+    scoped_parents: dict[
+        tuple[str, str, str, str | None, str | None], DocumentAtom
+    ] = {}
     seen_numbers: set[str] = set()
     preamble_sources = ()
     fragment_cursor = 0
@@ -119,7 +122,11 @@ def atomize_fragments(document_id: str, fragments: Sequence[Fragment]) -> list[D
             parent_number = ".".join(number_parts[:length])
             parent = None
             for ancestor in _section_ancestors(clause.section_path):
-                scope = _scope_key(parent_number, ancestor, first)
+                heading = headings.get(ancestor)
+                scope = _scope_key(
+                    parent_number, ancestor, first,
+                    heading.id if heading is not None else None,
+                )
                 if scope is not None:
                     parent = scoped_parents.get(scope)
                     if parent is not None:
@@ -168,7 +175,11 @@ def atomize_fragments(document_id: str, fragments: Sequence[Fragment]) -> list[D
         atoms.append(DocumentAtom(str(uuid5(NAMESPACE_URL, identity)), document_id, clause.clause_number,
                                   clause.text, clause.section_path, tuple(sources), context, warnings))
         base_number = clause.clause_number.split("#", 1)[0]
-        scope = _scope_key(base_number, clause.section_path, first)
+        heading = headings.get(clause.section_path)
+        scope = _scope_key(
+            base_number, clause.section_path, first,
+            heading.id if heading is not None else None,
+        )
         if scope is not None:
             scoped_parents[scope] = atoms[-1]
         seen_numbers.add(base_number)
