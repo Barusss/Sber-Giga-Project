@@ -141,7 +141,10 @@ def _container_boundary(previous: Fragment, current: Fragment) -> bool:
     if not (previous_table or current_table):
         return False
     if previous_table != current_table:
-        return True
+        # An unnumbered note immediately after a table can restrict its
+        # preceding rows. Preserve the full text and let atomization warn,
+        # rather than silently losing the condition across the boundary.
+        return _start_clause_number(current.text.strip()) is not None
     # NULL means legacy extraction: grouping consecutive tables is not proven.
     return not (previous.container_id and current.container_id
                 and previous.container_id == current.container_id)
