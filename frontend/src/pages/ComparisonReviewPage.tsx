@@ -62,6 +62,29 @@ type AnalysisResult = {
   trace_info?: AnalysisTrace|null
 }
 type RunDetail = {run: RunSummary; result: AnalysisResult}
+type AtomReview = {
+  id:string
+  atom_id:string
+  created_at:string
+  result:{
+    model_checked:boolean
+    candidate_count:number
+    proposed_links:number
+    validated_links:Array<{
+      tu_requirement_id:string
+      tu_clause_number:string
+      tu_text:string
+      relation:string
+      tu_quote:string
+      znp_quote:string
+      reasoning:string
+      confidence?:number|null
+      warnings:string[]
+    }>
+    rejected_links:Record<string,number>
+    notice:string
+  }
+}
 
 const labels: Record<Status, string> = {
   fulfilled: 'Соответствует',
@@ -90,10 +113,12 @@ export function ComparisonReviewPage({projectId, approved}: {projectId: string; 
   const {pairId} = useParams<{pairId:string}>()
   const {operations, start} = useOperations()
   const processedRuns = useRef(new Set<string>())
+  const processedAtomJobs = useRef(new Set<string>())
   const [searchParams, setSearchParams] = useSearchParams()
   const [pair, setPair] = useState<ComparisonPair|null>(null)
   const [runs, setRuns] = useState<RunSummary[]>([])
   const [detail, setDetail] = useState<RunDetail|null>(null)
+  const [atomReviews, setAtomReviews] = useState<AtomReview[]>([])
   const [status, setStatus] = useState<'all'|Status>('all')
   const [perspective, setPerspective] = useState<'znp'|'tu'>('znp')
   const [search, setSearch] = useState('')
@@ -123,7 +148,7 @@ export function ComparisonReviewPage({projectId, approved}: {projectId: string; 
   useEffect(() => {
     let active = true
     if (!pairId) return
-    setPair(null);setRuns([]);setDetail(null);setError('')
+    setPair(null);setRuns([]);setDetail(null);setAtomReviews([]);setError('')
     Promise.all([
       request<ComparisonPair>(root),
       request<RunSummary[]>(`${root}/runs`),
@@ -144,10 +169,13 @@ export function ComparisonReviewPage({projectId, approved}: {projectId: string; 
     }
     let active = true
     setDetail(null);setError('')
-    request<RunDetail>(`${root}/runs/${requestedRun}`)
-      .then(next => {
+    Promise.all([
+      request<RunDetail>(`${root}/runs/${requestedRun}`),
+      request<AtomReview[]>(`${root}/runs/${requestedRun}/atom-reviews`),
+    ]).then(([next, reviews]) => {
         if (!active) return
         setDetail(next)
+        setAtomReviews(reviews)
         setComments(Object.fromEntries(next.result.checked_requirements.map(
           item => [item.id,item.human_comment || '']
         )))
@@ -183,9 +211,16 @@ export function ComparisonReviewPage({projectId, approved}: {projectId: string; 
   ), [items, status, search])
 
   const running = operations.some(job =>
-    (job.kind === 'comparison' || job.kind === 'comparison_batch') &&
-    (job.status === 'queued' || job.status === 'running') &&
+    (job.kind === 'comparison' || job.kind === 'comparison_batch' ||
+     job.kind === 'comparison_atom_recheck') &&
+    (job.status === 'queued' || job.status === 'running' ||
+      job.status === 'paused') &&
     !!pairId && job.pair_ids.includes(pairId))
+  const atomInProgress = new Set(operations.filter(job =>
+    job.kind === 'comparison_atom_recheck' && !!pairId &&
+    job.pair_ids.includes(pairId) && job.run_id === requestedRun &&
+    ['queued', 'running', 'paused'].includes(job.status)
+  ).map(job => job.atom_id))
 
   useEffect(() => {
     if (!pairId) return
@@ -210,6 +245,35 @@ export function ComparisonReviewPage({projectId, approved}: {projectId: string; 
       void load().catch(e => setError(e instanceof Error ? e.message : String(e)))
     }
   }, [operations, pairId, requestedRun, pair?.current_run_id])
+
+  useEffect(() => {
+    if (!requestedRun || !pairId) return
+    const finished = operations.filter(job =>
+      job.kind === 'comparison_atom_recheck' &&
+      job.run_id === requestedRun &&
+      job.pair_ids.includes(pairId) &&
+      (job.status === 'completed' || job.status === 'failed') &&
+      !processedAtomJobs.current.has(job.id))
+    if (!finished.length) return
+    finished.forEach(job => processedAtomJobs.current.add(job.id))
+    void request<AtomReview[]>(`${root}/runs/${requestedRun}/atom-reviews`)
+      .then(setAtomReviews)
+      .catch(e => setError(e instanceof Error ? e.message : String(e)))
+  }, [operations, root, pairId, requestedRun])
+
+  async function rerunAtom(atomId: string) {
+    if (!pairId || !requestedRun || busy || running || approved) return
+    setBusy(true)
+    setError('')
+    try {
+      await start({
+        kind:'comparison_atom_recheck',
+        pair_ids:[pairId], run_id:requestedRun, atom_id:atomId,
+      })
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {setBusy(false)}
+  }
 
   async function rerun(testMode = false) {
     if (busy || approved || running) return
@@ -425,6 +489,40 @@ export function ComparisonReviewPage({projectId, approved}: {projectId: string; 
                     atom.model_checked ? 'Основной поиск: связей не найдено' : 'Основной поиск не завершён'}
                 </span>
               </div>
+              {!approved && <div className="workspace-row-actions">
+                <button type="button" className="secondary"
+                  disabled={busy || running || !atom.sources?.length}
+                  onClick={() => void rerunAtom(atom.atom_id)}
+                  title={!atom.sources?.length
+                    ? 'В старом отчёте отсутствуют сохранённые исходные фрагменты'
+                    : 'Новая отдельная ИИ-проверка связей; опубликованный итог не изменяется'}>
+                  {atomInProgress.has(atom.atom_id) ? 'Перепроверяется…' : 'Повторить ИИ-проверку ЗнП'}
+                </button>
+                {!atom.sources?.length && <small className="muted">
+                  Для этой записи нет достаточных данных источника. Доступно в новых отчётах.
+                </small>}
+              </div>}
+              {atomReviews.filter(review => review.atom_id === atom.atom_id).map(review =>
+                <details key={review.id} className="workspace-evidence-details">
+                  <summary>Отдельная повторная проверка от {date(review.created_at)} ·
+                    связей: {review.result.validated_links.length}</summary>
+                  <p className="workspace-analysis-note">{review.result.notice}</p>
+                  <p>Кандидатов: {review.result.candidate_count}.
+                    Предложено: {review.result.proposed_links}.
+                    Проверенных связей: {review.result.validated_links.length}.</p>
+                  {review.result.validated_links.map((link, index) =>
+                    <div className="workspace-znp-link"
+                      key={link.tu_requirement_id + '-' + index}>
+                      <strong>ТУ {link.tu_clause_number} · {link.relation}</strong>
+                      <p>{link.tu_text}</p>
+                      <blockquote>ТУ: {link.tu_quote}</blockquote>
+                      <blockquote>ЗнП: {link.znp_quote}</blockquote>
+                      <p>{link.reasoning}</p>
+                      {!!link.warnings.length && <small>
+                        Предупреждения контекста: {link.warnings.join(', ')}
+                      </small>}
+                    </div>)}
+                </details>)}
               <p className="muted">
                 {atom.model_checked ? 'Основной поиск: DeepSeek проверил кандидатов ТУ' :
                   'Основной поиск: DeepSeek не завершил проверку положения'}.

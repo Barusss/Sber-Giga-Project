@@ -96,8 +96,9 @@ def test_queued_preview_distinguishes_provider_error_from_empty_links(flow, monk
         "kind": "comparison", "pair_ids": [pair], "test_mode": True})
     assert response.status_code == 202, response.text
     job = client.get(f"/api/v1/projects/{project}/operations/{response.json()['id']}").json()
-    assert job["status"] == "failed", job
-    assert "0 of 10 ZnP atoms checked" in job["error"]
+    assert job["status"] == "paused", job
+    assert job["checkpoint"]["uncertain"] == 1
+    assert "DeepSeek" in job["error"]
     runs = client.get(f"/api/v1/projects/{project}/comparisons/{pair}/runs").json()
     assert runs == []
 
@@ -404,3 +405,51 @@ def test_queued_preview_preserves_manual_verdict_and_findings(flow):
     assert client.get(findings_url).json() == before_findings
     assert client.get(runs_url + f"/{full_id}").json() == before_full
     assert client.get(f"/api/v1/projects/{project}/comparisons/{pair}").json()["current_run_id"] == full_id
+
+
+def test_queued_single_znp_recheck_is_separate_and_keeps_official_run(flow):
+    client, project_id, pair_id = flow
+    base = f"/api/v1/projects/{project_id}"
+    response = client.post(f"{base}/operations", json={
+        "kind": "comparison", "pair_ids": [pair_id], "test_mode": True,
+    })
+    assert response.status_code == 202, response.text
+    job = client.get(f"{base}/operations/{response.json()['id']}").json()
+    assert job["status"] == "completed", job
+    run_id = job["result"]["runs"][0]["run_id"]
+    report_url = f"{base}/comparisons/{pair_id}/runs/{run_id}"
+    original = client.get(report_url).json()
+    atom = original["result"]["trace_info"]["znp_atom_results"][0]
+    assert atom["sources"]
+
+    retry = client.post(f"{base}/operations", json={
+        "kind": "comparison_atom_recheck",
+        "pair_ids": [pair_id], "run_id": run_id,
+        "atom_id": atom["atom_id"],
+    })
+    assert retry.status_code == 202, retry.text
+    task = client.get(f"{base}/operations/{retry.json()['id']}").json()
+    assert task["status"] == "completed", task
+    reviews = client.get(report_url + "/atom-reviews").json()
+    assert len(reviews) == 1
+    assert reviews[0]["atom_id"] == atom["atom_id"]
+    assert reviews[0]["result"]["model_checked"] is True
+    assert reviews[0]["result"]["validated_links"]
+    assert client.get(report_url).json() == original
+
+
+def test_single_znp_recheck_rejects_unknown_atom_and_run(flow):
+    client, project_id, pair_id = flow
+    base = f"/api/v1/projects/{project_id}"
+    response = client.post(f"{base}/operations", json={
+        "kind": "comparison", "pair_ids": [pair_id], "test_mode": True,
+    })
+    job = client.get(f"{base}/operations/{response.json()['id']}").json()
+    assert job["status"] == "completed", job
+    run_id = job["result"]["runs"][0]["run_id"]
+    invalid = client.post(f"{base}/operations", json={
+        "kind": "comparison_atom_recheck",
+        "pair_ids": [pair_id], "run_id": run_id, "atom_id": "not-an-atom",
+    })
+    assert invalid.status_code == 404
+    assert len(client.get(f"{base}/comparisons/{pair_id}/runs/{run_id}/atom-reviews").json()) == 0

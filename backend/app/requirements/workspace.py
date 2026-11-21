@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.core.db import get_db
 from app.core.models import (
-    ComparisonPair, ComparisonRun, Document, DocumentKind, Finding, Project,
+    ComparisonPair, ComparisonRun, ComparisonAtomReview, Document, DocumentKind, Finding, Project,
     RequirementAnalysis, RequirementVerification, TURequirement, ReviewState,
 )
 from app.requirements.router import (
@@ -23,6 +23,8 @@ from app.requirements.router import (
     _lock_project_for_analysis, _analyze_project_requirements, get_project_requirements,
 )
 from app.requirements.znp_first import ZnPFirstAgent
+from app.requirements.checkpoints import CheckpointedDeepSeek
+from app.ai.deepseek import DeepSeekClient
 from app.requirements.schemas import (
     AnalyzeProjectRequirementsRequest, ConfirmRequirementRequest, RequirementStatus,
 )
@@ -211,43 +213,77 @@ def run_comparison(
     progress_callback: Callable[[str, int, int, str | None], None] | None = None,
     *,
     test_mode: bool = False,
+    checkpoint_job_id: str | None = None,
+    checkpoint_session_factory=None,
 ):
     pair = _pair(db, project_id, pair_id, edit=True)
-    with _analysis_lock(project_id):
-        _lock_project_for_analysis(db, project_id)
-        response = _analyze_project_requirements(AnalyzeProjectRequirementsRequest(
-            project_id=project_id,
-            tu_document_id=pair.tu_document_id,
-            znp_document_id=pair.znp_document_id,
-            force=False,
-            test_mode=test_mode,
-        ), db, ZnPFirstAgent(), progress_callback=progress_callback)
+    if checkpoint_job_id:
+        finished = db.scalar(select(ComparisonRun).where(
+            ComparisonRun.pair_id == pair.id,
+            ComparisonRun.operation_job_id == checkpoint_job_id,
+        ))
+        if finished is not None:
+            return {"run": _summary(finished), "result": finished.result}
+    model = DeepSeekClient()
+    if checkpoint_job_id:
+        model = CheckpointedDeepSeek(
+            checkpoint_job_id, model, session_factory=checkpoint_session_factory,
+        )
+    agent = ZnPFirstAgent(ai_client=model)
+    published_run: ComparisonRun | None = None
+
+    def publish(response, session):
+        nonlocal published_run
         if progress_callback:
-            progress_callback("snapshot", response.stats["total"], response.stats["total"], None)
-        if test_mode:
-            # A preview is a read-only historical snapshot. It cannot replace
-            # the current full run or modify confirmations and project findings.
-            run = ComparisonRun(
-                pair_id=pair.id, result=response.model_dump(mode="json"),
-                is_current=False,
+            # Pause check BEFORE the atomic official-result transaction commits.
+            progress_callback(
+                "snapshot", response.stats["total"], response.stats["total"], None,
             )
-        else:
-            persisted = get_project_requirements(
-                project_id, pair.tu_document_id, pair.znp_document_id, db,
+        for old in session.scalars(select(ComparisonRun).where(
+            ComparisonRun.pair_id == pair.id,
+            ComparisonRun.is_current.is_(True),
+        )).all():
+            old.is_current = False
+        published_run = ComparisonRun(
+            pair_id=pair.id, operation_job_id=checkpoint_job_id,
+            result=response.model_dump(mode="json"), is_current=True,
+        )
+        session.add(published_run)
+        session.flush()
+
+    try:
+        with _analysis_lock(project_id):
+            _lock_project_for_analysis(db, project_id)
+            response = _analyze_project_requirements(
+                AnalyzeProjectRequirementsRequest(
+                    project_id=project_id,
+                    tu_document_id=pair.tu_document_id,
+                    znp_document_id=pair.znp_document_id,
+                    force=False,
+                    test_mode=test_mode,
+                ), db, agent, progress_callback=progress_callback,
+                on_published=None if test_mode else publish,
             )
-            persisted.trace_info = response.trace_info
-            for old in db.scalars(select(ComparisonRun).where(
-                ComparisonRun.pair_id == pair.id, ComparisonRun.is_current.is_(True)
-            )).all():
-                old.is_current = False
-            run = ComparisonRun(
-                pair_id=pair.id, result=persisted.model_dump(mode="json"),
-                is_current=True,
-            )
-        db.add(run)
-        db.commit()
-        db.refresh(run)
-        return {"run": _summary(run), "result": run.result}
+            if test_mode and progress_callback:
+                progress_callback("snapshot", response.stats["total"], response.stats["total"], None)
+            if test_mode:
+                # Preview remains non-current and does not change findings.
+                run = ComparisonRun(
+                    pair_id=pair.id, operation_job_id=checkpoint_job_id,
+                    result=response.model_dump(mode="json"), is_current=False,
+                )
+                db.add(run)
+                db.commit()
+            else:
+                # Committed in the SAME transaction as comparison verifications.
+                run = published_run
+                if run is None:
+                    raise RuntimeError("Comparison published without snapshot")
+            db.refresh(run)
+            return {"run": _summary(run), "result": run.result}
+    finally:
+        if hasattr(agent.ai, "close"):
+            agent.ai.close()
 
 
 
@@ -264,6 +300,22 @@ def get_run(project_id: str, pair_id: str, run_id: str, db: Session = Depends(ge
     pair = _pair(db, project_id, pair_id)
     run = _run(db, pair, run_id)
     return {"run": _summary(run), "result": run.result}
+
+
+@router.get("/projects/{project_id}/comparisons/{pair_id}/runs/{run_id}/atom-reviews")
+def list_atom_reviews(project_id: str, pair_id: str, run_id: str,
+                      atom_id: str | None = None, db: Session = Depends(get_db)):
+    pair = _pair(db, project_id, pair_id)
+    _run(db, pair, run_id)
+    rows = db.scalars(select(ComparisonAtomReview).where(
+        ComparisonAtomReview.run_id == run_id,
+    ).order_by(ComparisonAtomReview.created_at.desc())).all()
+    if atom_id is not None:
+        rows = [row for row in rows if row.atom_id == atom_id]
+    return [{
+        "id": row.id, "atom_id": row.atom_id,
+        "created_at": row.created_at, "result": row.result,
+    } for row in rows]
 
 
 @router.post("/projects/{project_id}/comparisons/{pair_id}/runs/{run_id}/confirm")

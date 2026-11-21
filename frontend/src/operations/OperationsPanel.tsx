@@ -5,14 +5,18 @@ import {API, json, request} from '../api/client'
 export type Operation = {
   id: string
   project_id: string
-  kind: 'upload'|'normative_extract'|'normative_check'|'comparison'|'comparison_batch'
-  status: 'queued'|'running'|'completed'|'failed'|'cancelled'
+  kind: 'upload'|'normative_extract'|'normative_check'|'comparison'|'comparison_batch'|'comparison_atom_recheck'
+  status: 'queued'|'running'|'paused'|'completed'|'failed'|'cancelled'
   stage: string
   message: string
   filename?: string|null
   document_id?: string|null
   pair_ids: string[]
   test_mode?: boolean
+  atom_id?: string|null
+  run_id?: string|null
+  pause_requested?: boolean
+  checkpoint?: {saved:number;uncertain:number;requests_attempted:number;by_phase:Record<string,number>}|null
   progress_current: number|null
   progress_total: number|null
   error: string|null
@@ -27,6 +31,8 @@ type OperationInput = {
   pair_ids?: string[]
   refresh?: boolean
   test_mode?: boolean
+  run_id?: string
+  atom_id?: string
 }
 
 type ContextValue = {
@@ -37,6 +43,8 @@ type ContextValue = {
   start: (payload: OperationInput) => Promise<Operation>
   upload: (data: FormData) => Promise<Operation>
   cancel: (id: string) => Promise<void>
+  pause: (id: string) => Promise<void>
+  resume: (id: string, acceptReplayRisk?: boolean) => Promise<void>
 }
 
 async function listJobs(base: string): Promise<Operation[]> {
@@ -124,8 +132,19 @@ export function OperationsProvider({projectId, children}: {
     await reload()
   }
 
+  async function pause(id: string) {
+    await request(`${base}/${id}/pause`, {method:'POST'})
+    await reload()
+  }
+
+  async function resume(id: string, acceptReplayRisk = false) {
+    await request(`${base}/${id}/resume`,
+      json('POST', {accept_replay_risk:acceptReplayRisk}))
+    await reload()
+  }
+
   const value = useMemo(() => ({
-    operations, loading, connectionError, reload, start, upload, cancel,
+    operations, loading, connectionError, reload, start, upload, cancel, pause, resume,
   }), [operations, loading, connectionError, base])
 
   return <OperationsContext.Provider value={value}>{children}</OperationsContext.Provider>
@@ -137,6 +156,7 @@ const titles: Record<Operation['kind'],string> = {
   normative_check: 'Проверка нормативов',
   comparison: 'Сверка ТУ и ЗнП',
   comparison_batch: 'Пакетная сверка документов',
+  comparison_atom_recheck: 'Повторная проверка одного ЗнП',
 }
 
 function StatusIcon({status}: {status: Operation['status']}) {
@@ -160,7 +180,9 @@ type ComparisonProgressData = {
 const comparisonSteps = [
   {stage:'reading', label:'Разбор документов'},
   {stage:'embedding', label:'Поиск соответствий'},
-  {stage:'verifying', label:'Проверка требований'},
+  {stage:'verifying', label:'Поиск связей ЗнП → ТУ'},
+  {stage:'coverage', label:'Проверка покрытия и обратный поиск'},
+  {stage:'audit', label:'Аудит противоречий'},
   {stage:'persisting', label:'Формирование замечаний'},
   {stage:'snapshot', label:'Сохранение результата'},
 ]
@@ -169,9 +191,11 @@ function comparisonStageIndex(stage: string): number {
   if (stage === 'reading' || stage === 'preparing') return 0
   if (stage === 'embedding') return 1
   if (stage === 'verifying') return 2
-  if (stage === 'persisting') return 3
-  if (stage === 'snapshot') return 4
-  if (stage === 'complete' || stage === 'comparing') return 5
+  if (stage === 'coverage') return 3
+  if (stage === 'audit') return 4
+  if (stage === 'persisting') return 5
+  if (stage === 'snapshot') return 6
+  if (stage === 'complete' || stage === 'comparing') return 7
   return -1
 }
 
@@ -214,11 +238,14 @@ function ComparisonProgress({job}: {job: Operation}) {
   const total = data.requirements_total
   const hasCount = current !== null && total !== null && total > 0
   const percent = hasCount ? Math.min(100, Math.round(current / total * 100)) : null
+  const sourceIsZnp = data.stage === 'verifying'
+  const sourceIsTu = data.stage === 'coverage' || data.stage === 'audit'
+  const countLabel = sourceIsZnp ? 'положений ЗнП' : sourceIsTu ? 'требований ТУ' : 'элементов'
 
   return <div className="operation-comparison-detail">
     <div className="operation-comparison-heading">
       <strong>Пара {data.pair_index} из {data.pair_total}</strong>
-      {hasCount && <span>{job.test_mode ? 'Положений ЗнП в тесте' : 'Положений ЗнП'}: {total}</span>}
+      {hasCount && <span>{countLabel}: {total}</span>}
     </div>
     <ol className="operation-stage-list" aria-label="Этапы сверки">
       {comparisonSteps.map((step,index) => <li key={step.stage}
@@ -230,23 +257,24 @@ function ComparisonProgress({job}: {job: Operation}) {
     </ol>
     {hasCount && stage >= 2 && <div className="operation-requirements-progress">
       <div className="operation-requirements-head">
-        <strong>Обработано {current} из {total} положений ЗнП</strong>
+        <strong>Обработано {current} из {total} {countLabel}</strong>
         <span>{percent}%</span>
       </div>
       <div className="operation-progress" role="progressbar"
-        aria-label="Проверено положений ЗнП в текущей паре"
+        aria-label={`Проверено ${countLabel} в текущей паре`}
         aria-valuemin={0} aria-valuemax={total} aria-valuenow={current}>
         <span className="operation-progress-fill" style={{width:`${percent}%`}}/>
       </div>
       <div className="operation-requirements-foot">
-        {data.current_clause && stage === 2
-          ? <span>Сейчас: положение ЗнП {data.current_clause}</span>
-          : <span>{stage === 2 ? `Осталось положений: ${total-current}` : 'Проверка положений завершена'}</span>}
+        {data.current_clause && (sourceIsZnp || sourceIsTu)
+          ? <span>Сейчас: {sourceIsZnp ? 'положение ЗнП' : 'требование ТУ'} {data.current_clause}</span>
+          : <span>Осталось: {Math.max(0, total-current)}</span>}
         {stage === 2 && data.remaining_seconds !== null &&
           <span>Примерно осталось: {formatRemaining(data.remaining_seconds)}</span>}
       </div>
-      {data.current_clause && stage === 2 && <p className="operation-remaining-note">
-        Осталось положений ЗнП: {total-current}. Время оценивается по уже обработанным положениям.
+      {data.current_clause && (sourceIsZnp || sourceIsTu) && <p className="operation-remaining-note">
+        Осталось {countLabel}: {Math.max(0,total-current)}.
+        Прогресс каждого этапа отдельно фиксируется в базе.
       </p>}
     </div>}
     {!hasCount && stage >= 0 && stage < 2 &&
@@ -257,7 +285,12 @@ function ComparisonProgress({job}: {job: Operation}) {
   </div>
 }
 
-function OperationRow({job, cancel}: {job: Operation; cancel: (id: string) => Promise<void>}) {
+function OperationRow({job, cancel, pause, resume}: {
+  job: Operation
+  cancel: (id: string) => Promise<void>
+  pause: (id: string) => Promise<void>
+  resume: (id: string, acceptReplayRisk?: boolean) => Promise<void>
+}) {
   const working = active(job)
   const knownProgress = job.progress_current !== null && job.progress_total !== null
     && job.progress_total > 0
@@ -265,6 +298,7 @@ function OperationRow({job, cancel}: {job: Operation; cancel: (id: string) => Pr
     ? Math.min(100, Math.round((job.progress_current! / job.progress_total!) * 100))
     : null
   const isComparison = job.kind === 'comparison' || job.kind === 'comparison_batch'
+  const canControl = isComparison || job.kind === 'comparison_atom_recheck'
   const description = job.filename || (job.kind === 'comparison_batch'
     ? `${job.pair_ids.length} сверок`
     : '')
@@ -276,7 +310,13 @@ function OperationRow({job, cancel}: {job: Operation; cancel: (id: string) => Pr
         {description && <span>{description}</span>}
       </div>
       <p>{job.error || job.message}</p>
-      {working && isComparison && <ComparisonProgress job={job}/>}
+      {(working || job.status === 'paused') && isComparison && <ComparisonProgress job={job}/>}
+      {canControl && job.checkpoint && <p className="muted">
+        Сохранено ответов DeepSeek: {job.checkpoint.saved}.
+        Выполнено платных попыток: {job.checkpoint.requests_attempted}.
+        {job.checkpoint.uncertain > 0 &&
+          ` Запросов с неопределённым результатом: ${job.checkpoint.uncertain}.`}
+      </p>}
       {working && !isComparison && <div className="operation-progress" role="progressbar"
         aria-label={titles[job.kind]}
         aria-valuemin={percentage !== null ? 0 : undefined}
@@ -293,25 +333,44 @@ function OperationRow({job, cancel}: {job: Operation; cancel: (id: string) => Pr
     {working && job.kind === 'normative_check' &&
       <button type="button" className="secondary operation-cancel"
         onClick={() => void cancel(job.id)}>Остановить</button>}
+    {working && canControl && <button type="button" className="secondary operation-cancel"
+      onClick={() => void pause(job.id)}>Пауза</button>}
+    {(job.status === 'paused' || job.status === 'failed') && canControl && <>
+      <button type="button" className="secondary operation-cancel"
+        onClick={() => {
+          const risk = (job.checkpoint?.uncertain || 0) > 0
+          if (risk && !window.confirm(
+            'Последний ответ не сохранён: DeepSeek мог обработать и списать оплату. ' +
+            'Повторить такой запрос и продолжить сверку?'
+          )) return
+          void resume(job.id, risk)
+        }}>Продолжить</button>
+      {job.status === 'paused' && <button type="button" className="secondary operation-cancel"
+        onClick={() => void cancel(job.id)}>Завершить без продолжения</button>}
+    </>}
   </div>
 }
 
 export function OperationsPanel() {
-  const {operations, loading, connectionError, cancel} = useOperations()
+  const {operations, loading, connectionError, cancel, pause, resume} = useOperations()
   const current = operations.filter(active)
-  const completed = operations.filter(job => !active(job))
+  const paused = operations.filter(job => job.status === 'paused')
+  const completed = operations.filter(job => !active(job) && job.status !== 'paused')
   const [expanded, setExpanded] = useState(false)
   const [dismissed, setDismissed] = useState<string[]>([])
   const visibleDone = completed.filter(job => !dismissed.includes(job.id)).slice(0, 1)
   if (loading) return null
-  if (!current.length && !visibleDone.length && !connectionError) return null
+  if (!current.length && !paused.length && !visibleDone.length && !connectionError) return null
   return <section className="operations-panel" aria-label="Процессы проекта">
     {connectionError && <div className="operation-connection">
       Не удалось обновить статусы операций. Повторное подключение выполняется автоматически.
     </div>}
-    {current.map(job => <OperationRow key={job.id} job={job} cancel={cancel}/>)}
-    {!current.length && visibleDone.map(job => <div className="operation-finished" key={job.id}>
-      <OperationRow job={job} cancel={cancel}/>
+    {current.map(job => <OperationRow key={job.id} job={job} cancel={cancel}
+      pause={pause} resume={resume}/>)}
+    {paused.map(job => <OperationRow key={job.id} job={job} cancel={cancel}
+      pause={pause} resume={resume}/>)}
+    {!current.length && !paused.length && visibleDone.map(job => <div className="operation-finished" key={job.id}>
+      <OperationRow job={job} cancel={cancel} pause={pause} resume={resume}/>
       <button type="button" className="operation-dismiss" onClick={() => setDismissed(
         previous => [...previous, job.id]
       )} aria-label="Скрыть завершённую операцию">Закрыть</button>
@@ -323,7 +382,7 @@ export function OperationsPanel() {
       </button>
       {expanded && <div className="operation-history-items">
         {completed.slice(0, 10).map(job =>
-          <OperationRow key={job.id} job={job} cancel={cancel}/>)}
+          <OperationRow key={job.id} job={job} cancel={cancel} pause={pause} resume={resume}/>)}
       </div>}
     </div>}
   </section>

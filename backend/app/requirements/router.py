@@ -897,6 +897,7 @@ def _analyze_project_requirements(
     db: Session,
     agent: RequirementsAgent,
     progress_callback: Callable[[str, int, int, str | None], None] | None = None,
+    on_published: Callable[[CheckRequirementsResponse, Session], None] | None = None,
 ) -> CheckRequirementsResponse:
     project_id = payload.project_id
     if progress_callback:
@@ -1126,7 +1127,11 @@ def _analyze_project_requirements(
         key = _requirement_key(tu_doc.id, clause.clause_number, clause.text)
         db_requirement = existing_by_key.get(key)
         if db_requirement is None:
+            # Stable IDs are required to recreate identical LLM prompts
+            # after a crash before this transaction commits.
+            stable_id = str(uuid5(NAMESPACE_URL, repr(key)))
             db_requirement = DBTURequirement(
+                id=stable_id,
                 project_id=project_id,
                 document_id=tu_doc.id,
                 clause_number=clause.clause_number,
@@ -1499,6 +1504,10 @@ def _analyze_project_requirements(
     completed.requirement_ids = [item.requirement.id for item in response.checked_requirements]
     completed.completed_at = datetime.now(timezone.utc)
 
+    # The official snapshot must commit atomically with verifications and
+    # findings; otherwise a crash between two commits loses the run history.
+    if on_published is not None and not payload.test_mode:
+        on_published(response, db)
     db.commit()
     return response
 

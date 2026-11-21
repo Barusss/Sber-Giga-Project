@@ -76,9 +76,12 @@ export function ComparisonsPage({projectId, approved}: {projectId: string; appro
     void reload().catch(e => setError(e instanceof Error ? e.message : String(e)))
   }, [operations])
 
-  const runningPairs = new Set(operations
-    .filter(job => (job.kind === 'comparison' || job.kind === 'comparison_batch') &&
-      (job.status === 'queued' || job.status === 'running'))
+  const pairJobs = operations.filter(job =>
+    (job.kind === 'comparison' || job.kind === 'comparison_batch' ||
+      job.kind === 'comparison_atom_recheck') &&
+    (job.status === 'queued' || job.status === 'running' || job.status === 'paused'))
+  const runningPairs = new Set(pairJobs.flatMap(job => job.pair_ids))
+  const pausedPairs = new Set(pairJobs.filter(job => job.status === 'paused')
     .flatMap(job => job.pair_ids))
 
   const tuDocs = documents.filter(doc => doc.kind === 'tu')
@@ -209,7 +212,7 @@ export function ComparisonsPage({projectId, approved}: {projectId: string; appro
               <td className="workspace-doc-name">{pair.tu_filename}</td>
               <td className="workspace-doc-name">{pair.znp_filename}</td>
               <td><span className={'workspace-status '+(runningPairs.has(pair.id) ? 'ready' : pair.status)}>
-                {runningPairs.has(pair.id) ? 'Выполняется' : statusLabels[pair.status]}
+                {pausedPairs.has(pair.id) ? 'На паузе' : runningPairs.has(pair.id) ? 'Выполняется' : statusLabels[pair.status]}
               </span></td>
               <td>{pair.run_count}</td>
               <td><div className="workspace-row-actions">
@@ -243,7 +246,7 @@ export function ComparisonsPage({projectId, approved}: {projectId: string; appro
                 return <td key={znp.id}>
                   {pair ? <Link to={`${base}/${pair.id}`} className={'workspace-matrix-cell '+pair.status}
                     title={`${tu.filename} / ${znp.filename}: ${statusLabels[pair.status]}`}>
-                    {runningPairs.has(pair.id) ? 'Выполняется' : pair.status === 'queued' ? 'Ожидает' : pair.status === 'reviewed' ? 'Рассмотрено' : 'Готово'}
+                    {pausedPairs.has(pair.id) ? 'На паузе' : runningPairs.has(pair.id) ? 'Выполняется' : pair.status === 'queued' ? 'Ожидает' : pair.status === 'reviewed' ? 'Рассмотрено' : 'Готово'}
                   </Link> : <label className={'workspace-matrix-cell new '+(selected.includes(key) ? 'selected' : '')}>
                     <input type="checkbox" checked={selected.includes(key)} disabled={busy || approved}
                       onChange={() => toggle(key)} aria-label={`Добавить сверку ${tu.filename} и ${znp.filename}`}/>

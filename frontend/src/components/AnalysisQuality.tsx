@@ -36,6 +36,7 @@ export type AnalysisTrace = {
     model_calls_limit: number
     attempted_by_phase: Record<string, number>
     responses_by_phase: Record<string, number>
+    replayed_by_phase?: Record<string, number>
     errors_by_phase: Record<string, number>
     blocked_by_limit: Record<string, number>
     limit_reached: boolean
@@ -45,6 +46,9 @@ export type AnalysisTrace = {
     clause_number: string
     text: string
     page?: number|null
+    sources?: Array<{fragment_id:string; text:string; page?:number|null}>
+    context_sources?: Array<{fragment_id:string; text:string; page?:number|null}>
+    warnings?: string[]
     model_checked: boolean
     outcome?: string
     targeted_checked?: boolean

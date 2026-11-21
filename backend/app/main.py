@@ -6,7 +6,7 @@ from app.normatives.router import router as normatives_router, extraction_router
 from app.requirements.router import router as requirements_router
 from app.requirements.workspace import router as comparisons_router
 from app.reports.router import router as reports_router
-from app.operations import router as operations_router
+from app.operations import router as operations_router, recover_pending_operations
 from app.search.router import router as search_router
 
 app = FastAPI(title="Sber Giga Project", version="0.1.0")
@@ -18,3 +18,10 @@ def health():
 
 for router in (documents_router, normatives_router, extraction_router, requirements_router, comparisons_router, operations_router, reports_router, search_router):
     app.include_router(router, prefix="/api/v1")
+
+
+@app.on_event("startup")
+def resume_interrupted_comparisons():
+    # Single Uvicorn API process in docker-compose.yml. The database ensures
+    # a queued job is claimed once even if recovery is invoked twice.
+    recover_pending_operations()
