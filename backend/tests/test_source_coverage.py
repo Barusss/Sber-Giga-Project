@@ -178,7 +178,9 @@ def test_original_docx_annex_table_reaches_atoms_with_exact_sources(tmp_path):
 
 def test_cli_never_writes_raw_private_text_without_explicit_opt_in(tmp_path, capsys):
     word = WordDocument()
-    word.add_paragraph("Секретное приложение: КЛ-2, 120 мм²")
+    word.add_heading("Приложение А. Перечень сокращений", level=1)
+    table = word.add_table(rows=1, cols=1)
+    table.cell(0, 0).text = "Секретное приложение: КЛ-2, 120 мм²"
     path = tmp_path / "source.docx"
     word.save(path)
     out = tmp_path / "diagnostics" / "audit.json"
