@@ -22,7 +22,8 @@ from app.requirements.znp_first import ZnPFirstAgent
 
 
 def run_atom_recheck(db: Session, *, project_id: str, pair_id: str,
-                     run_id: str, atom_id: str, job_id: str) -> dict:
+                     run_id: str, atom_id: str, job_id: str,
+                     session_factory=None) -> dict:
     pair = db.get(ComparisonPair, pair_id)
     if pair is None or pair.project_id != project_id:
         raise HTTPException(404, "Comparison pair not found")
@@ -67,7 +68,9 @@ def run_atom_recheck(db: Session, *, project_id: str, pair_id: str,
     if not tu_items:
         raise HTTPException(409, "No TU requirements in saved report")
 
-    model = CheckpointedDeepSeek(job_id, DeepSeekClient())
+    model = CheckpointedDeepSeek(
+        job_id, DeepSeekClient(), session_factory=session_factory,
+    )
     agent = ZnPFirstAgent(
         ai_client=model, embedder=EmbeddingService(),
     )
