@@ -16,7 +16,7 @@ from app.requirements.znp_first import ZnPFirstAgent
 
 def tu(text="Предусмотреть кабель 10 кВ для КЛ-1."):
     return TURequirement(
-        id="t1", clause_number="1", category=RequirementCategory.general,
+        id="t1", clause_number="1", category=RequirementCategory.other,
         text=text, fragment_id="t1", fragment_text=text,
     )
 
