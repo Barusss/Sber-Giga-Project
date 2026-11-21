@@ -96,8 +96,9 @@ def test_queued_preview_distinguishes_provider_error_from_empty_links(flow, monk
         "kind": "comparison", "pair_ids": [pair], "test_mode": True})
     assert response.status_code == 202, response.text
     job = client.get(f"/api/v1/projects/{project}/operations/{response.json()['id']}").json()
-    assert job["status"] == "failed", job
-    assert "0 of 10 ZnP atoms checked" in job["error"]
+    assert job["status"] == "paused", job
+    assert job["checkpoint"]["uncertain"] == 1
+    assert "DeepSeek" in job["error"]
     runs = client.get(f"/api/v1/projects/{project}/comparisons/{pair}/runs").json()
     assert runs == []
 
