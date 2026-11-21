@@ -1091,6 +1091,12 @@ class ZnPFirstAgent:
                     "clause_number": atom.clause_number,
                     "text": atom.text[:1800],
                     "page": atom.page,
+                    "fragment_id": atom.fragment_id,
+                    "fragment_text": atom.fragment_text,
+                    "section_path": atom.section_path,
+                    "sources": atom.sources,
+                    "context_sources": atom.context_sources,
+                    "warnings": atom.warnings,
                     # Only the primary ZnP -> TU search counts here.
                     "model_checked": trace["model_checked"],
                     "targeted_checked": atom.id in targeted_checked_atoms,
