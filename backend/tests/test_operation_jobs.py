@@ -356,3 +356,62 @@ def test_comparison_details_are_persisted_while_running(ops_client, monkeypatch)
     )
     assert completed["result"]["runs"] == [{"pair_id": pair_id, "run_id": "saved-run"}]
     assert completed["result"]["comparison_progress"]["stage"] == "snapshot"
+
+
+def test_comparison_can_pause_and_resume_same_operation(ops_client, monkeypatch):
+    project = create_project(ops_client)
+    tu = create_document(ops_client, project, "tu", monkeypatch)
+    znp = create_document(ops_client, project, "znp", monkeypatch)
+    pair = ops_client.post(
+        f"/api/v1/projects/{project}/comparisons",
+        json={"pairs": [{"tu_document_id": tu, "znp_document_id": znp}]},
+    ).json()[0]["id"]
+    started = Event()
+    continue_run = Event()
+    attempts = []
+
+    def worker(pid, comparison_id, db, progress_callback=None, **kwargs):
+        attempts.append(kwargs.get("checkpoint_job_id"))
+        progress_callback("verifying", 1, 2, "1.1")
+        if len(attempts) == 1:
+            started.set()
+            assert continue_run.wait(5)
+        progress_callback("verifying", 2, 2, "1.2")
+        return {"run": {"id": "resumed-result"}}
+
+    monkeypatch.setattr("app.operations.execute_comparison", worker)
+    created = ops_client.post(f"/api/v1/projects/{project}/operations", json={
+        "kind": "comparison", "pair_ids": [pair],
+    })
+    assert created.status_code == 202
+    job_id = created.json()["id"]
+    assert started.wait(4)
+    pause = ops_client.post(
+        f"/api/v1/projects/{project}/operations/{job_id}/pause",
+    )
+    assert pause.status_code == 200
+    assert pause.json()["pause_requested"] is True
+    continue_run.set()
+
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        paused = ops_client.get(
+            f"/api/v1/projects/{project}/operations/{job_id}",
+        ).json()
+        if paused["status"] == "paused":
+            break
+        time.sleep(.02)
+    assert paused["status"] == "paused", paused
+    assert paused["result"]["comparison_progress"]["requirements_current"] == 1
+
+    resumed = ops_client.post(
+        f"/api/v1/projects/{project}/operations/{job_id}/resume",
+        json={"accept_replay_risk": False},
+    )
+    assert resumed.status_code == 200
+    finished = wait_for(
+        ops_client, f"/api/v1/projects/{project}/operations/{job_id}",
+    )
+    assert finished["status"] == "completed"
+    assert finished["result"]["runs"] == [{"pair_id": pair, "run_id": "resumed-result"}]
+    assert attempts == [job_id, job_id]
