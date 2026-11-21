@@ -194,3 +194,17 @@ def test_cli_never_writes_raw_private_text_without_explicit_opt_in(tmp_path, cap
     ]) == 0
     assert private.is_file()
     assert "Секретное" in private.read_text(encoding="utf-8")
+
+
+
+@pytest.mark.parametrize("source_text,kind", [
+    ("10", "table_row"),
+    ("6", "paragraph"),
+    ("А", "table_row"),
+    ("0,4", "table_row"),
+])
+def test_short_numeric_and_table_cells_are_not_silently_excluded(source_text, kind):
+    value = fragment("table-value", 0, source_text, block_type=kind)
+    ledger = source_coverage_ledger([value], [])
+    assert ledger["by_role"].get("excluded", 0) == 0
+    assert ledger["unclassified_fragment_ids"] == ["table-value"]
