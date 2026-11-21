@@ -54,6 +54,7 @@ def load_fragments(path: Path, kind: str):
             text=block.text,
             block_type=block.block_type,
             section_path=block.section_path,
+            container_id=block.container_id,
             bbox=block.bbox,
             extraction_method=block.extraction_method,
         )
