@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.core.db import get_db
 from app.core.models import (
-    ComparisonPair, ComparisonRun, ComparisonAtomReview, Document, DocumentKind, Finding, Project,
+    ComparisonPair, ComparisonRun, ComparisonAtomReview, Document, DocumentKind, Fragment, Finding, Project,
     RequirementAnalysis, RequirementVerification, TURequirement, ReviewState,
 )
 from app.requirements.router import (
@@ -23,6 +23,10 @@ from app.requirements.router import (
     _lock_project_for_analysis, _analyze_project_requirements, get_project_requirements,
 )
 from app.requirements.znp_first import ZnPFirstAgent
+from app.requirements.atomization import atomize_fragments
+from app.requirements.source_coverage import (
+    source_coverage_ledger, source_coverage_summary,
+)
 from app.requirements.checkpoints import CheckpointedDeepSeek
 from app.ai.deepseek import DeepSeekClient
 from app.requirements.schemas import (
@@ -204,8 +208,12 @@ def get_comparison(project_id: str, pair_id: str, db: Session = Depends(get_db))
 
 @router.post("/projects/{project_id}/comparisons/{pair_id}/runs", status_code=201)
 def execute_comparison(project_id: str, pair_id: str, test_mode: bool = False,
+                       allow_incomplete_sources: bool = False,
                        db: Session = Depends(get_db)):
-    return run_comparison(project_id, pair_id, db, test_mode=test_mode)
+    return run_comparison(
+        project_id, pair_id, db, test_mode=test_mode,
+        allow_incomplete_sources=allow_incomplete_sources,
+    )
 
 
 def run_comparison(
@@ -213,6 +221,7 @@ def run_comparison(
     progress_callback: Callable[[str, int, int, str | None], None] | None = None,
     *,
     test_mode: bool = False,
+    allow_incomplete_sources: bool = False,
     checkpoint_job_id: str | None = None,
     checkpoint_session_factory=None,
 ):
@@ -261,6 +270,7 @@ def run_comparison(
                     znp_document_id=pair.znp_document_id,
                     force=False,
                     test_mode=test_mode,
+                    allow_incomplete_sources=allow_incomplete_sources,
                 ), db, agent, progress_callback=progress_callback,
                 on_published=None if test_mode else publish,
             )
@@ -285,6 +295,26 @@ def run_comparison(
         if hasattr(agent.ai, "close"):
             agent.ai.close()
 
+
+
+@router.get("/projects/{project_id}/comparisons/{pair_id}/source-coverage")
+def get_source_coverage(project_id: str, pair_id: str,
+                        db: Session = Depends(get_db)):
+    """No-API source completeness preflight before a paid full comparison."""
+    pair = _pair(db, project_id, pair_id)
+    fragments = db.scalars(select(Fragment).where(
+        Fragment.document_id == pair.znp_document_id,
+    ).order_by(Fragment.page, Fragment.position)).all()
+    if not fragments:
+        return {
+            "available": False, "complete": False,
+            "unclassified_count": 0,
+            "message": "Документ не имеет индексированных исходных фрагментов.",
+        }
+    ledger = source_coverage_ledger(
+        fragments, atomize_fragments(pair.znp_document_id, fragments),
+    )
+    return {"available": True, **source_coverage_summary(ledger)}
 
 
 @router.get("/projects/{project_id}/comparisons/{pair_id}/runs")

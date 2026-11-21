@@ -31,6 +31,7 @@ type OperationInput = {
   pair_ids?: string[]
   refresh?: boolean
   test_mode?: boolean
+  allow_incomplete_sources?: boolean
   run_id?: string
   atom_id?: string
 }

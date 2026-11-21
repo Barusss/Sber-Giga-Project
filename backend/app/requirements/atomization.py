@@ -148,6 +148,17 @@ def atomize_fragments(document_id: str, fragments: Sequence[Fragment]) -> list[D
         if parent_unresolved:
             warnings += ("parent_scope_unresolved", "context_scope_requires_review")
         warnings = tuple(dict.fromkeys(warnings))
+        if clause.section_path and re.search(
+            r"(?:^| / )приложение\s+(?:№\s*)?(?:\d{1,3}|[А-ЯЁA-Z])(?=[\s.:—–-]|$)",
+            clause.section_path, re.IGNORECASE,
+        ):
+            # Appendix table cells may encode parameter/exception context.
+            # Preserving them for matching does NOT prove scope and cannot
+            # create an automatic engineering confirmation.
+            warnings = tuple(dict.fromkeys((
+                *warnings, "appendix_scope_requires_review",
+                "context_scope_requires_review",
+            )))
         sources = []
         cursor = 0
         for fragment_id in clause.fragment_ids:

@@ -1,0 +1,265 @@
+"""Exhaustive ZnP source ledger and safe technical-annex regression tests.
+
+All tests are offline. No DeepSeek, embeddings or document uploads.
+"""
+from __future__ import annotations
+
+from dataclasses import asdict
+import json
+
+import pytest
+from docx import Document as WordDocument
+
+from app.core.models import Fragment
+from app.documents.parser import extract_blocks
+from app.requirements.atomization import AtomSource, DocumentAtom, atomize_fragments
+from app.requirements.extraction import extract_clauses
+from app.requirements.schemas import (
+    CheckRequirementsResponse, RequirementCategory,
+    RequirementCheckItem, RequirementStatus, TURequirement,
+)
+from app.requirements.source_coverage import (
+    apply_source_coverage_guard, source_coverage_ledger,
+    source_coverage_summary,
+)
+from scripts.audit_znp_source_coverage import audit_file, main
+
+
+def fragment(name, index, text, *, block_type="paragraph", section_path="Раздел 1"):
+    return Fragment(
+        id=name, document_id="doc", page=1, position=index,
+        text=text, block_type=block_type, section_path=section_path,
+    )
+
+
+def test_ledger_accounts_for_every_fragment_and_never_silently_excludes_technical():
+    requirement = fragment("source", 1, "1.1. Установить защиту 10 кВ.")
+    heading = fragment("context", 0, "Раздел 1. Оборудование", block_type="heading")
+    toc = fragment("toc", 2, "1. Общие положения ........ 3", block_type="toc")
+    missing = fragment("annex", 3, "Приложение: параметры РЗА 10 кВ.")
+    atom = DocumentAtom(
+        "atom", "doc", "1.1", requirement.text, "Раздел 1",
+        (AtomSource("source", 1, 0, len(requirement.text), requirement.text),),
+        (AtomSource("context", 1, 0, len(heading.text), heading.text),),
+        (),
+    )
+    ledger = source_coverage_ledger([heading, requirement, toc, missing], [atom])
+    assert ledger["total_fragments"] == 4
+    assert ledger["by_role"] == {
+        "context_only": 1, "atom_source": 1, "excluded": 1, "unclassified": 1,
+    }
+    assert ledger["unclassified_fragment_ids"] == ["annex"]
+    assert ledger["unclassified_by_block_type"] == {"paragraph": 1}
+    assert not ledger["complete"]
+    assert "параметры РЗА" not in json.dumps(ledger, ensure_ascii=False)
+    assert "records" not in source_coverage_summary(ledger)
+
+
+def test_unknown_fragment_provenance_is_not_counted_as_complete():
+    source = fragment("source", 0, "1.1. Предусмотреть защиту.")
+    atom = DocumentAtom(
+        "atom", "doc", "1.1", source.text, source.section_path,
+        (AtomSource("not-in-document", 1, 0, 2, "XX"),), (), (),
+    )
+    with pytest.raises(ValueError, match="absent parser fragments"):
+        source_coverage_ledger([source], [atom])
+
+
+def test_unclassified_fragments_downgrade_only_automatic_fulfilled():
+    requirement = TURequirement(
+        id="t1", clause_number="1.1", category=RequirementCategory.other,
+        text="Установить защиту 10 кВ.",
+    )
+    fulfilled = RequirementCheckItem(
+        id="r1", requirement=requirement, status=RequirementStatus.fulfilled,
+        automatic_status=RequirementStatus.fulfilled, confidence_score=.99,
+        reasoning="Подтверждено.",
+    )
+    other = RequirementCheckItem(
+        id="r2", requirement=requirement, status=RequirementStatus.needs_review,
+        confidence_score=0.0, reasoning="Нет доказательств.",
+    )
+    response = CheckRequirementsResponse(
+        checked_requirements=[fulfilled, other],
+        stats={"fulfilled": 1, "needs_review": 1, "total": 2},
+        trace_info={"degraded": False},
+    )
+    ledger = source_coverage_ledger(
+        [fragment("missing", 0, "Напряжение 10 кВ.")], [],
+    )
+    apply_source_coverage_guard(response, ledger)
+    assert response.stats["fulfilled"] == 0
+    assert response.stats["needs_review"] == 2
+    assert fulfilled.status == RequirementStatus.needs_review
+    assert fulfilled.automatic_status == RequirementStatus.needs_review
+    assert fulfilled.confidence_score == 0.0
+    assert fulfilled.validation_details["source_coverage_incomplete"]
+    assert response.trace_info["source_coverage"]["downgraded_fulfilled"] == 1
+    assert response.trace_info["degraded"] is True
+    assert other.reasoning == "Нет доказательств."
+
+
+def test_complete_ledger_preserves_fulfilled_and_confidence():
+    requirement = TURequirement(
+        id="t", clause_number="1", category=RequirementCategory.other,
+        text="Установить защиту.",
+    )
+    row = RequirementCheckItem(
+        id="r", requirement=requirement, status=RequirementStatus.fulfilled,
+        confidence_score=.91,
+    )
+    response = CheckRequirementsResponse(
+        checked_requirements=[row], stats={"fulfilled": 1, "total": 1},
+    )
+    source = fragment("s", 1, "1. Установить защиту.")
+    atom = atomize_fragments("doc", [source])[0]
+    ledger = source_coverage_ledger([source], [atom])
+    assert ledger["complete"]
+    apply_source_coverage_guard(response, ledger)
+    assert row.status == RequirementStatus.fulfilled
+    assert row.confidence_score == .91
+    assert response.stats["fulfilled"] == 1
+    assert response.trace_info["source_coverage"]["complete"]
+
+
+def test_technical_annex_is_extracted_and_carries_scope_warning():
+    heading = fragment(
+        "h", 0, "Приложение 1. Параметры защит",
+        block_type="heading", section_path="Приложение 1. Параметры защит",
+    )
+    row = fragment(
+        "row", 1, "1. Уставка защиты КЛ-1 — 10 кВ.",
+        block_type="table_row", section_path=heading.section_path,
+    )
+    row.container_id = "docx-table-1"
+    # Existing nonconservative TU behavior is unchanged.
+    assert extract_clauses([heading, row], conservative=False) == []
+    atoms = atomize_fragments("doc", [heading, row])
+    assert len(atoms) == 1
+    assert atoms[0].sources[0].fragment_id == "row"
+    assert "appendix_scope_requires_review" in atoms[0].warnings
+    ledger = source_coverage_ledger([heading, row], atoms)
+    assert ledger["complete"]
+
+
+def test_abbreviations_annex_stays_service_not_automatically_requirement():
+    heading = fragment(
+        "h", 0, "Приложение А. Перечень сокращений",
+        block_type="heading", section_path="Приложение А. Перечень сокращений",
+    )
+    row = fragment(
+        "row", 1, "КЛ — кабельная линия",
+        block_type="table_row", section_path=heading.section_path,
+    )
+    row.container_id = "docx-table-1"
+    assert extract_clauses([heading, row], conservative=True) == []
+    ledger = source_coverage_ledger([heading, row], [])
+    assert ledger["unclassified_count"] == 2
+    assert not ledger["complete"]
+
+
+def test_original_docx_annex_table_reaches_atoms_with_exact_sources(tmp_path):
+    word = WordDocument()
+    word.add_heading("Задание на проектирование", level=1)
+    word.add_heading("Приложение 2. Параметры РЗА", level=1)
+    t = word.add_table(rows=1, cols=1)
+    t.cell(0, 0).text = "1. КЛ-1: напряжение 10 кВ."
+    path = tmp_path / "source.docx"
+    word.save(path)
+    ledger, fragments = audit_file(path)
+    assert ledger["total_fragments"] == len(fragments)
+    assert ledger["atoms"] >= 1
+    table = [fragment for fragment in fragments if fragment.block_type == "table_row"]
+    assert len(table) == 1
+    row_record = next(record for record in ledger["records"]
+                      if record["fragment_id"] == table[0].id)
+    assert row_record["role"] == "atom_source"
+
+
+def test_cli_never_writes_raw_private_text_without_explicit_opt_in(tmp_path, capsys):
+    word = WordDocument()
+    word.add_heading("Приложение А. Перечень сокращений", level=1)
+    table = word.add_table(rows=1, cols=1)
+    table.cell(0, 0).text = "Секретное приложение: КЛ-2, 120 мм²"
+    path = tmp_path / "source.docx"
+    word.save(path)
+    out = tmp_path / "diagnostics" / "audit.json"
+    assert main(["--znp", str(path), "--out", str(out)]) == 0
+    assert "Секретное" not in out.read_text(encoding="utf-8")
+    assert "Секретное" not in capsys.readouterr().out
+    private = tmp_path / "private" / "unclassified.jsonl"
+    assert main([
+        "--znp", str(path), "--out", str(out),
+        "--private-review", str(private),
+    ]) == 0
+    assert private.is_file()
+    assert "Секретное" in private.read_text(encoding="utf-8")
+
+
+
+@pytest.mark.parametrize("source_text,kind", [
+    ("10", "table_row"),
+    ("6", "paragraph"),
+    ("А", "table_row"),
+    ("0,4", "table_row"),
+])
+def test_short_numeric_and_table_cells_are_not_silently_excluded(source_text, kind):
+    value = fragment("table-value", 0, source_text, block_type=kind)
+    ledger = source_coverage_ledger([value], [])
+    assert ledger["by_role"].get("excluded", 0) == 0
+    assert ledger["unclassified_fragment_ids"] == ["table-value"]
+
+
+
+def test_source_ledger_ids_match_prior_parent_scope_audit(tmp_path):
+    """Exact old audit ID scheme lets Codex reconcile all original fragments."""
+    from scripts.audit_znp_parent_scope import audit_znp
+
+    word = WordDocument()
+    word.add_heading("Раздел 1", level=1)
+    word.add_paragraph("1.1. Для КЛ-1 предусмотреть 10 кВ.")
+    path = tmp_path / "same.docx"
+    word.save(path)
+    ledger, _ = audit_file(path)
+    previous = audit_znp(path)
+    assert ledger["source_sha256"] == previous["source_sha256"]
+    assert [row["fragment_id"] for row in ledger["records"]] == [
+        row["id"] for row in previous["fragments"]
+    ]
+    assert [row["text_sha256"] for row in ledger["records"]] == [
+        row["text_hash"] for row in previous["fragments"]
+    ]
+
+
+
+def test_number_sign_appendix_requires_manual_scope_review():
+    heading = fragment(
+        "h", 0, "Приложение № 2. Настройки РЗА",
+        block_type="heading", section_path="Приложение № 2. Настройки РЗА",
+    )
+    row = fragment(
+        "r", 1, "1. Предусмотреть уставку 10 кВ.",
+        block_type="table_row", section_path=heading.section_path,
+    )
+    row.container_id = "docx-table-1"
+    atoms = atomize_fragments("doc", [heading, row])
+    assert len(atoms) == 1
+    assert "appendix_scope_requires_review" in atoms[0].warnings
+
+
+def test_normative_catalog_does_not_drop_unnumbered_applicability_rule():
+    section = "Приложение А. Перечень нормативных документов"
+    heading = fragment("catalog", 0, section, block_type="heading", section_path=section)
+    rule = fragment(
+        "rule", 1,
+        "В настоящем приложении приведены нормативные документы. "
+        "При их изменении проектировщик должен согласовать применяемую редакцию.",
+        section_path=section,
+    )
+    reference = fragment("reference", 2, "100. ГОСТ Р 12345-2024. Требования к защите.", section_path=section)
+    atoms = atomize_fragments("doc", [heading, rule, reference])
+    assert any(s.fragment_id == "rule" for a in atoms for s in a.sources)
+    assert any("appendix_scope_requires_review" in a.warnings for a in atoms)
+    ledger = source_coverage_ledger([heading, rule, reference], atoms)
+    assert next(r for r in ledger["records"] if r["fragment_id"] == "rule")["role"] == "atom_source"
+    assert next(r for r in ledger["records"] if r["fragment_id"] == "reference")["role"] == "unclassified"

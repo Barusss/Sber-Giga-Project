@@ -112,6 +112,7 @@ class AnalyzeProjectRequirementsRequest(BaseModel):
     znp_document_id: Optional[str] = None
     force: bool = False
     test_mode: bool = False
+    allow_incomplete_sources: bool = False
 
 
 # REST schemas for the persisted DPazY models (manual storage and human review).

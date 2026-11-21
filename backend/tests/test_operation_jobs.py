@@ -358,7 +358,8 @@ def test_comparison_details_are_persisted_while_running(ops_client, monkeypatch)
     assert completed["result"]["comparison_progress"]["stage"] == "snapshot"
 
 
-def test_comparison_can_pause_and_resume_same_operation(ops_client, monkeypatch):
+@pytest.mark.parametrize("allow_incomplete", [False, True])
+def test_comparison_can_pause_and_resume_same_operation(ops_client, monkeypatch, allow_incomplete):
     project = create_project(ops_client)
     tu = create_document(ops_client, project, "tu", monkeypatch)
     znp = create_document(ops_client, project, "znp", monkeypatch)
@@ -369,9 +370,11 @@ def test_comparison_can_pause_and_resume_same_operation(ops_client, monkeypatch)
     started = Event()
     continue_run = Event()
     attempts = []
+    permissions = []
 
     def worker(pid, comparison_id, db, progress_callback=None, **kwargs):
         attempts.append(kwargs.get("checkpoint_job_id"))
+        permissions.append(kwargs.get("allow_incomplete_sources"))
         progress_callback("verifying", 1, 2, "1.1")
         if len(attempts) == 1:
             started.set()
@@ -382,6 +385,7 @@ def test_comparison_can_pause_and_resume_same_operation(ops_client, monkeypatch)
     monkeypatch.setattr("app.operations.execute_comparison", worker)
     created = ops_client.post(f"/api/v1/projects/{project}/operations", json={
         "kind": "comparison", "pair_ids": [pair],
+        "allow_incomplete_sources": allow_incomplete,
     })
     assert created.status_code == 202
     job_id = created.json()["id"]
@@ -415,3 +419,4 @@ def test_comparison_can_pause_and_resume_same_operation(ops_client, monkeypatch)
     assert finished["status"] == "completed"
     assert finished["result"]["runs"] == [{"pair_id": pair, "run_id": "resumed-result"}]
     assert attempts == [job_id, job_id]
+    assert permissions == [allow_incomplete, allow_incomplete]

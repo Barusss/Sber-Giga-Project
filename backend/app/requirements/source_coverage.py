@@ -1,0 +1,161 @@
+"""Source completeness ledger for conservative ZnP extraction.
+
+Never infer that a parser fragment is safe to ignore just because it was
+not extracted into an atom. Only unambiguously administrative/empty fragments
+receive an excluded role; remaining gaps need manual classification.
+
+The ledger contains provenance hashes and IDs, never private source text.
+"""
+from __future__ import annotations
+
+from collections import Counter
+from hashlib import sha256
+from typing import Sequence
+
+from app.core.models import Fragment
+from app.requirements.atomization import DocumentAtom
+from app.requirements.extraction import is_noise, is_toc_line
+
+
+def _skip_reason(fragment: Fragment) -> str | None:
+    text = (fragment.text or "").strip()
+    if not text:
+        return "empty"
+    if fragment.block_type == "page_furniture":
+        return "page_furniture"
+    if fragment.block_type == "toc" or is_toc_line(text):
+        return "toc"
+    if text.casefold().strip(" .:") in ("оглавление", "содержание"):
+        return "toc_heading"
+    # A short table cell such as "10", "6" or "А" can be an electrical
+    # parameter. Never classify it as disposable noise just because it is
+    # short or numeric. The same applies to standalone numeric values.
+    if fragment.block_type == "table_row" or text.isdecimal():
+        return None
+    if is_noise(text):
+        return "noise"
+    return None
+
+
+def source_coverage_ledger(
+    fragments: Sequence[Fragment],
+    atoms: Sequence[DocumentAtom],
+) -> dict:
+    """Classify each fragment as source, context, excluded, or unclassified.
+
+    This audits the full *parser* output, not the semantic search candidates.
+    No generated verdict or LLM response influences classification.
+    """
+    source_ids = {s.fragment_id for atom in atoms for s in atom.sources}
+    context_ids = {s.fragment_id for atom in atoms for s in atom.context_sources}
+    by_role = Counter()
+    unclassified_by_block_type = Counter()
+    excluded_by_reason = Counter()
+    records = []
+    seen = set()
+    for fragment in fragments:
+        if fragment.id in seen:
+            raise ValueError(f"Duplicate source fragment ID: {fragment.id}")
+        seen.add(fragment.id)
+        reason = None
+        if fragment.id in source_ids:
+            role = "atom_source"
+        elif fragment.id in context_ids:
+            role = "context_only"
+        else:
+            reason = _skip_reason(fragment)
+            role = "excluded" if reason else "unclassified"
+            if role == "unclassified":
+                unclassified_by_block_type[fragment.block_type or "unknown"] += 1
+            else:
+                excluded_by_reason[reason] += 1
+        by_role[role] += 1
+        records.append({
+            "fragment_id": fragment.id,
+            "page": fragment.page,
+            "position": fragment.position,
+            "block_type": fragment.block_type,
+            "container_id": getattr(fragment, "container_id", None),
+            "section_hash": sha256(
+                (fragment.section_path or "").encode("utf-8")
+            ).hexdigest(),
+            "text_sha256": sha256(
+                (fragment.text or "").encode("utf-8")
+            ).hexdigest(),
+            "role": role,
+            "reason": reason,
+        })
+    missing = (source_ids | context_ids) - seen
+    if missing:
+        raise ValueError(
+            f"Atom provenance refers to {len(missing)} absent parser fragments"
+        )
+    if sum(by_role.values()) != len(fragments):
+        raise AssertionError("Source coverage must account for all parser fragments")
+    return {
+        "schema": "znp-source-coverage-v1",
+        "total_fragments": len(fragments),
+        "atoms": len(atoms),
+        "by_role": dict(by_role),
+        "unclassified_by_block_type": dict(unclassified_by_block_type),
+        "excluded_by_reason": dict(excluded_by_reason),
+        "unclassified_fragment_ids": [
+            item["fragment_id"] for item in records
+            if item["role"] == "unclassified"
+        ],
+        "unclassified_count": by_role["unclassified"],
+        "complete": by_role["unclassified"] == 0,
+        "records": records,
+    }
+
+
+def source_coverage_summary(ledger: dict) -> dict:
+    """Compact report-safe summary, not a list of private fragment contents."""
+    return {
+        key: ledger[key] for key in (
+            "schema", "total_fragments", "atoms", "by_role",
+            "unclassified_by_block_type", "excluded_by_reason",
+            "unclassified_fragment_ids", "unclassified_count", "complete",
+        )
+    }
+
+
+def apply_source_coverage_guard(response, ledger: dict) -> None:
+    """Keep a finished AI pass visible, but NEVER auto-fulfill an incomplete ZnP.
+
+    Unclassified fragments may contain crucial annex restrictions. They must
+    first be explained or recovered, regardless of how optimistic the LLM is.
+    This modifies a fresh automated response, not historical human decisions.
+    """
+    from app.requirements.schemas import RequirementStatus
+
+    if response.trace_info is None:
+        response.trace_info = {}
+    response.trace_info["source_coverage"] = source_coverage_summary(ledger)
+    if ledger["complete"]:
+        return
+    response.trace_info["degraded"] = True
+    downgraded = 0
+    for item in response.checked_requirements:
+        if item.status != RequirementStatus.fulfilled:
+            continue
+        item.status = RequirementStatus.needs_review
+        item.automatic_status = RequirementStatus.needs_review
+        item.confidence_score = 0.0
+        suffix = (
+            "Полнота исходного ЗнП не подтверждена: "
+            f"{ledger['unclassified_count']} фрагментов не классифицированы. "
+            "Автоматическое соответствие отложено до проверки источников."
+        )
+        item.reasoning = ((item.reasoning or "").rstrip() + " " + suffix).strip()
+        details = dict(item.validation_details or {})
+        details["source_coverage_incomplete"] = True
+        item.validation_details = details
+        downgraded += 1
+    response.trace_info["source_coverage"]["downgraded_fulfilled"] = downgraded
+    response.stats = {
+        status.value: sum(
+            item.status == status for item in response.checked_requirements
+        ) for status in RequirementStatus
+    }
+    response.stats["total"] = len(response.checked_requirements)
