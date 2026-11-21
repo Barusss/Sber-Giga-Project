@@ -229,3 +229,19 @@ def test_source_ledger_ids_match_prior_parent_scope_audit(tmp_path):
     assert [row["text_sha256"] for row in ledger["records"]] == [
         row["text_hash"] for row in previous["fragments"]
     ]
+
+
+
+def test_number_sign_appendix_requires_manual_scope_review():
+    heading = fragment(
+        "h", 0, "Приложение № 2. Настройки РЗА",
+        block_type="heading", section_path="Приложение № 2. Настройки РЗА",
+    )
+    row = fragment(
+        "r", 1, "1. Предусмотреть уставку 10 кВ.",
+        block_type="table_row", section_path=heading.section_path,
+    )
+    row.container_id = "docx-table-1"
+    atoms = atomize_fragments("doc", [heading, row])
+    assert len(atoms) == 1
+    assert "appendix_scope_requires_review" in atoms[0].warnings
