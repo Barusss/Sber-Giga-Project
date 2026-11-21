@@ -45,8 +45,9 @@ def request_fingerprint(system_prompt: str, user_prompt: str) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def checkpoint_counts(job_id: str) -> dict:
-    with SessionLocal() as db:
+def checkpoint_counts(job_id: str, session_factory=None) -> dict:
+    factory = session_factory or SessionLocal
+    with factory() as db:
         rows = db.scalars(select(ComparisonLLMCheckpoint).where(
             ComparisonLLMCheckpoint.job_id == job_id,
         )).all()
@@ -82,16 +83,17 @@ class CheckpointedDeepSeek:
     silently reused. The exact prompts and model configuration form the key.
     """
 
-    def __init__(self, job_id: str, model):
+    def __init__(self, job_id: str, model, session_factory=None):
         self.job_id = job_id
         self.model = model
+        self.session_factory = session_factory or SessionLocal
         self.ledger = None
 
     def bind_ledger(self, ledger) -> None:
         self.ledger = ledger
 
     def check_control(self) -> None:
-        with SessionLocal() as db:
+        with self.session_factory() as db:
             _control(db, self.job_id)
 
     def _identity(self, system_prompt: str, user_prompt: str):
@@ -102,7 +104,7 @@ class CheckpointedDeepSeek:
 
     def checkpoint_lookup(self, *, system_prompt: str, user_prompt: str):
         fingerprint, phase = self._identity(system_prompt, user_prompt)
-        with SessionLocal() as db:
+        with self.session_factory() as db:
             job = _control(db, self.job_id)
             row = db.scalar(select(ComparisonLLMCheckpoint).where(
                 ComparisonLLMCheckpoint.job_id == self.job_id,
@@ -130,7 +132,7 @@ class CheckpointedDeepSeek:
         if cached is not None:
             return cached
         fingerprint, phase = self._identity(system_prompt, user_prompt)
-        with SessionLocal() as db:
+        with self.session_factory() as db:
             job = _control(db, self.job_id)
             rows = db.scalars(select(ComparisonLLMCheckpoint).where(
                 ComparisonLLMCheckpoint.job_id == self.job_id,
@@ -172,7 +174,7 @@ class CheckpointedDeepSeek:
             if not isinstance(result, dict):
                 raise ValueError("DeepSeek must return a JSON object")
         except Exception as exc:
-            with SessionLocal() as db:
+            with self.session_factory() as db:
                 row = db.scalar(select(ComparisonLLMCheckpoint).where(
                     ComparisonLLMCheckpoint.job_id == self.job_id,
                     ComparisonLLMCheckpoint.fingerprint == fingerprint,
@@ -190,7 +192,7 @@ class CheckpointedDeepSeek:
                 "Повтор запроса требует подтверждения из-за возможного списания."
             ) from exc
 
-        with SessionLocal() as db:
+        with self.session_factory() as db:
             row = db.scalar(select(ComparisonLLMCheckpoint).where(
                 ComparisonLLMCheckpoint.job_id == self.job_id,
                 ComparisonLLMCheckpoint.fingerprint == fingerprint,
