@@ -15,21 +15,26 @@ from threading import Lock
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 from starlette.datastructures import Headers
 
 from app.core.config import settings
 from app.core.db import SessionLocal, get_db
 from app.core.models import (
-    ComparisonPair, Document, DocumentKind, OperationJob, Project,
-    ReviewState, now,
+    ComparisonPair, ComparisonRun, ComparisonAtomReview, ComparisonLLMCheckpoint,
+    Document, DocumentKind, OperationJob, Project, ReviewState, now,
 )
 from app.documents.parser import extract_blocks
 from app.documents.router import _read_upload, _save_document
 from app.normatives.extraction import extract_normative_facts
 from app.normatives.verification import DEFAULT_STANDARDS_BATCH, check_document_standards
 from app.requirements.workspace import run_comparison as execute_comparison
+from app.requirements.atom_review import run_atom_recheck
+from app.requirements.checkpoints import (
+    ComparisonPause, ComparisonInterrupted, ComparisonUncertain,
+    checkpoint_counts,
+)
 
 router = APIRouter(tags=["operations"])
 logger = logging.getLogger(__name__)
@@ -38,8 +43,9 @@ _enqueue_lock = Lock()
 # OCR / registry / LLM requests occupy database sessions. Pending jobs remain
 # queued in PostgreSQL and do not open a database session until a worker starts.
 _workers = ThreadPoolExecutor(max_workers=2, thread_name_prefix="operation")
-ACTIVE = ("queued", "running")
-KINDS = ("normative_extract", "normative_check", "comparison", "comparison_batch")
+ACTIVE = ("queued", "running", "paused")
+COMPARISON_KINDS = ("comparison", "comparison_batch", "comparison_atom_recheck")
+KINDS = ("normative_extract", "normative_check", *COMPARISON_KINDS)
 
 
 class OperationRequest(BaseModel):
@@ -48,6 +54,8 @@ class OperationRequest(BaseModel):
     pair_ids: list[str] = Field(default_factory=list, max_length=100)
     refresh: bool = False
     test_mode: bool = False
+    run_id: str | None = None
+    atom_id: str | None = None
 
 
 def _project(db: Session, project_id: str) -> Project:
@@ -66,6 +74,13 @@ def _out(job: OperationJob) -> dict:
         "document_id": job.params.get("document_id"),
         "pair_ids": job.params.get("pair_ids", []),
         "test_mode": bool(job.params.get("test_mode", False)),
+        "run_id": job.params.get("run_id"),
+        "atom_id": job.params.get("atom_id"),
+        "pause_requested": bool(job.pause_requested),
+        "checkpoint": (
+            checkpoint_counts(job.id, SessionLocal)
+            if job.kind in COMPARISON_KINDS else None
+        ),
         "filename": job.params.get("filename"),
         "progress_current": job.progress_current,
         "progress_total": job.progress_total,
@@ -190,9 +205,13 @@ COMPARISON_STAGES = {
 
 def _run_comparisons(db: Session, job: OperationJob) -> dict:
     pair_ids = job.params["pair_ids"]
-    results = []
-    last_progress = None
+    previous = job.result or {}
+    results = list(previous.get("runs") or [])
+    done = {entry.get("pair_id") for entry in results}
+    last_progress = previous.get("comparison_progress")
     for index, pair_id in enumerate(pair_ids):
+        if pair_id in done:
+            continue
         if _cancelled(db, job.id):
             raise _JobCancelled()
         _update(db, job.id, stage="reading",
@@ -228,6 +247,12 @@ def _run_comparisons(db: Session, job: OperationJob) -> dict:
                 "remaining_seconds": estimate,
             }
             message = COMPARISON_STAGES[stage]
+            with SessionLocal() as control_db:
+                control = control_db.get(OperationJob, job.id)
+                if control is None or control.pause_requested:
+                    raise ComparisonPause("Пауза после завершённого шага")
+                if control.cancel_requested:
+                    raise _JobCancelled()
             if stage == "verifying" and clause_number:
                 message = f"Анализ положения ЗнП {clause_number}"
             # Independent short transaction: the analysis session may hold a
@@ -240,8 +265,11 @@ def _run_comparisons(db: Session, job: OperationJob) -> dict:
         kwargs = {"progress_callback": report}
         if job.params.get("test_mode", False):
             kwargs["test_mode"] = True
+        kwargs["checkpoint_job_id"] = job.id
+        kwargs["checkpoint_session_factory"] = SessionLocal
         result = execute_comparison(job.project_id, pair_id, db, **kwargs)
         results.append({"pair_id": pair_id, "run_id": result["run"]["id"]})
+        done.add(pair_id)
         _update(db, job.id, stage="comparing",
                 message=f"Выполнено сверок: {index + 1} из {len(pair_ids)}",
                 current=index + 1, total=len(pair_ids),
@@ -253,20 +281,88 @@ class _JobCancelled(Exception):
     pass
 
 
+def _run_atom_recheck(db: Session, job: OperationJob) -> dict:
+    if job.cancel_requested:
+        raise _JobCancelled()
+    _update(
+        db, job.id, stage="verifying",
+        message="Повторная ИИ-проверка выбранного положения ЗнП",
+        current=0, total=1,
+    )
+    previous = db.scalar(select(ComparisonAtomReview).where(
+        ComparisonAtomReview.job_id == job.id,
+    ))
+    if previous is not None:
+        return {
+            "review_id": previous.id,
+            "run_id": previous.run_id,
+            "atom_id": previous.atom_id,
+        }
+    result = run_atom_recheck(
+        db, project_id=job.project_id,
+        pair_id=job.params["pair_ids"][0],
+        run_id=job.params["run_id"],
+        atom_id=job.params["atom_id"],
+        job_id=job.id,
+        session_factory=SessionLocal,
+    )
+    _update(db, job.id, stage="snapshot", current=1, total=1)
+    return result
+
+
+def recover_pending_operations() -> None:
+    """Single-API-instance restart recovery; unfinished provider calls need consent."""
+    if ":memory:" in settings.database_url:
+        return
+    to_start = []
+    with SessionLocal() as db:
+        rows = db.scalars(select(OperationJob).where(
+            OperationJob.kind.in_(COMPARISON_KINDS),
+            OperationJob.status.in_(("queued", "running")),
+        )).all()
+        for job in rows:
+            uncertain = db.scalar(select(ComparisonLLMCheckpoint.id).where(
+                ComparisonLLMCheckpoint.job_id == job.id,
+                ComparisonLLMCheckpoint.status.in_(("sent", "failed")),
+            ).limit(1))
+            if job.pause_requested or uncertain:
+                job.status = "paused"
+                job.message = (
+                    "Требуется подтверждение повторного запроса после сбоя"
+                    if uncertain else "Операция поставлена на паузу"
+                )
+            else:
+                job.status = "queued"
+                job.stage = "recovering"
+                job.message = "Восстановление после перезапуска сервера"
+                to_start.append(job.id)
+            job.updated_at = now()
+        db.commit()
+    for job_id in to_start:
+        _workers.submit(_worker, job_id)
+
+
 def _worker(job_id: str):
     with SessionLocal() as db:
-        job = db.get(OperationJob, job_id)
-        if job is None:
+        claimed = db.execute(update(OperationJob).where(
+            OperationJob.id == job_id,
+            OperationJob.status == "queued",
+            OperationJob.pause_requested.is_(False),
+        ).values(status="running", stage="starting",
+                 message="Подготовка операции", updated_at=now()))
+        db.commit()
+        if not claimed.rowcount:
             return
+        job = db.get(OperationJob, job_id)
         try:
-            _update(db, job_id, status="running", stage="starting",
-                    message="Подготовка операции")
             if job.kind == "upload":
                 result = _run_upload(db, job)
             elif job.kind == "normative_extract":
                 result = _run_extract(db, job)
             elif job.kind == "normative_check":
                 result = _run_check(db, job)
+            elif job.kind == "comparison_atom_recheck":
+                result = _run_atom_recheck(db, job)
             else:
                 result = _run_comparisons(db, job)
             _update(db, job_id, status="completed", stage="complete",
@@ -275,6 +371,11 @@ def _worker(job_id: str):
             db.rollback()
             _update(db, job_id, status="cancelled", stage="cancelled",
                     message="Операция остановлена")
+        except ComparisonPause as exc:
+            db.rollback()
+            label = str(exc) or "Операция приостановлена"
+            _update(db, job_id, status="paused", stage="paused",
+                    message="Прогресс сохранён. Можно продолжить.", error=label)
         except Exception as exc:
             logger.exception("Background operation failed: %s", job_id)
             db.rollback()
