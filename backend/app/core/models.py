@@ -276,9 +276,15 @@ class ComparisonPair(Base):
 class ComparisonRun(Base):
     """Snapshot of a completed analysis; earlier snapshots are not overwritten."""
     __tablename__ = "comparison_runs"
+    __table_args__ = (
+        UniqueConstraint("operation_job_id", "pair_id", name="uq_comparison_run_job_pair"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     pair_id: Mapped[str] = mapped_column(ForeignKey("comparison_pairs.id", ondelete="CASCADE"), index=True)
+    operation_job_id: Mapped[str | None] = mapped_column(
+        ForeignKey("operation_jobs.id", ondelete="SET NULL"), nullable=True, index=True,
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     result: Mapped[dict] = mapped_column(JSON().with_variant(JSONB(), "postgresql"))
     is_current: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
