@@ -88,6 +88,7 @@ def main(argv: list[str] | None = None) -> int:
         "by_role": ledger["by_role"],
         "excluded_by_reason": ledger["excluded_by_reason"],
         "unclassified_by_block_type": ledger["unclassified_by_block_type"],
+        "review_hint_counts": ledger["review_hint_counts"],
         "complete": ledger["complete"],
     }, ensure_ascii=False, indent=2))
     return 0
