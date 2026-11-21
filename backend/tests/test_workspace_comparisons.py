@@ -5,7 +5,8 @@ from io import BytesIO
 from app.documents.parser import ExtractedBlock
 
 
-def prepare(client, monkeypatch, tu_count=1, znp_count=1):
+def prepare(client, monkeypatch, tu_count=1, znp_count=1,
+            znp_add_unclassified=False):
     def model(self, *, system_prompt, user_prompt):
         payload = json.loads(user_prompt)
         if "znp_atom" in payload or "znp_candidates" in payload:
@@ -17,7 +18,19 @@ def prepare(client, monkeypatch, tu_count=1, znp_count=1):
     def blocks(data, suffix):
         if data.startswith(b"tu"):
             return [ExtractedBlock(1, 0, "1.1. Предусмотреть максимальную мощность 150 кВт.")]
-        return [ExtractedBlock(2, 0, "2.1. Предусмотрена максимальная мощность 150 кВт.")]
+        znp = [ExtractedBlock(2, 0, "2.1. Предусмотрена максимальная мощность 150 кВт.")]
+        if znp_add_unclassified:
+            znp.extend([
+                ExtractedBlock(
+                    2, 1, "Приложение А. Перечень сокращений",
+                    block_type="heading", section_path="Приложение А. Перечень сокращений",
+                ),
+                ExtractedBlock(
+                    2, 2, "РЗА — релейная защита и автоматика",
+                    block_type="table_row", section_path="Приложение А. Перечень сокращений",
+                ),
+            ])
+        return znp
 
     monkeypatch.setattr("app.documents.router.extract_blocks", blocks)
     project = client.post("/api/v1/projects", json={"name": "Рабочий проект"}).json()
@@ -285,3 +298,49 @@ def test_source_coverage_preflight_is_read_only_and_uses_real_fragments(client, 
     assert data["unclassified_count"] == 0
     assert client.get(endpoint).json() == data
     assert client.get(f"{base}/{pair['id']}/runs").json() == []
+
+
+
+def test_incomplete_znp_preflight_blocks_paid_model_until_explicit_consent(
+        client, monkeypatch):
+    project_id, docs = prepare(client, monkeypatch, znp_add_unclassified=True)
+    base = f"/api/v1/projects/{project_id}/comparisons"
+    pair = client.post(base, json={"pairs": [{
+        "tu_document_id": docs["tu"][0],
+        "znp_document_id": docs["znp"][0],
+    }]}).json()[0]
+    preflight = client.get(f"{base}/{pair['id']}/source-coverage")
+    assert preflight.status_code == 200, preflight.text
+    assert not preflight.json()["complete"]
+    assert preflight.json()["unclassified_count"] >= 2
+
+    def forbidden_model(self, *, system_prompt, user_prompt):
+        raise AssertionError("No DeepSeek calls permitted before source consent")
+
+    monkeypatch.setattr(
+        "app.ai.deepseek.DeepSeekClient.complete_json", forbidden_model,
+    )
+    runs_url = f"{base}/{pair['id']}/runs"
+    refusal = client.post(runs_url)
+    assert refusal.status_code == 422, refusal.text
+    assert "No DeepSeek calls were made" in refusal.json()["detail"]
+    assert "allow_incomplete_sources" in refusal.json()["detail"]
+    assert client.get(runs_url).json() == []
+
+
+def test_authorized_incomplete_znp_run_marks_source_coverage_degraded(
+        client, monkeypatch):
+    project_id, docs = prepare(client, monkeypatch, znp_add_unclassified=True)
+    base = f"/api/v1/projects/{project_id}/comparisons"
+    pair = client.post(base, json={"pairs": [{
+        "tu_document_id": docs["tu"][0],
+        "znp_document_id": docs["znp"][0],
+    }]}).json()[0]
+    result = client.post(
+        f"{base}/{pair['id']}/runs?allow_incomplete_sources=true",
+    )
+    assert result.status_code == 201, result.text
+    report = result.json()["result"]
+    assert report["trace_info"]["source_coverage"]["unclassified_count"] >= 2
+    assert report["trace_info"]["degraded"]
+    assert report["stats"]["fulfilled"] == 0
