@@ -8,6 +8,7 @@ export type AnalysisTrace = {
     unclassified_count: number
     unclassified_by_block_type: Record<string, number>
     excluded_by_reason: Record<string, number>
+    review_hint_counts?: Record<string, number>
     unclassified_fragment_ids: string[]
     downgraded_fulfilled?: number
   }
@@ -199,6 +200,10 @@ export function AnalysisFallbackNotice({trace, items}: {
       <summary>Распределение непроверенных фрагментов</summary>
       <p>{Object.entries(trace?.source_coverage?.unclassified_by_block_type || {})
         .map(([name, count]) => `${name}: ${count}`).join('; ')}</p>
+      {(trace?.source_coverage?.review_hint_counts?.normative_reference_candidate ?? 0) > 0 &&
+        <p>Возможные библиографические записи:
+          {trace?.source_coverage?.review_hint_counts?.normative_reference_candidate}.
+          Их применимость ещё не подтверждена, и они остаются непроверенными.</p>}
     </details>}
     <p>ИИ рассматривал: {modelCount} из {items.length} требований.
       Без завершённой смысловой проверки: {fallbackCount}.
