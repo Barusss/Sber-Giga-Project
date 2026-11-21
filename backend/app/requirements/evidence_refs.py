@@ -40,6 +40,11 @@ def quote_choices(
             seen.add(part)
             spans.append(part)
 
+    # Never silently omit quote options: an omitted piece might be the only
+    # evidence needed to disprove an apparent positive match.
+    if len(spans) > limit or not spans:
+        return [], {}
+
     # Rank short evidence spans but do not alter their contents.
     # Never infer evidence from a title/parent text absent from the source.
     query_tokens = set(re.findall(r"\w+", against.casefold()))
