@@ -44,6 +44,10 @@ class ComparisonPause(BaseException):
     """Stop without allowing blanket except Exception to swallow this signal."""
 
 
+class ComparisonCancelled(ComparisonPause):
+    """User cancelled an operation, not a resumable pause."""
+
+
 class ComparisonUncertain(ComparisonPause):
     """Sent request has no durable answer; re-sending can incur another charge."""
 
@@ -99,7 +103,7 @@ def _control(db, job_id: str) -> OperationJob:
     if job.pause_requested or job.status == "paused":
         raise ComparisonPause("Операция поставлена на паузу")
     if job.cancel_requested or job.status == "cancelled":
-        raise ComparisonPause("Операция остановлена")
+        raise ComparisonCancelled("Операция остановлена")
     if job.status not in ("running", "queued"):
         raise ComparisonPause("Operation is not active")
     return job
