@@ -141,7 +141,7 @@ def test_batch_comparisons_complete_after_request_returns(ops_client, monkeypatc
     assert create.status_code == 201, create.text
     pair_ids = [p["id"] for p in create.json()]
 
-    def mock_run(pid, pair_id, db, progress_callback=None):
+    def mock_run(pid, pair_id, db, progress_callback=None, **kwargs):
         time.sleep(.09)
         return {"run": {"id": "saved-" + pair_id}}
 
@@ -308,7 +308,7 @@ def test_comparison_details_are_persisted_while_running(ops_client, monkeypatch)
     started = Event()
     release = Event()
 
-    def fake_run(pid, comparison_id, db, progress_callback=None):
+    def fake_run(pid, comparison_id, db, progress_callback=None, **kwargs):
         assert progress_callback is not None
         for stage in ("reading", "preparing", "embedding"):
             progress_callback(stage, 0, 4, None)
