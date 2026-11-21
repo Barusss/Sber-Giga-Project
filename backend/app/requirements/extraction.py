@@ -59,7 +59,7 @@ _IGNORED_HEADING_RE = tuple(
 # Annex titles are not automatically administrative material. Technical
 # specifications, parameter tables and restrictions frequently follow them.
 _ANNEX_HEADING_RE = re.compile(
-    r"^приложение\s+(?:\d{1,3}|[А-ЯЁA-Z])(?=\s|[.:—–-]|$)",
+    r"^приложение\s+(?:№\s*)?(?:\d{1,3}|[А-ЯЁA-Z])(?=\s|[.:—–-]|$)",
     re.IGNORECASE,
 )
 
