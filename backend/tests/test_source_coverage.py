@@ -411,3 +411,63 @@ def test_normative_catalog_hint_does_not_change_source_guard_behavior():
     assert ledger["review_hint_counts"]["normative_reference_candidate"] == 1
     assert source_coverage_summary(ledger)["complete"] is False
     assert ledger["by_role"]["unclassified"] == 1
+
+
+
+def test_pdf_image_with_native_header_still_uses_ocr(monkeypatch):
+    """Public PDF pattern: searchable colontitle over scanned requirement image."""
+    from io import BytesIO
+
+    import fitz
+    from PIL import Image
+
+    from app.documents.parser import ExtractedBlock, extract_blocks
+
+    pdf = fitz.open()
+    page = pdf.new_page(width=600, height=800)
+    picture = Image.new("RGB", (600, 800), color="white")
+    stream = BytesIO()
+    picture.save(stream, "PNG")
+    page.insert_image(page.rect, stream=stream.getvalue())
+    page.insert_text((40, 45), "Project report header with page number 107")
+    assert len(page.get_text()) > 30
+    visited_pages = []
+
+    def fake_page_ocr(page, image, page_idx, sections, toc_mode):
+        visited_pages.append(page_idx)
+        return [
+            ExtractedBlock(
+                page_idx, 0,
+                "1. Для КЛ предусмотреть защиту 10 кВ.",
+                "paragraph", None, None, "ocr",
+            ),
+        ], toc_mode
+
+    monkeypatch.setattr("app.documents.parser._ocr_page_blocks", fake_page_ocr)
+    result = extract_blocks(pdf.tobytes(), ".pdf")
+    pdf.close()
+    assert visited_pages == [1]
+    assert len(result) == 1
+    assert result[0].extraction_method == "ocr"
+    assert "10 кВ" in result[0].text
+
+
+def test_pdf_native_text_without_scan_does_not_use_ocr(monkeypatch):
+    import fitz
+    from app.documents.parser import extract_blocks
+
+    pdf = fitz.open()
+    page = pdf.new_page()
+    page.insert_text(
+        (40, 45),
+        "1. Install cable with voltage 10 kV, do not change any limits.",
+    )
+
+    def forbidden_ocr(*args, **kwargs):
+        raise AssertionError("No OCR should run for a text-only PDF")
+
+    monkeypatch.setattr("app.documents.parser._ocr_page_blocks", forbidden_ocr)
+    result = extract_blocks(pdf.tobytes(), ".pdf")
+    pdf.close()
+    assert result
+    assert all(block.extraction_method == "text" for block in result)
