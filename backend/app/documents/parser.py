@@ -3,6 +3,7 @@
 Physical DOCX page numbers cannot be known without rendering: page=1 is a
 logical placeholder, and its fragment type/section is preserved instead.
 """
+from collections import Counter
 from dataclasses import dataclass
 from io import BytesIO
 import re
@@ -67,21 +68,34 @@ def _extract_docx(data: bytes) -> list[ExtractedBlock]:
     doc = WordDocument(BytesIO(data))
     blocks: list[ExtractedBlock] = []
     headings: dict[int, str] = {}
+    elements = list(doc.iter_inner_content())
+    # Word sometimes formats TOC entries as actual Heading paragraphs,
+    # without dotted leaders or page numbers. Only recognise such entries
+    # when the same heading occurs later in the document body.
+    remaining_paragraphs = Counter(
+        item.text.strip() for item in elements
+        if isinstance(item, Paragraph) and item.text.strip()
+    )
     has_styled_headings = any(
         isinstance(item, Paragraph) and item.style
         and (item.style.name or "").lower().startswith(("heading", "заголовок"))
-        for item in doc.iter_inner_content()
+        for item in elements
     )
     in_toc = False
     table_index = 0
 
-    for element in doc.iter_inner_content():
+    for element in elements:
         if isinstance(element, Paragraph):
             content = element.text.strip()
             if not content:
                 continue
+            remaining_paragraphs[content] -= 1
             style = (element.style.name or "").lower() if element.style else ""
             level = heading_level(content, style, allow_unstyled=not has_styled_headings)
+            # Explicit Word TOC styles are structural provenance, not content.
+            if re.match(r"^toc(?:\s*\d+|\s+heading)?$", style):
+                blocks.append(ExtractedBlock(1, len(blocks), content, "toc"))
+                continue
 
             if content.casefold() in {"содержание", "оглавление"}:
                 in_toc = True
@@ -90,8 +104,14 @@ def _extract_docx(data: bytes) -> list[ExtractedBlock]:
                 continue
 
             if in_toc:
-                # TOC entries must not pollute the searchable chunks.
-                if _is_toc_entry(content) or _PAGE_FOOTER.match(content):
+                # When a heading is reproduced verbatim later, the first
+                # occurrence under an explicit TOC title is an index entry.
+                # Never use this heuristic outside an active TOC.
+                is_repeated_heading = (
+                    bool(level) and remaining_paragraphs[content] > 0
+                )
+                if (_is_toc_entry(content) or _PAGE_FOOTER.match(content)
+                        or is_repeated_heading):
                     blocks.append(ExtractedBlock(1, len(blocks), content, "toc"))
                     continue
                 in_toc = False
