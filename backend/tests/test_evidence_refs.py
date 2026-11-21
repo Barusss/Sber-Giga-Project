@@ -56,7 +56,7 @@ def test_unknown_ids_cannot_become_quotes():
 
 
 def test_too_many_source_spans_fall_back_without_discarding_evidence():
-    value = " ".join(["Кабель 10 кВ для КЛ-1."] * 250)
+    value = " ".join(f"Кабель {i} кВ для КЛ-{i}." for i in range(250))
     opts, lookup = quote_choices(znp(value), "z", value, limit=2)
     assert opts == [] and lookup == {}
 
@@ -119,7 +119,7 @@ def test_opt_in_targeted_uses_candidate_specific_quote_ids(monkeypatch):
 
 def test_opt_in_unsupported_source_falls_back_to_original_prompt(monkeypatch):
     monkeypatch.setattr(settings, "requirements_evidence_id_mode", True)
-    text = " ".join(["Кабель 10 кВ для КЛ-1."] * 250)
+    text = " ".join(f"Кабель {i} кВ для КЛ-{i}." for i in range(250))
 
     class Fake:
         def complete_json(self, *, system_prompt, user_prompt):
