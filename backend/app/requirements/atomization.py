@@ -36,6 +36,27 @@ def _source(fragment: Fragment) -> AtomSource:
     return AtomSource(fragment.id, fragment.page, start, start + len(text), text)
 
 
+def _scope_key(
+    number: str, section_path: str | None, fragment: Fragment,
+    heading_id: str | None,
+) -> tuple[str, str, str, str | None, str | None] | None:
+    """Only explicit section and, for tables, explicit table identity are safe."""
+    if not section_path:
+        return None
+    if fragment.block_type == "table_row":
+        if not fragment.container_id:
+            return None
+        return (number, section_path, "table", fragment.container_id, heading_id)
+    return (number, section_path, "prose", None, heading_id)
+
+
+def _section_ancestors(section_path: str | None) -> list[str]:
+    if not section_path:
+        return []
+    parts = section_path.split(" / ")
+    return [" / ".join(parts[:size]) for size in range(len(parts), 0, -1)]
+
+
 def atomize_fragments(document_id: str, fragments: Sequence[Fragment]) -> list[DocumentAtom]:
     """Keep each extracted clause whole; reject unverifiable source mappings."""
     by_id = {}
@@ -50,7 +71,12 @@ def atomize_fragments(document_id: str, fragments: Sequence[Fragment]) -> list[D
     ordered = sorted(fragments, key=lambda fragment: (fragment.page, fragment.position))
     headings = {}
     unscoped_headings = []
-    previous_clauses = {}
+    # Never index parents by bare number across a whole document: distinct
+    # tables/sections frequently restart their own 1 / 1.1 numbering.
+    scoped_parents: dict[
+        tuple[str, str, str, str | None, str | None], DocumentAtom
+    ] = {}
+    seen_numbers: set[str] = set()
     preamble_sources = ()
     fragment_cursor = 0
     for clause in extract_clauses(fragments, conservative=True):
@@ -91,10 +117,27 @@ def atomize_fragments(document_id: str, fragments: Sequence[Fragment]) -> list[D
                          if source.fragment_id not in {item.fragment_id for item in context})
         uncertain_context.extend(_source(fragment) for fragment in unscoped_headings)
         number_parts = clause.clause_number.split("#", 1)[0].split(".")
+        parent_unresolved = False
         for length in range(1, len(number_parts)):
-            parent = previous_clauses.get(".".join(number_parts[:length]))
+            parent_number = ".".join(number_parts[:length])
+            parent = None
+            for ancestor in _section_ancestors(clause.section_path):
+                heading = headings.get(ancestor)
+                scope = _scope_key(
+                    parent_number, ancestor, first,
+                    heading.id if heading is not None else None,
+                )
+                if scope is not None:
+                    parent = scoped_parents.get(scope)
+                    if parent is not None:
+                        break
             if parent is not None:
                 uncertain_context.extend(parent.sources)
+            elif parent_number in seen_numbers:
+                # Numerically plausible parent exists elsewhere, but no
+                # structural proof that it governs this clause. Never attach
+                # its words or silently clear the need for manual review.
+                parent_unresolved = True
         if uncertain_context:
             context_ids = {source.fragment_id for source in context}
             for source in uncertain_context:
@@ -102,6 +145,9 @@ def atomize_fragments(document_id: str, fragments: Sequence[Fragment]) -> list[D
                     context += (source,)
                     context_ids.add(source.fragment_id)
             warnings += ("context_scope_requires_review",)
+        if parent_unresolved:
+            warnings += ("parent_scope_unresolved", "context_scope_requires_review")
+        warnings = tuple(dict.fromkeys(warnings))
         sources = []
         cursor = 0
         for fragment_id in clause.fragment_ids:
@@ -115,12 +161,28 @@ def atomize_fragments(document_id: str, fragments: Sequence[Fragment]) -> list[D
             cursor = position + len(source_text)
         if not sources or "\n".join(source.text for source in sources) != clause.text:
             raise ValueError("Atom text is not completely covered by source fragments")
+        source_types = {by_id[source.fragment_id].block_type for source in sources}
+        if "table_row" in source_types and len(source_types) > 1:
+            # Unnumbered prose/notes may limit the preceding table. Keep
+            # verbatim contents, but never auto-certify an uncertain boundary.
+            warnings = tuple(dict.fromkeys((
+                *warnings, "mixed_table_prose_scope_requires_review",
+                "context_scope_requires_review",
+            )))
         identity = json.dumps(["conservative-v1", document_id,
                                [asdict(source) for source in sources],
                                [asdict(source) for source in context]], ensure_ascii=False, sort_keys=True)
         atoms.append(DocumentAtom(str(uuid5(NAMESPACE_URL, identity)), document_id, clause.clause_number,
                                   clause.text, clause.section_path, tuple(sources), context, warnings))
-        previous_clauses[clause.clause_number.split("#", 1)[0]] = atoms[-1]
+        base_number = clause.clause_number.split("#", 1)[0]
+        heading = headings.get(clause.section_path)
+        scope = _scope_key(
+            base_number, clause.section_path, first,
+            heading.id if heading is not None else None,
+        )
+        if scope is not None:
+            scoped_parents[scope] = atoms[-1]
+        seen_numbers.add(base_number)
         if clause.clause_number == "Преамбула":
             preamble_sources = tuple(sources)
     return atoms

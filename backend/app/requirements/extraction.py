@@ -134,6 +134,22 @@ def normalize_clause_text(text: str) -> str:
     return re.sub(r"\s+", " ", normalized).strip()
 
 
+def _container_boundary(previous: Fragment, current: Fragment) -> bool:
+    """A numbered group may not silently span distinct tables or table/prose."""
+    previous_table = previous.block_type == "table_row"
+    current_table = current.block_type == "table_row"
+    if not (previous_table or current_table):
+        return False
+    if previous_table != current_table:
+        # An unnumbered note immediately after a table can restrict its
+        # preceding rows. Preserve the full text and let atomization warn,
+        # rather than silently losing the condition across the boundary.
+        return _start_clause_number(current.text.strip()) is not None
+    # NULL means legacy extraction: grouping consecutive tables is not proven.
+    return not (previous.container_id and current.container_id
+                and previous.container_id == current.container_id)
+
+
 def extract_clauses(fragments: Sequence[Fragment], *, conservative: bool = False) -> list[Clause]:
     """Group ordered fragments into atomic, deduplicated clauses.
 
@@ -204,6 +220,30 @@ def extract_clauses(fragments: Sequence[Fragment], *, conservative: bool = False
             current.sections.append((fragment, text))
             continue
 
+        crossed_container = False
+        if current is not None and block_type != "heading":
+            previous_fragment = current.sections[-1][0]
+            crossed_container = _container_boundary(previous_fragment, fragment)
+            if block_type == "table_row":
+                # A prose note can remain with the preceding table, but must
+                # not hide its identity when a new table starts after it.
+                previous_table = next((
+                    source for source, _ in reversed(current.sections)
+                    if source.block_type == "table_row"
+                ), None)
+                if previous_table is not None:
+                    crossed_container = (
+                        crossed_container or _container_boundary(previous_table, fragment)
+                    )
+            # A numbered child in another independently identified section is
+            # not part of the previous clause, even if 1/1.1 looks hierarchical.
+            if (current.section_path and fragment.section_path
+                    and fragment.section_path != current.section_path
+                    and not fragment.section_path.startswith(current.section_path + " / ")):
+                crossed_container = True
+            if crossed_container:
+                current = None
+
         if block_type == "heading":
             current = None
             if _is_ignored_heading(text):
@@ -257,6 +297,16 @@ def extract_clauses(fragments: Sequence[Fragment], *, conservative: bool = False
             pending_heading = None
         elif current is not None:
             current.sections.append((fragment, text))
+        elif conservative and crossed_container:
+            # An unnumbered row/comment is still a document statement;
+            # after a verified table boundary it must not vanish or inherit
+            # the previous table's applicability.
+            current = _Draft(
+                clause_number=f"Без номера {fragment.position}",
+                sections=[(fragment, text)],
+                section_path=fragment.section_path,
+            )
+            drafts.append(current)
         elif not drafts:
             if preamble is None:
                 preamble = _Draft(

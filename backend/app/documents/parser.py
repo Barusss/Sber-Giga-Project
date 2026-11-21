@@ -27,6 +27,9 @@ class ExtractedBlock:
     section_path: str | None = None
     bbox: list[float] | None = None
     extraction_method: str = "text"
+    # Stable within one extraction; distinguishes adjacent DOCX tables sharing
+    # the same section_path and repeated numbered row labels.
+    container_id: str | None = None
 
 
 
@@ -70,6 +73,7 @@ def _extract_docx(data: bytes) -> list[ExtractedBlock]:
         for item in doc.iter_inner_content()
     )
     in_toc = False
+    table_index = 0
 
     for element in doc.iter_inner_content():
         if isinstance(element, Paragraph):
@@ -104,6 +108,8 @@ def _extract_docx(data: bytes) -> list[ExtractedBlock]:
                 1, len(blocks), content, block_type, section,
             ))
         elif isinstance(element, Table):
+            table_index += 1
+            container_id = f"docx-table-{table_index}"
             section = " / ".join(headings[i] for i in sorted(headings)) or None
             for row in element.rows:
                 content = " | ".join(cell.text.strip() for cell in row.cells)
@@ -113,7 +119,7 @@ def _extract_docx(data: bytes) -> list[ExtractedBlock]:
                     block_type = "toc" if in_toc else "table_row"
                     blocks.append(ExtractedBlock(
                         1, len(blocks), content, block_type,
-                        None if in_toc else section,
+                        None if in_toc else section, container_id=container_id,
                     ))
     return blocks
 

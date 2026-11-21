@@ -149,9 +149,9 @@ def test_parent_condition_survives_intervening_child_heading():
     parent = fragment("p", 1, "1. При наличии двух линий допускается:")
     heading = fragment("h", 2, "1.1. Кабели")
     heading.block_type = "heading"
-    heading.section_path = heading.text
+    heading.section_path = "Раздел 1 / " + heading.text
     body = fragment("b", 3, "1.1.1. Кабель 95 мм².")
-    body.section_path = heading.text
+    body.section_path = heading.section_path
     child = atomize_fragments("doc", [parent, heading, body])[-1]
     assert {source.fragment_id for source in child.context_sources} == {"p", "h"}
     assert "context_scope_requires_review" in child.warnings
@@ -213,3 +213,231 @@ def test_meaningful_preamble_still_requires_scope_review(preamble):
     child = atomize_fragments("doc", [fragment("p",1,preamble),heading,body])[-1]
     assert "context_scope_requires_review" in child.warnings
     assert "p" in {s.fragment_id for s in child.context_sources}
+
+
+def test_different_sections_cannot_inherit_same_number_parent():
+    first = fragment("parent", 1, "1. Только при наличии КЛ-2.", document_id="doc")
+    first.section_path = "Раздел А"
+    child = fragment("child", 2, "1.1. Для КЛ-1 предусмотреть кабель 10 кВ.")
+    child.section_path = "Раздел Б"
+    atoms = atomize_fragments("doc", [first, child])
+    assert len(atoms) == 2
+    assert "parent" not in {source.fragment_id for source in atoms[-1].context_sources}
+    assert "parent_scope_unresolved" in atoms[-1].warnings
+    assert "context_scope_requires_review" in atoms[-1].warnings
+
+
+def test_same_prose_section_parent_is_kept_with_manual_scope_warning():
+    first = fragment("parent", 1, "1. Только при наличии КЛ-2.")
+    second = fragment("child", 2, "1.1. Для КЛ-1 предусмотреть кабель 10 кВ.")
+    between = fragment("heading", 1, "1.1. Требования к линиям")
+    between.block_type = "heading"
+    between.section_path = "Раздел 1 / Требования к линиям"
+    second.section_path = "Раздел 1 / Требования к линиям"
+    atoms = atomize_fragments("doc", [first, between, second])
+    assert "parent" in {source.fragment_id for source in atoms[-1].context_sources}
+    assert "context_scope_requires_review" in atoms[-1].warnings
+
+
+def test_different_tables_in_same_section_never_exchange_parent_context():
+    first = fragment("old", 1, "1. Только при наличии резервной КЛ-2.")
+    first.block_type = "table_row"
+    first.container_id = "docx-table-1"
+    second = fragment("new", 2, "1.1. Для КЛ-1 предусмотреть кабель 10 кВ.")
+    second.block_type = "table_row"
+    second.container_id = "docx-table-2"
+
+    atoms = atomize_fragments("doc", [first, second])
+    assert len(atoms) == 2
+    child = atoms[-1]
+    assert child.sources[0].fragment_id == "new"
+    assert "old" not in {source.fragment_id for source in child.context_sources}
+    assert "parent_scope_unresolved" in child.warnings
+    assert child.id == atomize_fragments("doc", [first, second])[-1].id
+
+
+def test_legacy_table_rows_without_ids_are_never_automatically_merged():
+    old = fragment("old", 1, "1. Только при наличии КЛ-2.")
+    old.block_type = "table_row"
+    new = fragment("new", 2, "1.1. Для КЛ-1 предусмотреть кабель 10 кВ.")
+    new.block_type = "table_row"
+    child = atomize_fragments("doc", [old, new])[-1]
+    assert child.sources[0].fragment_id == "new"
+    assert "old" not in {source.fragment_id for source in child.context_sources}
+    assert "parent_scope_unresolved" in child.warnings
+
+
+def test_distinct_table_comments_are_not_silently_discarded():
+    first = fragment("old", 1, "1. Допускается кабель 95 мм².")
+    first.block_type = "table_row"
+    first.container_id = "docx-table-1"
+    note = fragment("note", 2, "Только при наличии двух линий")
+    note.block_type = "table_row"
+    note.container_id = "docx-table-2"
+    atoms = atomize_fragments("doc", [first, note])
+    assert len(atoms) == 2
+    assert "Только при наличии двух линий" == atoms[1].text
+    assert [source.fragment_id for source in atoms[1].sources] == ["note"]
+
+
+def test_docx_parser_assigns_distinct_ids_to_adjacent_tables():
+    from io import BytesIO
+    from docx import Document as WordDocument
+    from app.documents.parser import _extract_docx
+
+    word = WordDocument()
+    word.add_heading("Раздел 1", level=1)
+    old_table = word.add_table(rows=1, cols=1)
+    old_table.cell(0, 0).text = "1. Только при наличии КЛ-2."
+    next_table = word.add_table(rows=1, cols=1)
+    next_table.cell(0, 0).text = "1.1. Для КЛ-1 предусмотреть кабель 10 кВ."
+    output = BytesIO()
+    word.save(output)
+
+    blocks = _extract_docx(output.getvalue())
+    rows = [b for b in blocks if b.block_type == "table_row"]
+    assert [r.container_id for r in rows] == ["docx-table-1", "docx-table-2"]
+    assert rows[0].section_path == rows[1].section_path
+
+    fragments = [
+        Fragment(
+            id=f"f{index}", document_id="doc", page=b.page,
+            position=b.position, text=b.text, block_type=b.block_type,
+            section_path=b.section_path, container_id=b.container_id,
+        )
+        for index, b in enumerate(blocks)
+    ]
+    child = atomize_fragments("doc", fragments)[-1]
+    assert "f1" not in {s.fragment_id for s in child.context_sources}
+    assert "parent_scope_unresolved" in child.warnings
+
+
+def test_known_table_cannot_inherit_prose_parent_without_scope_proof():
+    parent = fragment("intro", 1, "1. Только при наличии КЛ-2.")
+    child = fragment("table", 2, "1.1. Для КЛ-1 предусмотреть кабель 10 кВ.")
+    child.block_type = "table_row"
+    child.container_id = "docx-table-1"
+    result = atomize_fragments("doc", [parent, child])
+    assert len(result) == 2
+    assert "intro" not in {x.fragment_id for x in result[-1].context_sources}
+    assert "parent_scope_unresolved" in result[-1].warnings
+
+
+
+def test_unresolved_parent_scope_prevents_automatic_support_even_with_identical_quotes():
+    from app.requirements.schemas import TURequirement, ZNPClause, RequirementCategory
+    from app.requirements.znp_first import ZnPFirstAgent
+
+    parent = fragment("parent", 1, "1. Только при наличии резервной КЛ-2.")
+    parent.section_path = "Раздел А"
+    child = fragment("child", 2, "1.1. Для КЛ-1 предусмотреть кабель 10 кВ.")
+    child.section_path = "Раздел Б"
+    source = atomize_fragments("doc", [parent, child])[-1]
+
+    requirement = TURequirement(
+        id="tu1", clause_number="1.1", category=RequirementCategory.other,
+        text=source.text, sources=[{
+            "fragment_id": "tu1", "page": 1, "text": source.text,
+        }],
+    )
+    atom = ZNPClause(
+        id=source.id, clause_number=source.clause_number, text=source.text,
+        sources=[{"fragment_id": s.fragment_id, "page": s.page, "text": s.text}
+                 for s in source.sources],
+        context_sources=[{"fragment_id": s.fragment_id, "page": s.page, "text": s.text}
+                         for s in source.context_sources],
+        warnings=list(source.warnings),
+    )
+    link = ZnPFirstAgent._validated_link(
+        atom, requirement, {
+            "relation": "supports",
+            "tu_quote": source.text,
+            "znp_quote": source.text,
+            "confidence": 0.99,
+            "reasoning": "identical",
+        }, 0.95,
+    )
+    assert link is not None
+    assert link["param_check"]["params_match"]
+    assert link["scope_consistent"]
+    assert link["relation"] == "partial"
+    assert "parent_scope_unresolved" in link["warnings"]
+
+
+
+def test_unnumbered_prose_note_after_table_remains_with_condition_and_warning():
+    row = fragment("row", 1, "1. Допускается кабель 95 мм².")
+    row.block_type = "table_row"
+    row.container_id = "docx-table-1"
+    note = fragment("note", 2, "Только при наличии двух независимых линий.")
+    note.block_type = "paragraph"
+    result = atomize_fragments("doc", [row, note])
+    assert len(result) == 1
+    assert "Только при наличии двух независимых линий." in result[0].text
+    assert {source.fragment_id for source in result[0].sources} == {"row", "note"}
+    assert "mixed_table_prose_scope_requires_review" in result[0].warnings
+    assert "context_scope_requires_review" in result[0].warnings
+
+
+
+def test_retrieval_chunks_do_not_join_adjacent_tables_with_same_section():
+    from app.documents.chunking import build_chunks
+
+    old = fragment("old", 1, "1. Ограничение только для КЛ-2.")
+    new = fragment("new", 2, "1.1. Для КЛ-1 предусмотреть кабель 10 кВ.")
+    for fragment_item in (old, new):
+        fragment_item.block_type = "table_row"
+    old.container_id = "docx-table-1"
+    new.container_id = "docx-table-2"
+
+    chunks = build_chunks([old, new])
+    assert len(chunks) == 2
+    assert [chunk.pieces[0].fragment.id for chunk in chunks] == ["old", "new"]
+
+
+def test_legacy_table_rows_without_container_id_do_not_share_retrieval_chunk():
+    from app.documents.chunking import build_chunks
+
+    old = fragment("old", 1, "1. Условие для КЛ-2.")
+    new = fragment("new", 2, "1.1. Условие для КЛ-1.")
+    for fragment_item in (old, new):
+        fragment_item.block_type = "table_row"
+    chunks = build_chunks([old, new])
+    assert len(chunks) == 2
+
+
+
+def test_repeated_heading_text_does_not_reuse_prior_section_instance_parent():
+    older_heading = fragment("h1", 1, "Раздел 1. Требования")
+    newer_heading = fragment("h2", 3, "Раздел 1. Требования")
+    for heading in (older_heading, newer_heading):
+        heading.block_type = "heading"
+        heading.section_path = "Раздел 1"
+    parent = fragment("p1", 2, "1. Только при наличии резервной КЛ-2.")
+    child = fragment("c2", 4, "1.1. Для КЛ-1 предусмотреть кабель 10 кВ.")
+
+    result = atomize_fragments(
+        "doc", [older_heading, parent, newer_heading, child],
+    )
+    assert len(result) == 2
+    last = result[-1]
+    context_ids = {source.fragment_id for source in last.context_sources}
+    assert "h2" in context_ids
+    assert "h1" not in context_ids
+    assert "p1" not in context_ids
+    assert "parent_scope_unresolved" in last.warnings
+
+
+def test_prose_note_cannot_bridge_two_distinct_tables():
+    old = fragment("old-table", 1, "1. Допускается кабель 95 мм².")
+    old.block_type = "table_row"
+    old.container_id = "docx-table-1"
+    note = fragment("note-between", 2, "Только при наличии двух линий.")
+    new = fragment("new-table", 3, "Параметр | Значение")
+    new.block_type = "table_row"
+    new.container_id = "docx-table-2"
+    atoms = atomize_fragments("doc", [old, note, new])
+    assert len(atoms) == 2
+    assert {s.fragment_id for s in atoms[0].sources} == {"old-table", "note-between"}
+    assert [s.fragment_id for s in atoms[1].sources] == ["new-table"]
+    assert "Только при наличии двух линий." in atoms[0].text

@@ -193,6 +193,7 @@ def reindex_document_chunks(document_id: str, db: Session = Depends(get_db)):
     for fragment, block in zip(fragments, blocks):
         fragment.block_type = block.block_type
         fragment.section_path = block.section_path
+        fragment.container_id = block.container_id
 
     chunk_ids = select(Chunk.id).where(Chunk.document_id == document_id)
     db.execute(delete(ChunkSource).where(ChunkSource.chunk_id.in_(chunk_ids)))

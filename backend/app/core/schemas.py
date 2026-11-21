@@ -23,6 +23,7 @@ class FragmentOut(Schema):
     text: str
     block_type: str
     section_path: str | None
+    container_id: str | None = None
     bbox: list[float] | None
     extraction_method: str
 

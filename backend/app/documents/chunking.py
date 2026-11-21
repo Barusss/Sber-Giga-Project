@@ -83,6 +83,11 @@ def build_chunks(fragments: list, max_chars: int = MAX_CHARS) -> list[ChunkDraft
             or (fragment.section_path != section and has_body)
             or (kind == "table" and not is_table and not is_heading)
             or (is_table and kind == "prose")
+            or (is_table and kind == "table" and (
+                not fragment.container_id
+                or not sources[-1].fragment.container_id
+                or fragment.container_id != sources[-1].fragment.container_id
+            ))
         ):
             flush()
 
