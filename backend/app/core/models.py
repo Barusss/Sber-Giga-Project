@@ -301,6 +301,55 @@ class OperationJob(Base):
     progress_current: Mapped[int | None] = mapped_column(Integer, nullable=True)
     progress_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
     cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    pause_requested: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ComparisonLLMCheckpoint(Base):
+    """One durable LLM call identity per comparison operation.
+
+    A sent call without saved response is intentionally ambiguous: the
+    provider might already have processed and billed it.
+    """
+    __tablename__ = "comparison_llm_checkpoints"
+    __table_args__ = (
+        UniqueConstraint("job_id", "fingerprint", name="uq_comparison_llm_checkpoint"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    job_id: Mapped[str] = mapped_column(
+        ForeignKey("operation_jobs.id", ondelete="CASCADE"), index=True,
+    )
+    fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    phase: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    response: Mapped[dict | None] = mapped_column(
+        JSON().with_variant(JSONB(), "postgresql"), nullable=True,
+    )
+    attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=now, onupdate=now,
+    )
+
+
+class ComparisonAtomReview(Base):
+    """Independent AI review of one saved ZnP atom; never mutates a run's verdict."""
+    __tablename__ = "comparison_atom_reviews"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("comparison_runs.id", ondelete="CASCADE"), index=True,
+    )
+    job_id: Mapped[str] = mapped_column(
+        ForeignKey("operation_jobs.id", ondelete="CASCADE"), unique=True,
+    )
+    atom_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    result: Mapped[dict] = mapped_column(
+        JSON().with_variant(JSONB(), "postgresql"), nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
