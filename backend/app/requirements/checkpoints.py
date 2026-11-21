@@ -14,6 +14,7 @@ from copy import deepcopy
 from sqlalchemy import case, func, select
 
 from app.ai import diagnostics
+from app.ai.deepseek import DeepSeekResponseError
 from app.core.config import settings
 from app.core.db import SessionLocal
 from app.core.models import ComparisonLLMCheckpoint, OperationJob
@@ -151,6 +152,16 @@ class CheckpointedDeepSeek:
                     phase=phase, calls_saved=row.attempts,
                 )
                 return deepcopy(row.response)
+            if row.status == "truncated" and phase == "targeted":
+                # Known provider finish_reason=length is deterministic evidence
+                # for adaptive batch splitting; never pay again for the batch.
+                diagnostics.record(
+                    "checkpoint.truncated_replay", fingerprint=fingerprint[:16],
+                    phase=phase,
+                )
+                raise DeepSeekResponseError(
+                    "DeepSeek response was truncated; split targeted batch."
+                )
             if not bool(job.params.get("retry_uncertain", False)):
                 raise ComparisonUncertain(
                     "Ранее отправленный запрос не имеет сохранённого ответа. "
@@ -215,19 +226,27 @@ class CheckpointedDeepSeek:
                 raise ValueError("DeepSeek must return a JSON object")
             validate_phase_reply(phase, result)
         except Exception as exc:
+            split_targeted = (
+                phase == "targeted"
+                and isinstance(exc, DeepSeekResponseError)
+                and "truncated" in str(exc).casefold()
+            )
             with self.session_factory() as db:
                 row = db.scalar(select(ComparisonLLMCheckpoint).where(
                     ComparisonLLMCheckpoint.job_id == self.job_id,
                     ComparisonLLMCheckpoint.fingerprint == fingerprint,
                 ))
                 if row is not None:
-                    row.status = "failed"
+                    row.status = "truncated" if split_targeted else "failed"
                     row.last_error = f"{type(exc).__name__}: {str(exc)[:250]}"
                     db.commit()
             diagnostics.record(
                 "checkpoint.failed", fingerprint=fingerprint[:16],
                 phase=phase, error_type=type(exc).__name__,
+                split_targeted=split_targeted,
             )
+            if split_targeted:
+                raise
             raise ComparisonInterrupted(
                 f"DeepSeek: {type(exc).__name__}. Ранее сохранённые ответы не потеряны. "
                 "Повтор запроса требует подтверждения из-за возможного списания."
