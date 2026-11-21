@@ -63,6 +63,8 @@ def request_fingerprint(system_prompt: str, user_prompt: str) -> str:
         "model": settings.deepseek_model,
         "thinking": settings.deepseek_thinking,
         "max_tokens": settings.deepseek_max_tokens,
+        "evidence_id_mode": settings.requirements_evidence_id_mode,
+        "strict_evidence_tools": settings.deepseek_strict_evidence_tools,
         "system": system_prompt,
         "user": user_prompt,
     }, ensure_ascii=False, sort_keys=True)
