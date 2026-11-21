@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections import Counter
 from hashlib import sha256
+import re
 from typing import Sequence
 
 from app.core.models import Fragment
@@ -37,6 +38,28 @@ def _skip_reason(fragment: Fragment) -> str | None:
     return None
 
 
+_NORMATIVE_CATALOG_RE = re.compile(
+    r"\b(?:перечень|список)\s+нормативн\w*\s+"
+    r"(?:документ\w*|акт\w*)\b",
+    re.IGNORECASE,
+)
+_NUMBERED_REFERENCE_RE = re.compile(
+    r"^\s*\d{1,4}[.)]\s+(?:ГОСТ|СП\s|СНиП|СН\s|СТО\s|ПУЭ|"
+    r"РД\s|Правила\s|Приказ\s)",
+    re.IGNORECASE,
+)
+
+
+def _review_hint(fragment: Fragment) -> str | None:
+    """A triage hint is NOT a source role and never clears a safety gate."""
+    text = (fragment.text or "").strip()
+    section = fragment.section_path or ""
+    if (_NORMATIVE_CATALOG_RE.search(section)
+            and _NUMBERED_REFERENCE_RE.match(text)):
+        return "normative_reference_candidate"
+    return None
+
+
 def source_coverage_ledger(
     fragments: Sequence[Fragment],
     atoms: Sequence[DocumentAtom],
@@ -51,6 +74,7 @@ def source_coverage_ledger(
     by_role = Counter()
     unclassified_by_block_type = Counter()
     excluded_by_reason = Counter()
+    review_hints = Counter()
     records = []
     seen = set()
     for fragment in fragments:
@@ -69,6 +93,9 @@ def source_coverage_ledger(
                 unclassified_by_block_type[fragment.block_type or "unknown"] += 1
             else:
                 excluded_by_reason[reason] += 1
+        hint = _review_hint(fragment) if role == "unclassified" else None
+        if hint is not None:
+            review_hints[hint] += 1
         by_role[role] += 1
         records.append({
             "fragment_id": fragment.id,
@@ -84,6 +111,7 @@ def source_coverage_ledger(
             ).hexdigest(),
             "role": role,
             "reason": reason,
+            "review_hint": hint,
         })
     missing = (source_ids | context_ids) - seen
     if missing:
@@ -99,6 +127,7 @@ def source_coverage_ledger(
         "by_role": dict(by_role),
         "unclassified_by_block_type": dict(unclassified_by_block_type),
         "excluded_by_reason": dict(excluded_by_reason),
+        "review_hint_counts": dict(review_hints),
         "unclassified_fragment_ids": [
             item["fragment_id"] for item in records
             if item["role"] == "unclassified"
@@ -115,7 +144,8 @@ def source_coverage_summary(ledger: dict) -> dict:
         key: ledger[key] for key in (
             "schema", "total_fragments", "atoms", "by_role",
             "unclassified_by_block_type", "excluded_by_reason",
-            "unclassified_fragment_ids", "unclassified_count", "complete",
+            "review_hint_counts", "unclassified_fragment_ids",
+            "unclassified_count", "complete",
         )
     }
 
