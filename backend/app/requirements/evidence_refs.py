@@ -7,6 +7,7 @@ become evidence. This is a deliberately opt-in experiment.
 from __future__ import annotations
 
 import re
+from math import isfinite
 from typing import Any
 
 from app.requirements.tools import _evidence_fragments, tool_validate_quotes
@@ -128,3 +129,45 @@ def link_schema(*, targeted: bool) -> dict[str, Any]:
         "required": list(root),
         "additionalProperties": False,
     }
+
+
+def validate_strict_tool_arguments(value: Any, schema: dict[str, Any]) -> bool:
+    """Validate the small, known subset of JSON Schema we send to DeepSeek.
+
+    A forced tool call with `strict: true` is a provider request, not proof
+    that the received `arguments` comply. Reject incomplete objects, extra
+    fields, wrong nested types and nonfinite confidence values locally.
+    """
+    expected = schema.get("type")
+    if expected == "object":
+        if not isinstance(value, dict):
+            return False
+        properties = schema.get("properties", {})
+        required = schema.get("required", [])
+        if any(field not in value for field in required):
+            return False
+        if schema.get("additionalProperties") is False and (
+            set(value) - set(properties)
+        ):
+            return False
+        return all(
+            name in properties
+            and validate_strict_tool_arguments(field_value, properties[name])
+            for name, field_value in value.items()
+        )
+    if expected == "array":
+        return isinstance(value, list) and all(
+            validate_strict_tool_arguments(item, schema["items"])
+            for item in value
+        )
+    if expected == "string":
+        return isinstance(value, str) and (
+            "enum" not in schema or value in schema["enum"]
+        )
+    if expected == "number":
+        return (isinstance(value, (int, float))
+                and not isinstance(value, bool)
+                and isfinite(value))
+    if expected == "boolean":
+        return isinstance(value, bool)
+    return False
