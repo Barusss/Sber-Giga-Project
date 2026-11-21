@@ -30,6 +30,11 @@ class Settings(BaseSettings):
     deepseek_timeout_seconds: float = Field(default=60.0, gt=0)
     deepseek_max_tokens: int = Field(default=6000, ge=1)
 
+    # Experimental, opt-in: model selects source-grounded quote IDs.
+    requirements_evidence_id_mode: bool = False
+    # Beta strict tool calling for ID mode. Needs explicit opt-in; no live probes.
+    deepseek_strict_evidence_tools: bool = False
+
     # Guardrails for a single TU/ZnP comparison. Request limits are not
     # a monetary limit: individual calls can use different token volumes.
     requirements_llm_max_calls: int = Field(default=250, ge=1)

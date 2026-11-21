@@ -140,6 +140,7 @@ GitHub Actions проверяет backend, сборку frontend и интегр
 - [Аудит чанкинга](docs/CHUNKING_AUDIT.md)
 - [Настройка DeepSeek](docs/DEEPSEEK.md)
 - [План масштабирования сверки ТУ ↔ ЗнП (предложение)](docs/TU_ZNP_SCALABILITY_ROADMAP.md)
+- [План облегчения работы DeepSeek — этапы и уже реализованное](docs/DEEPSEEK_EFFICIENCY_PHASED_PLAN.md)
 - [Пауза/продолжение сверки, чекпоинты DeepSeek и повторная проверка одного ЗнП](docs/COMPARISON_CHECKPOINTS_AND_ATOM_RECHECK.md)
 - [Извлечение нормативных ссылок](docs/NORMATIVE_EXTRACTION.md)
 - [Локальный реестр и Росстандарт](docs/NORMATIVE_VERIFICATION.md)

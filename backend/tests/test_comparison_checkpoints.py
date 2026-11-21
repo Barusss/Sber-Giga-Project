@@ -146,6 +146,17 @@ def test_prompt_or_model_change_invalidates_replay(database, monkeypatch):
     assert original != request_fingerprint("system", '{"znp_atom":{}}')
 
 
+def test_compact_and_strict_flags_change_checkpoint_fingerprint(monkeypatch):
+    from app.requirements.checkpoints import request_fingerprint
+    base = request_fingerprint("system", '{"znp_atom":{}}')
+    monkeypatch.setattr(settings, "requirements_evidence_id_mode", True)
+    compact = request_fingerprint("system", '{"znp_atom":{}}')
+    assert compact != base
+    monkeypatch.setattr(settings, "deepseek_strict_evidence_tools", True)
+    strict = request_fingerprint("system", '{"znp_atom":{}}')
+    assert strict != compact
+
+
 def test_restart_requeues_safe_job_and_pauses_uncertain_one(database, monkeypatch):
     Factory, first_id = database
     with Factory() as db:
@@ -244,3 +255,89 @@ def test_cancel_takes_precedence_over_pause_even_for_cached_response(database):
             system_prompt="x", user_prompt='{"znp_atom":{"id":"a1"}}',
         )
     assert provider.calls == 0
+
+
+
+def test_disabled_flags_reuse_checkpoint_written_before_id_mode(database, monkeypatch):
+    """Old `dev` fingerprints must remain byte-for-byte compatible."""
+    import hashlib
+    import json
+
+    Factory, job_id = database
+    monkeypatch.setattr(settings, "requirements_evidence_id_mode", False)
+    monkeypatch.setattr(settings, "deepseek_strict_evidence_tools", False)
+    system_prompt = "matching legacy"
+    user_prompt = '{"znp_atom":{"id":"z1"},"tu_candidates":[]}'
+    previous_version_identity = {
+        "schema": "comparison-llm-v1",
+        "model": settings.deepseek_model,
+        "thinking": settings.deepseek_thinking,
+        "max_tokens": settings.deepseek_max_tokens,
+        "system": system_prompt,
+        "user": user_prompt,
+    }
+    legacy_fingerprint = hashlib.sha256(json.dumps(
+        previous_version_identity, sort_keys=True, ensure_ascii=False,
+    ).encode("utf-8")).hexdigest()
+    assert request_fingerprint(system_prompt, user_prompt) == legacy_fingerprint
+
+    original_response = {"links": [], "search_more": False}
+    with Factory() as db:
+        db.add(ComparisonLLMCheckpoint(
+            job_id=job_id, fingerprint=legacy_fingerprint,
+            phase="matching", status="succeeded",
+            attempts=1, response=original_response,
+        ))
+        db.commit()
+
+    fake = Spy()
+    assert CheckpointedDeepSeek(job_id, fake, Factory).complete_json(
+        system_prompt=system_prompt, user_prompt=user_prompt,
+    ) == original_response
+    assert fake.calls == 0
+    assert checkpoint_counts(job_id, Factory)["saved"] == 1
+
+
+def test_strict_flag_alone_keeps_old_fingerprint_if_id_mode_disabled(monkeypatch):
+    monkeypatch.setattr(settings, "requirements_evidence_id_mode", False)
+    monkeypatch.setattr(settings, "deepseek_strict_evidence_tools", False)
+    first = request_fingerprint("system", '{"znp_atom":{"id":"z1"}}')
+    monkeypatch.setattr(settings, "deepseek_strict_evidence_tools", True)
+    # Without ID mode this flag has no impact on the request sent to DeepSeek.
+    assert request_fingerprint("system", '{"znp_atom":{"id":"z1"}}') == first
+
+
+
+@pytest.mark.parametrize("network_error", ["ReadTimeout", "RemoteProtocolError"])
+def test_ambiguous_network_failure_pauses_checkpoint_without_hidden_resend(
+        database, network_error):
+    import httpx
+    from app.ai.deepseek import DeepSeekClient
+    from app.core.config import Settings
+
+    Factory, job_id = database
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        raise getattr(httpx, network_error)("delivery not confirmed")
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http:
+        api = DeepSeekClient(config=Settings(
+            _env_file=None, deepseek_api_key="fake",
+        ), http_client=http)
+        payload = '{"znp_atom":{"id":"z1"},"tu_candidates":[]}'
+        with pytest.raises(ComparisonInterrupted):
+            CheckpointedDeepSeek(job_id, api, Factory).complete_json(
+                system_prompt="matcher", user_prompt=payload,
+            )
+        assert len(calls) == 1
+        assert checkpoint_counts(job_id, Factory)["uncertain"] == 1
+
+        # A reconstructed worker must explicitly obtain user consent before
+        # potentially re-billing the same request.
+        with pytest.raises(ComparisonUncertain):
+            CheckpointedDeepSeek(job_id, api, Factory).complete_json(
+                system_prompt="matcher", user_prompt=payload,
+            )
+        assert len(calls) == 1

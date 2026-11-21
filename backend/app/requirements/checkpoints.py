@@ -58,14 +58,21 @@ class ComparisonInterrupted(ComparisonPause):
 
 
 def request_fingerprint(system_prompt: str, user_prompt: str) -> str:
-    payload = json.dumps({
+    # Preserve EXACT pre-experiment hashes when both features are disabled.
+    # Saved successful checkpoints must remain reusable after upgrading code.
+    identity = {
         "schema": CHECKPOINT_SCHEMA,
         "model": settings.deepseek_model,
         "thinking": settings.deepseek_thinking,
         "max_tokens": settings.deepseek_max_tokens,
         "system": system_prompt,
         "user": user_prompt,
-    }, ensure_ascii=False, sort_keys=True)
+    }
+    if settings.requirements_evidence_id_mode:
+        identity["evidence_id_mode"] = True
+        if settings.deepseek_strict_evidence_tools:
+            identity["strict_evidence_tools"] = True
+    payload = json.dumps(identity, ensure_ascii=False, sort_keys=True)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
