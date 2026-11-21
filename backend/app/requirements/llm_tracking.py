@@ -35,6 +35,9 @@ class TrackedRequirementsLLM:
         contradictions_limit: int = 15,
     ) -> None:
         self.model = model
+        if hasattr(model, "bind_ledger"):
+            model.bind_ledger(self)
+        self.replayed: Counter[str] = Counter()
         self.max_calls = max_calls
         self.phase_limits = {
             "atomization": atomization_limit,
@@ -116,6 +119,13 @@ class TrackedRequirementsLLM:
             except (ValueError, TypeError):
                 pass
         with diagnostics.phase_scope(phase, subject):
+            if hasattr(self.model, "checkpoint_lookup"):
+                saved = self.model.checkpoint_lookup(
+                    system_prompt=system_prompt, user_prompt=user_prompt,
+                )
+                if saved is not None:
+                    self.replayed[phase] += 1
+                    return saved
             if self.exhausted:
                 self.rejected_by_limit[phase] += 1
                 diagnostics.record(
@@ -166,6 +176,7 @@ class TrackedRequirementsLLM:
             "model_calls_limit": self.max_calls,
             "attempted_by_phase": dict(self.attempted),
             "responses_by_phase": dict(self.succeeded),
+            "replayed_by_phase": dict(self.replayed),
             "errors_by_phase": dict(self.errors),
             "blocked_by_limit": dict(self.rejected_by_limit),
             "limit_reached": self.exhausted or bool(self.rejected_by_limit),
