@@ -27,6 +27,11 @@ def _skip_reason(fragment: Fragment) -> str | None:
         return "toc"
     if text.casefold().strip(" .:") in ("оглавление", "содержание"):
         return "toc_heading"
+    # A short table cell such as "10", "6" or "А" can be an electrical
+    # parameter. Never classify it as disposable noise just because it is
+    # short or numeric. The same applies to standalone numeric values.
+    if fragment.block_type == "table_row" or text.isdecimal():
+        return None
     if is_noise(text):
         return "noise"
     return None
