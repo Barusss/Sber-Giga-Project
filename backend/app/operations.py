@@ -202,6 +202,8 @@ COMPARISON_STAGES = {
     "preparing": "Формирование перечня требований ТУ",
     "embedding": "Подготовка поиска соответствий ЗнП → ТУ",
     "verifying": "Сопоставление положений ЗнП с требованиями ТУ",
+    "coverage": "Проверка покрытия требований ТУ и дополнительный поиск",
+    "audit": "Аудит противоречий ТУ и ЗнП",
     "persisting": "Формирование и сохранение замечаний",
     "snapshot": "Сохранение результата в историю",
 }
@@ -259,6 +261,10 @@ def _run_comparisons(db: Session, job: OperationJob) -> dict:
                     raise _JobCancelled()
             if stage == "verifying" and clause_number:
                 message = f"Анализ положения ЗнП {clause_number}"
+            elif stage == "coverage" and clause_number:
+                message = f"Покрытие и обратный поиск ТУ {clause_number}"
+            elif stage == "audit" and clause_number:
+                message = f"Аудит требования ТУ {clause_number}"
             # Independent short transaction: the analysis session may hold a
             # project lock and uncommitted findings. Never commit that session
             # just to publish progress or silently persist partial analysis.
