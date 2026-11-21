@@ -335,7 +335,7 @@ function OperationRow({job, cancel, pause, resume}: {
         onClick={() => void cancel(job.id)}>Остановить</button>}
     {working && canControl && <button type="button" className="secondary operation-cancel"
       onClick={() => void pause(job.id)}>Пауза</button>}
-    {job.status === 'paused' && canControl && <>
+    {(job.status === 'paused' || job.status === 'failed') && canControl && <>
       <button type="button" className="secondary operation-cancel"
         onClick={() => {
           const risk = (job.checkpoint?.uncertain || 0) > 0
@@ -345,8 +345,8 @@ function OperationRow({job, cancel, pause, resume}: {
           )) return
           void resume(job.id, risk)
         }}>Продолжить</button>
-      <button type="button" className="secondary operation-cancel"
-        onClick={() => void cancel(job.id)}>Завершить без продолжения</button>
+      {job.status === 'paused' && <button type="button" className="secondary operation-cancel"
+        onClick={() => void cancel(job.id)}>Завершить без продолжения</button>}
     </>}
   </div>
 }
