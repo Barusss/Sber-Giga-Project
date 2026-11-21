@@ -158,7 +158,7 @@ def test_strict_beta_tool_call_mock_transport_only():
                 "finish_reason": "tool_calls",
                 "message": {
                     "content": None,
-                    "tool_calls": [{"function": {
+                    "tool_calls": [{"type": "function", "function": {
                         "name": "submit_evidence_links",
                         "arguments": '{"links":[],"search_more":false}',
                     }}],
@@ -203,6 +203,106 @@ def test_strict_mode_missing_forced_call_is_rejected_without_auto_retry():
                 user_prompt=json.dumps({
                     "evidence_format": "id_v1", "phase": "primary",
                     "znp_atom": {"id": "z1"},
+                }),
+            )
+    assert len(calls) == 1
+
+
+
+def test_compact_matching_keeps_parent_condition_and_prevents_false_support(monkeypatch):
+    """A conditional parent can constrain a child atom even if quotes match."""
+    monkeypatch.setattr(settings, "requirements_evidence_id_mode", True)
+    heading = "Только при наличии резервной линии КЛ-2"
+    atom = znp("Для КЛ-1 предусмотреть кабель 10 кВ.")
+    atom.context_sources = [{
+        "fragment_id": "parent", "page": 1, "text": heading,
+    }]
+
+    class Fake:
+        def complete_json(self, *, system_prompt, user_prompt):
+            payload = json.loads(user_prompt)
+            assert payload["znp_atom"]["context_sources"][0]["text"] == heading
+            candidate = payload["tu_candidates"][0]
+            return {"links": [{
+                "requirement_id": candidate["requirement_id"],
+                "relation": "supports",
+                "tu_evidence_id": candidate["quote_choices"][0]["id"],
+                "znp_evidence_id": payload["znp_atom"]["quote_choices"][0]["id"],
+                "confidence": 0.99, "reasoning": "Same cable and voltage",
+            }], "search_more": False}
+
+    agent = ZnPFirstAgent(ai_client=Fake(), embedder=EmbeddingService(enabled=False))
+    requirement = tu()
+    agent._requirements = {"t1": requirement}
+    reply = agent._judge(atom, [{
+        "requirement_id": "t1", "clause_number": "1",
+        "text": requirement.text, "similarity_score": 0.9,
+    }], [])
+    link = agent._validated_link(atom, requirement, reply["links"][0], 0.9)
+    assert link is not None
+    assert link["relation"] == "partial"
+    assert "conditional_parent_context_requires_review" in link["warnings"]
+
+
+def test_compact_targeted_passes_parent_condition_to_model(monkeypatch):
+    monkeypatch.setattr(settings, "requirements_evidence_id_mode", True)
+    heading = "Только при наличии резервной линии КЛ-2"
+    atom = znp()
+    atom.context_sources = [{"fragment_id": "parent", "text": heading, "page": 1}]
+
+    class Fake:
+        def complete_json(self, *, system_prompt, user_prompt):
+            payload = json.loads(user_prompt)
+            assert payload["znp_candidates"][0]["context_sources"][0]["text"] == heading
+            return {"links": []}
+
+    agent = ZnPFirstAgent(ai_client=Fake(), embedder=EmbeddingService(enabled=False))
+    assert agent._judge_targeted(
+        tu(), [{"clause_id": atom.id}], {atom.id: atom},
+    ) == {"links": []}
+
+
+@pytest.mark.parametrize("tool_type,args,expected", [
+    ("NOT_FUNCTION", '{"links":[],"search_more":false}', "required structured"),
+    ("function", "{}", "strict function arguments"),
+    ("function", '{"links":[]}', "strict function arguments"),
+    ("function", '{"links":[],"search_more":"false"}', "strict function arguments"),
+    ("function", '{"links":[],"search_more":false,"extra":1}', "strict function arguments"),
+    ("function", '{"links":[{"requirement_id":"t1"}],"search_more":false}',
+     "strict function arguments"),
+    ("function", '{"links":[{"requirement_id":"t1","relation":"supports",'
+     '"tu_evidence_id":"t0","znp_evidence_id":"z0","confidence":true,'
+     '"reasoning":"x"}],"search_more":false}', "strict function arguments"),
+    ("function", '{"links":[{"requirement_id":"t1","relation":"invented",'
+     '"tu_evidence_id":"t0","znp_evidence_id":"z0","confidence":0.9,'
+     '"reasoning":"x"}],"search_more":false}', "strict function arguments"),
+])
+def test_strict_tool_response_rejects_malformed_arguments_without_retry(
+        tool_type, args, expected):
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(200, json={"choices": [{
+            "finish_reason": "tool_calls",
+            "message": {"content": None, "tool_calls": [{
+                "type": tool_type, "function": {
+                    "name": "submit_evidence_links", "arguments": args,
+                },
+            }]},
+        }]})
+
+    cfg = Settings(
+        _env_file=None, deepseek_api_key="fake", requirements_evidence_id_mode=True,
+        deepseek_strict_evidence_tools=True,
+    )
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http:
+        with pytest.raises(DeepSeekResponseError, match=expected):
+            DeepSeekClient(config=cfg, http_client=http).complete_json(
+                system_prompt="test",
+                user_prompt=json.dumps({
+                    "evidence_format": "id_v1", "phase": "primary",
+                    "znp_atom": {"id": "z1"}, "tu_candidates": [],
                 }),
             )
     assert len(calls) == 1
