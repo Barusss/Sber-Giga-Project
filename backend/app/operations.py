@@ -586,16 +586,31 @@ def resume_operation(project_id: str, job_id: str,
             409, "Неизвестно, оплатил ли провайдер последний запрос. "
                  "Подтвердите возможность повторного списания.",
         )
-    params = dict(job.params)
-    params["retry_uncertain"] = bool(payload.accept_replay_risk)
-    job.params = params
-    job.pause_requested = False
-    job.cancel_requested = False
-    job.status = "queued"
-    job.stage = "queued"
-    job.message = "Восстановление из сохранённых ответов DeepSeek"
-    job.error = None
-    job.completed_at = None
-    db.commit()
-    _workers.submit(_worker, job.id)
+    # Serialize resume with enqueue so a stopped job cannot be reactivated
+    # next to another running comparison of the same document pair.
+    with _enqueue_lock:
+        conflicts = db.scalars(select(OperationJob).where(
+            OperationJob.project_id == project_id,
+            OperationJob.id != job_id,
+            OperationJob.kind.in_(COMPARISON_KINDS),
+            OperationJob.status.in_(ACTIVE),
+        )).all()
+        if any(
+            set(other.params.get("pair_ids", [])) &
+            set(job.params.get("pair_ids", []))
+            for other in conflicts
+        ):
+            raise HTTPException(409, "Другая операция по этой паре уже выполняется")
+        params = dict(job.params)
+        params["retry_uncertain"] = bool(payload.accept_replay_risk)
+        job.params = params
+        job.pause_requested = False
+        job.cancel_requested = False
+        job.status = "queued"
+        job.stage = "queued"
+        job.message = "Восстановление из сохранённых ответов DeepSeek"
+        job.error = None
+        job.completed_at = None
+        db.commit()
+        _workers.submit(_worker, job.id)
     return _out(job)
