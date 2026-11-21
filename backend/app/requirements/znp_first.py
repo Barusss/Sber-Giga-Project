@@ -7,6 +7,7 @@ The legacy agent is retained for old API requests and regression comparison.
 from __future__ import annotations
 
 import json
+import re
 import time
 from math import isfinite
 from collections import Counter, defaultdict
@@ -159,6 +160,9 @@ class ZnPFirstAgent:
                 "id": atom.id, "clause_number": atom.clause_number,
                 "text": atom.text, "quote_choices": atom_options,
                 "section_path": getattr(atom, "section_path", None),
+                # Parent headings and lead-in clauses can restrict applicability.
+                # Quote IDs are only evidence spans, never a substitute for scope.
+                "context_sources": getattr(atom, "context_sources", []),
                 "warnings": getattr(atom, "warnings", []),
             },
             "related_tu_context": context,
@@ -194,6 +198,8 @@ class ZnPFirstAgent:
             items.append({
                 "atom_id": atom.id, "clause_number": atom.clause_number,
                 "text": atom.text, "quote_choices": options,
+                "section_path": getattr(atom, "section_path", None),
+                "context_sources": getattr(atom, "context_sources", []),
                 "warnings": getattr(atom, "warnings", []),
             })
         payload = {
@@ -201,6 +207,8 @@ class ZnPFirstAgent:
             "tu_requirement": {
                 "id": requirement.id, "clause_number": requirement.clause_number,
                 "text": requirement.text, "quote_choices": tu_options,
+                "context_sources": getattr(requirement, "context_sources", []),
+                "warnings": getattr(requirement, "warnings", []),
             },
             "znp_candidates": items,
         }
@@ -464,6 +472,25 @@ class ZnPFirstAgent:
             confidence = 0.0
         params = tool_verify_engineering_params(requirement.text, atom.text)
         warnings = list(getattr(atom, "warnings", ()) or ())
+        # A quoted child atom does not prove a requirement applies outside an
+        # independent conditional heading/parent. The model may overlook that
+        # context even when the prompt includes it, so this is a Python gate.
+        parent_context = getattr(atom, "context_sources", ()) or ()
+        conditional_scope = re.compile(
+            r"\b(?:только\s+при|при\s+наличи\w*|при\s+отсутстви\w*|"
+            r"при\s+услови\w*|за\s+исключени\w*|кроме|"
+            r"если|в\s+случае|исключени\w*)\b",
+            re.IGNORECASE,
+        )
+        for source in parent_context:
+            source_text = (source.get("text", "") if isinstance(source, dict)
+                           else getattr(source, "text", "")) or ""
+            if (conditional_scope.search(source_text)
+                    and " ".join(source_text.split()).casefold()
+                    not in " ".join(atom.text.split()).casefold()):
+                if "conditional_parent_context_requires_review" not in warnings:
+                    warnings.append("conditional_parent_context_requires_review")
+                break
         if relation == "supports":
             if (not params["params_match"] or confidence < 0.7 or warnings
                     or not scope_overlap(requirement.text, atom.text)):
