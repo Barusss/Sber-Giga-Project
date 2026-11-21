@@ -479,7 +479,7 @@ class ZnPFirstAgent:
         conditional_scope = re.compile(
             r"\b(?:только\s+при|при\s+наличи\w*|при\s+отсутстви\w*|"
             r"при\s+услови\w*|за\s+исключени\w*|кроме|"
-            r"если|в\s+случае|исключени\w*)\b",
+            r"если|в\s+случае|исключени\w*|либо|или|не|запрещ\w*)\b",
             re.IGNORECASE,
         )
         for source in parent_context:
