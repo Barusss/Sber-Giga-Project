@@ -263,3 +263,40 @@ def test_normative_catalog_does_not_drop_unnumbered_applicability_rule():
     ledger = source_coverage_ledger([heading, rule, reference], atoms)
     assert next(r for r in ledger["records"] if r["fragment_id"] == "rule")["role"] == "atom_source"
     assert next(r for r in ledger["records"] if r["fragment_id"] == "reference")["role"] == "unclassified"
+
+
+def test_large_normative_reference_catalog_does_not_fake_complete_coverage():
+    """A long reference list is not 200 independent automatically met requirements.
+
+    Yet its entries must remain traceable/unclassified until the applicability
+    of their editions has been checked against the source document.
+    """
+    section = "Приложение А. Перечень нормативных документов"
+    heading = fragment("catalog-title", 0, section, block_type="heading",
+                       section_path=section)
+    rule = fragment(
+        "edition-rule", 1,
+        "В настоящем приложении приведены нормативные документы. "
+        "При их изменении проектировщик должен согласовать применяемую редакцию.",
+        section_path=section,
+    )
+    references = [
+        fragment(
+            f"reference-{index}", index + 2,
+            f"{index}. ГОСТ Р 12345-{2020 + (index % 5)}. "
+            "Справочный перечень нормативных документов.",
+            section_path=section,
+        )
+        for index in range(1, 201)
+    ]
+    fragments = [heading, rule, *references]
+    atoms = atomize_fragments("doc", fragments)
+    ledger = source_coverage_ledger(fragments, atoms)
+    referenced = {s.fragment_id for atom in atoms for s in atom.sources}
+    assert "edition-rule" in referenced
+    assert not any(ref.id in referenced for ref in references)
+    assert ledger["unclassified_count"] == 200
+    assert not ledger["complete"]
+    assert {row["fragment_id"] for row in ledger["records"]
+            if row["role"] == "unclassified"} == {ref.id for ref in references}
+    assert all(row["text_sha256"] for row in ledger["records"])
