@@ -1,4 +1,16 @@
 export type AnalysisTrace = {
+  source_coverage?: {
+    schema: string
+    total_fragments: number
+    atoms: number
+    complete: boolean
+    by_role: Record<string, number>
+    unclassified_count: number
+    unclassified_by_block_type: Record<string, number>
+    excluded_by_reason: Record<string, number>
+    unclassified_fragment_ids: string[]
+    downgraded_fulfilled?: number
+  }
   atomization?: {
     mode: string
     clauses_total: number
@@ -162,15 +174,32 @@ export function AnalysisFallbackNotice({trace, items}: {
   const fallbackCount = items.filter(item => item.method === 'deterministic').length
   const modelCount = items.filter(item => item.method === 'llm').length
   const noValidatedLinks = trace?.validated_links === 0 && (trace.proposed_links ?? 0) > 0
-  if (!trace?.degraded && fallbackCount === 0 && !noValidatedLinks) return null
+  const missingSources = trace?.source_coverage?.unclassified_count ?? 0
+  if (!trace?.degraded && fallbackCount === 0 && !noValidatedLinks && missingSources === 0) return null
   const reasons = discoveredCauses(trace)
-  const title = noValidatedLinks
-    ? 'DeepSeek предложил связи, но ни одна не прошла проверку цитат'
-    : trace?.degraded
-      ? 'ИИ-анализ выполнен не полностью'
-      : 'Часть требований не проходила анализ ИИ'
+  const title = missingSources > 0
+    ? 'Не все исходные фрагменты ЗнП учтены при сверке'
+    : noValidatedLinks
+      ? 'DeepSeek предложил связи, но ни одна не прошла проверку цитат'
+      : trace?.degraded
+        ? 'ИИ-анализ выполнен не полностью'
+        : 'Часть требований не проходила анализ ИИ'
   return <aside className="workspace-ai-notice" aria-label="Состояние ИИ-анализа">
     <strong>{title}</strong>
+    {missingSources > 0 && <p>
+      Исходных фрагментов документа: {trace?.source_coverage?.total_fragments}.
+      Не получили подтверждённой роли при извлечении: <strong>{missingSources}</strong>.
+      Они могут содержать требования, параметры или исключения. Поэтому автоматические
+      «Соответствуют» понижены до «Требуют рассмотрения»:
+      {trace?.source_coverage?.downgraded_fulfilled ?? 0}.
+      Для проверки откройте отчёт аудита исходных фрагментов — эта неопределённость
+      не устраняется дополнительными запросами DeepSeek.
+    </p>}
+    {missingSources > 0 && <details>
+      <summary>Распределение непроверенных фрагментов</summary>
+      <p>{Object.entries(trace?.source_coverage?.unclassified_by_block_type || {})
+        .map(([name, count]) => `${name}: ${count}`).join('; ')}</p>
+    </details>}
     <p>ИИ рассматривал: {modelCount} из {items.length} требований.
       Без завершённой смысловой проверки: {fallbackCount}.
       Участие ИИ не означает, что требование выполнено: для этого
