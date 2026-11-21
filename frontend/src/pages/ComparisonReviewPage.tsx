@@ -68,6 +68,7 @@ type SourceCoveragePreflight = {
   total_fragments?: number
   unclassified_count: number
   unclassified_by_block_type?: Record<string, number>
+  review_hint_counts?: Record<string, number>
   message?: string
 }
 type AtomReview = {
@@ -388,6 +389,10 @@ export function ComparisonReviewPage({projectId, approved}: {projectId: string; 
         Исходный ЗнП: {sourceCoverage.total_fragments} фрагментов,
         {sourceCoverage.unclassified_count} не классифицированы после извлечения.
         В них могут содержаться параметры и ограничения из приложений.
+        {(sourceCoverage.review_hint_counts?.normative_reference_candidate ?? 0) > 0 &&
+          <> Из них {sourceCoverage.review_hint_counts?.normative_reference_candidate}
+          похожи на позиции нормативного каталога — это только подсказка для проверки,
+          а не разрешение исключить их.</>}
         Полная сверка потребует подтверждения этих ограничений перед платным запуском.
       </p>}
     {sourceCoverage && !sourceCoverage.available &&
