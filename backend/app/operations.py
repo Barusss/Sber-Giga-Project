@@ -58,6 +58,7 @@ class OperationRequest(BaseModel):
     pair_ids: list[str] = Field(default_factory=list, max_length=100)
     refresh: bool = False
     test_mode: bool = False
+    allow_incomplete_sources: bool = False
     run_id: str | None = None
     atom_id: str | None = None
 
@@ -275,6 +276,9 @@ def _run_comparisons(db: Session, job: OperationJob) -> dict:
         kwargs = {"progress_callback": report}
         if job.params.get("test_mode", False):
             kwargs["test_mode"] = True
+        kwargs["allow_incomplete_sources"] = bool(
+            job.params.get("allow_incomplete_sources", False)
+        )
         kwargs["checkpoint_job_id"] = job.id
         kwargs["checkpoint_session_factory"] = SessionLocal
         result = execute_comparison(job.project_id, pair_id, db, **kwargs)
@@ -484,6 +488,7 @@ def enqueue_operation(project_id: str, payload: OperationRequest, db: Session = 
         params = {
             "pair_ids": list(dict.fromkeys(payload.pair_ids)),
             "test_mode": payload.test_mode,
+            "allow_incomplete_sources": payload.allow_incomplete_sources,
         }
         if payload.kind == "comparison_atom_recheck":
             if len(params["pair_ids"]) != 1:
