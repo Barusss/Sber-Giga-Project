@@ -305,3 +305,39 @@ def test_strict_flag_alone_keeps_old_fingerprint_if_id_mode_disabled(monkeypatch
     monkeypatch.setattr(settings, "deepseek_strict_evidence_tools", True)
     # Without ID mode this flag has no impact on the request sent to DeepSeek.
     assert request_fingerprint("system", '{"znp_atom":{"id":"z1"}}') == first
+
+
+
+@pytest.mark.parametrize("network_error", ["ReadTimeout", "RemoteProtocolError"])
+def test_ambiguous_network_failure_pauses_checkpoint_without_hidden_resend(
+        database, network_error):
+    import httpx
+    from app.ai.deepseek import DeepSeekClient
+    from app.core.config import Settings
+
+    Factory, job_id = database
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        raise getattr(httpx, network_error)("delivery not confirmed")
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http:
+        api = DeepSeekClient(config=Settings(
+            _env_file=None, deepseek_api_key="fake",
+        ), http_client=http)
+        payload = '{"znp_atom":{"id":"z1"},"tu_candidates":[]}'
+        with pytest.raises(ComparisonInterrupted):
+            CheckpointedDeepSeek(job_id, api, Factory).complete_json(
+                system_prompt="matcher", user_prompt=payload,
+            )
+        assert len(calls) == 1
+        assert checkpoint_counts(job_id, Factory)["uncertain"] == 1
+
+        # A reconstructed worker must explicitly obtain user consent before
+        # potentially re-billing the same request.
+        with pytest.raises(ComparisonUncertain):
+            CheckpointedDeepSeek(job_id, api, Factory).complete_json(
+                system_prompt="matcher", user_prompt=payload,
+            )
+        assert len(calls) == 1
