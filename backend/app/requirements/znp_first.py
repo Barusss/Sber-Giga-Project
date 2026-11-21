@@ -14,6 +14,8 @@ from typing import Any, Callable
 from uuid import uuid4
 
 from app.ai import diagnostics
+from app.core.config import settings
+from app.requirements.evidence_refs import quote_choices, restore_link_quotes
 from app.ai.deepseek import DeepSeekClient, DeepSeekError, DeepSeekResponseError
 from app.ai.embeddings import EmbeddingService
 from app.requirements.retrieval import RequirementRetriever
@@ -77,6 +79,32 @@ relation (supports|partial|conflicts), короткие, но достаточн
 """
 
 
+COMPACT_MATCH_PROMPT = """Проверь одно положение ЗнП против переданных кандидатов ТУ.
+Тексты и контекст даны для понимания условий, объектов и исключений.
+Для каждой реальной связи выбери пару quote_choices IDs: один из текущего
+znp_atom и один из соответствующего tu_candidate. Не генерируй цитаты.
+Верни links с requirement_id, relation (supports|partial|conflicts),
+tu_evidence_id, znp_evidence_id, confidence (число 0..1),
+reasoning (коротко) и search_more (boolean).
+Если цитаты недостаточны для утверждения, пропусти связь или выбери partial.
+Не путай разные объекты, единицы, условия, альтернативы, отрицания.
+Для следующего пакета кандидатов: search_more=true.
+Ответ — один JSON-объект, без пояснений вне JSON.
+"""
+
+COMPACT_TARGETED_PROMPT = """Проверь требование ТУ против кандидатов ЗнП.
+Тексты и контекст даны для понимания условий и ограничений.
+Для каждого относящегося кандидата выбери одну пару цитат по ID из
+tu_requirement.quote_choices и соответствующего znp_candidate.quote_choices.
+Не генерируй цитаты. Верни links с atom_id, relation
+(supports|partial|conflicts), tu_evidence_id, znp_evidence_id,
+confidence (число 0..1) и reasoning (коротко).
+Если доказательств нет, links=[]; не объявляй соответствие по одной лексике.
+Не смешивай объекты, исключения, альтернативы и параметры.
+Ответ — один JSON-объект, без пояснений вне JSON.
+"""
+
+
 class ZnPFirstAgent:
     """End-to-end comparison using conservative ZnP statements as search queries."""
 
@@ -97,7 +125,99 @@ class ZnPFirstAgent:
         self.max_batches = max_batches
         self.targeted_enabled = targeted_enabled
 
+    def _judge_compact(
+        self, atom: ZNPClause, candidates: list[dict[str, Any]],
+        context: list[dict[str, Any]], phase: str,
+    ) -> dict[str, Any] | None:
+        atom_options, atom_map = quote_choices(
+            atom, "z", " ".join(row["text"] for row in candidates),
+        )
+        if not atom_options:
+            return None
+        tu_maps = {}
+        items = []
+        for candidate in candidates:
+            requirement = getattr(self, "_requirements", {}).get(
+                candidate["requirement_id"]
+            )
+            if requirement is None:
+                return None
+            options, mapping = quote_choices(requirement, "t", atom.text)
+            if not options:
+                return None
+            tu_maps[requirement.id] = mapping
+            items.append({
+                "requirement_id": requirement.id,
+                "clause_number": requirement.clause_number,
+                "text": requirement.text,
+                "quote_choices": options,
+                "context_sources": candidate.get("context_sources", []),
+            })
+        payload = {
+            "evidence_format": "id_v1", "phase": phase,
+            "znp_atom": {
+                "id": atom.id, "clause_number": atom.clause_number,
+                "text": atom.text, "quote_choices": atom_options,
+                "section_path": getattr(atom, "section_path", None),
+                "warnings": getattr(atom, "warnings", []),
+            },
+            "related_tu_context": context,
+            "tu_candidates": items,
+        }
+        reply = self.ai.complete_json(
+            system_prompt=COMPACT_MATCH_PROMPT,
+            user_prompt=json.dumps(payload, ensure_ascii=False),
+        )
+        return restore_link_quotes(
+            reply, tu_maps=tu_maps, znp_maps={"_current": atom_map},
+            mode="matching",
+        )
+
+    def _judge_targeted_compact(
+        self, requirement: TURequirement, candidates: list[dict[str, Any]],
+        znp_by_id: dict[str, ZNPClause],
+    ) -> dict[str, Any] | None:
+        tu_options, tu_map = quote_choices(
+            requirement, "t",
+            " ".join(znp_by_id[item["clause_id"]].text for item in candidates),
+        )
+        if not tu_options:
+            return None
+        znp_maps = {}
+        items = []
+        for candidate in candidates:
+            atom = znp_by_id[candidate["clause_id"]]
+            options, mapping = quote_choices(atom, "z", requirement.text)
+            if not options:
+                return None
+            znp_maps[atom.id] = mapping
+            items.append({
+                "atom_id": atom.id, "clause_number": atom.clause_number,
+                "text": atom.text, "quote_choices": options,
+                "warnings": getattr(atom, "warnings", []),
+            })
+        payload = {
+            "evidence_format": "id_v1", "phase": "targeted",
+            "tu_requirement": {
+                "id": requirement.id, "clause_number": requirement.clause_number,
+                "text": requirement.text, "quote_choices": tu_options,
+            },
+            "znp_candidates": items,
+        }
+        reply = self.ai.complete_json(
+            system_prompt=COMPACT_TARGETED_PROMPT,
+            user_prompt=json.dumps(payload, ensure_ascii=False),
+        )
+        return restore_link_quotes(
+            reply, tu_maps={"_current": tu_map}, znp_maps=znp_maps,
+            mode="targeted",
+        )
+
     def _judge(self, atom: ZNPClause, candidates: list[dict[str, Any]], context: list[dict[str, Any]], phase: str = "primary") -> dict[str, Any]:
+        if settings.requirements_evidence_id_mode:
+            reply = self._judge_compact(atom, candidates, context, phase)
+            if reply is not None:
+                return reply
         payload = {
             "phase": phase,
             "znp_atom": {
@@ -140,6 +260,12 @@ class ZnPFirstAgent:
         self, requirement: TURequirement, candidates: list[dict[str, Any]],
         znp_by_id: dict[str, ZNPClause],
     ) -> dict[str, Any]:
+        if settings.requirements_evidence_id_mode:
+            reply = self._judge_targeted_compact(
+                requirement, candidates, znp_by_id,
+            )
+            if reply is not None:
+                return reply
         payload = {
             "phase": "targeted",
             "tu_requirement": {
