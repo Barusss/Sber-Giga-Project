@@ -306,3 +306,56 @@ def test_strict_tool_response_rejects_malformed_arguments_without_retry(
                 }),
             )
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize("parent_text", [
+    "Только при наличии резервной линии КЛ-2",
+    "За исключением КЛ-1",
+    "Для КЛ-1 либо КЛ-2",
+    "Для КЛ-1 или КЛ-2",
+    "Не применять к КЛ-1",
+    "Запрещено применять к КЛ-1",
+])
+def test_parent_conditions_alternatives_and_negations_cannot_support(parent_text):
+    """An independent parent may restrict a child even if its quotes match TU.
+
+    No warning is pre-set: the production validator itself must detect scope.
+    This applies to both legacy and compact-restored links.
+    """
+    requirement = tu()
+    atom = znp()
+    atom.context_sources = [{
+        "fragment_id": "parent", "page": 1, "text": parent_text,
+    }]
+    proposal = {
+        "relation": "supports",
+        "tu_quote": requirement.text,
+        "znp_quote": atom.text,
+        "confidence": 0.99,
+        "reasoning": "Same cable and voltage",
+    }
+    link = ZnPFirstAgent._validated_link(atom, requirement, proposal, 0.95)
+    assert link is not None
+    assert link["relation"] == "partial"
+    assert "conditional_parent_context_requires_review" in link["warnings"]
+    assert link["scope_consistent"]
+    assert link["param_check"]["params_match"]
+
+
+def test_no_independent_parent_condition_still_allows_valid_support():
+    requirement = tu()
+    atom = znp()
+    atom.context_sources = [{
+        "fragment_id": "parent", "page": 1, "text": "Общие положения по КЛ-1",
+    }]
+    proposal = {
+        "relation": "supports",
+        "tu_quote": requirement.text,
+        "znp_quote": atom.text,
+        "confidence": 0.99,
+        "reasoning": "Same cable and voltage",
+    }
+    link = ZnPFirstAgent._validated_link(atom, requirement, proposal, 0.95)
+    assert link is not None
+    assert link["relation"] == "supports"
+    assert "conditional_parent_context_requires_review" not in link["warnings"]
