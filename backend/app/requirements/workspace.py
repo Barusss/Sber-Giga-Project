@@ -208,8 +208,12 @@ def get_comparison(project_id: str, pair_id: str, db: Session = Depends(get_db))
 
 @router.post("/projects/{project_id}/comparisons/{pair_id}/runs", status_code=201)
 def execute_comparison(project_id: str, pair_id: str, test_mode: bool = False,
+                       allow_incomplete_sources: bool = False,
                        db: Session = Depends(get_db)):
-    return run_comparison(project_id, pair_id, db, test_mode=test_mode)
+    return run_comparison(
+        project_id, pair_id, db, test_mode=test_mode,
+        allow_incomplete_sources=allow_incomplete_sources,
+    )
 
 
 def run_comparison(
@@ -217,6 +221,7 @@ def run_comparison(
     progress_callback: Callable[[str, int, int, str | None], None] | None = None,
     *,
     test_mode: bool = False,
+    allow_incomplete_sources: bool = False,
     checkpoint_job_id: str | None = None,
     checkpoint_session_factory=None,
 ):
@@ -265,6 +270,7 @@ def run_comparison(
                     znp_document_id=pair.znp_document_id,
                     force=False,
                     test_mode=test_mode,
+                    allow_incomplete_sources=allow_incomplete_sources,
                 ), db, agent, progress_callback=progress_callback,
                 on_published=None if test_mode else publish,
             )
