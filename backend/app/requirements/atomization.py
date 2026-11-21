@@ -149,7 +149,7 @@ def atomize_fragments(document_id: str, fragments: Sequence[Fragment]) -> list[D
             warnings += ("parent_scope_unresolved", "context_scope_requires_review")
         warnings = tuple(dict.fromkeys(warnings))
         if clause.section_path and re.search(
-            r"(?:^| / )приложение\s+(?:\d{1,3}|[А-ЯЁA-Z])(?=[\s.:—–-]|$)",
+            r"(?:^| / )приложение\s+(?:№\s*)?(?:\d{1,3}|[А-ЯЁA-Z])(?=[\s.:—–-]|$)",
             clause.section_path, re.IGNORECASE,
         ):
             # Appendix table cells may encode parameter/exception context.
