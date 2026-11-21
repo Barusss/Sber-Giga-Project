@@ -367,3 +367,47 @@ def test_explicit_word_toc_style_is_provenance_even_without_page_leaders(tmp_pat
     blocks = _extract_docx(buf.getvalue())
     assert [block.block_type for block in blocks] == ["toc", "heading", "paragraph"]
     assert blocks[-1].section_path == "1. Общие положения"
+
+
+def test_normative_reference_triage_hint_never_marks_source_complete():
+    section = "Приложение А. Перечень нормативных документов"
+    reference = fragment(
+        "ref", 1, "100. ГОСТ 32109-2024. Требования к оборудованию.",
+        section_path=section,
+    )
+    technical_rule = fragment(
+        "rule", 2,
+        "При изменении редакции ГОСТ 32109 требуется согласование.",
+        section_path=section,
+    )
+    noncatalog = fragment(
+        "requirement", 3,
+        "100. ГОСТ 32109-2024. Установить защиту 10 кВ.",
+        section_path="Раздел 1. Технические требования",
+    )
+    ledger = source_coverage_ledger(
+        [reference, technical_rule, noncatalog], [],
+    )
+    entries = {row["fragment_id"]: row for row in ledger["records"]}
+    assert all(row["role"] == "unclassified" for row in entries.values())
+    assert entries["ref"]["review_hint"] == "normative_reference_candidate"
+    assert entries["rule"]["review_hint"] is None
+    assert entries["requirement"]["review_hint"] is None
+    assert ledger["review_hint_counts"] == {
+        "normative_reference_candidate": 1
+    }
+    assert ledger["unclassified_count"] == 3
+    assert not ledger["complete"]
+
+
+def test_normative_catalog_hint_does_not_change_source_guard_behavior():
+    section = "Приложение 3. Перечень нормативных документов"
+    fragment_value = fragment(
+        "ref", 1,
+        "12. СНиП 3.05.06-85. Электротехнические устройства.",
+        section_path=section,
+    )
+    ledger = source_coverage_ledger([fragment_value], [])
+    assert ledger["review_hint_counts"]["normative_reference_candidate"] == 1
+    assert source_coverage_summary(ledger)["complete"] is False
+    assert ledger["by_role"]["unclassified"] == 1
