@@ -213,3 +213,111 @@ def test_meaningful_preamble_still_requires_scope_review(preamble):
     child = atomize_fragments("doc", [fragment("p",1,preamble),heading,body])[-1]
     assert "context_scope_requires_review" in child.warnings
     assert "p" in {s.fragment_id for s in child.context_sources}
+
+
+def test_different_sections_cannot_inherit_same_number_parent():
+    first = fragment("parent", 1, "1. Только при наличии КЛ-2.", document_id="doc")
+    first.section_path = "Раздел А"
+    child = fragment("child", 2, "1.1. Для КЛ-1 предусмотреть кабель 10 кВ.")
+    child.section_path = "Раздел Б"
+    atoms = atomize_fragments("doc", [first, child])
+    assert len(atoms) == 2
+    assert "parent" not in {source.fragment_id for source in atoms[-1].context_sources}
+    assert "parent_scope_unresolved" in atoms[-1].warnings
+    assert "context_scope_requires_review" in atoms[-1].warnings
+
+
+def test_same_prose_section_parent_is_kept_with_manual_scope_warning():
+    first = fragment("parent", 1, "1. Только при наличии КЛ-2.")
+    second = fragment("child", 2, "1.1. Для КЛ-1 предусмотреть кабель 10 кВ.")
+    between = fragment("heading", 1, "1.1. Требования к линиям")
+    between.block_type = "heading"
+    between.section_path = "Раздел 1 / Требования к линиям"
+    child.section_path = "Раздел 1 / Требования к линиям"
+    atoms = atomize_fragments("doc", [first, between, second])
+    assert "parent" in {source.fragment_id for source in atoms[-1].context_sources}
+    assert "context_scope_requires_review" in atoms[-1].warnings
+
+
+def test_different_tables_in_same_section_never_exchange_parent_context():
+    first = fragment("old", 1, "1. Только при наличии резервной КЛ-2.")
+    first.block_type = "table_row"
+    first.container_id = "docx-table-1"
+    second = fragment("new", 2, "1.1. Для КЛ-1 предусмотреть кабель 10 кВ.")
+    second.block_type = "table_row"
+    second.container_id = "docx-table-2"
+
+    atoms = atomize_fragments("doc", [first, second])
+    assert len(atoms) == 2
+    child = atoms[-1]
+    assert child.sources[0].fragment_id == "new"
+    assert "old" not in {source.fragment_id for source in child.context_sources}
+    assert "parent_scope_unresolved" in child.warnings
+    assert child.id == atomize_fragments("doc", [first, second])[-1].id
+
+
+def test_legacy_table_rows_without_ids_are_never_automatically_merged():
+    old = fragment("old", 1, "1. Только при наличии КЛ-2.")
+    old.block_type = "table_row"
+    new = fragment("new", 2, "1.1. Для КЛ-1 предусмотреть кабель 10 кВ.")
+    new.block_type = "table_row"
+    child = atomize_fragments("doc", [old, new])[-1]
+    assert child.sources[0].fragment_id == "new"
+    assert "old" not in {source.fragment_id for source in child.context_sources}
+    assert "parent_scope_unresolved" in child.warnings
+
+
+def test_distinct_table_comments_are_not_silently_discarded():
+    first = fragment("old", 1, "1. Допускается кабель 95 мм².")
+    first.block_type = "table_row"
+    first.container_id = "docx-table-1"
+    note = fragment("note", 2, "Только при наличии двух линий")
+    note.block_type = "table_row"
+    note.container_id = "docx-table-2"
+    atoms = atomize_fragments("doc", [first, note])
+    assert len(atoms) == 2
+    assert "Только при наличии двух линий" == atoms[1].text
+    assert [source.fragment_id for source in atoms[1].sources] == ["note"]
+
+
+def test_docx_parser_assigns_distinct_ids_to_adjacent_tables():
+    from io import BytesIO
+    from docx import Document as WordDocument
+    from app.documents.parser import _extract_docx
+
+    word = WordDocument()
+    word.add_heading("Раздел 1", level=1)
+    old_table = word.add_table(rows=1, cols=1)
+    old_table.cell(0, 0).text = "1. Только при наличии КЛ-2."
+    next_table = word.add_table(rows=1, cols=1)
+    next_table.cell(0, 0).text = "1.1. Для КЛ-1 предусмотреть кабель 10 кВ."
+    output = BytesIO()
+    word.save(output)
+
+    blocks = _extract_docx(output.getvalue())
+    rows = [b for b in blocks if b.block_type == "table_row"]
+    assert [r.container_id for r in rows] == ["docx-table-1", "docx-table-2"]
+    assert rows[0].section_path == rows[1].section_path
+
+    fragments = [
+        Fragment(
+            id=f"f{index}", document_id="doc", page=b.page,
+            position=b.position, text=b.text, block_type=b.block_type,
+            section_path=b.section_path, container_id=b.container_id,
+        )
+        for index, b in enumerate(blocks)
+    ]
+    child = atomize_fragments("doc", fragments)[-1]
+    assert "f1" not in {s.fragment_id for s in child.context_sources}
+    assert "parent_scope_unresolved" in child.warnings
+
+
+def test_known_table_cannot_inherit_prose_parent_without_scope_proof():
+    parent = fragment("intro", 1, "1. Только при наличии КЛ-2.")
+    child = fragment("table", 2, "1.1. Для КЛ-1 предусмотреть кабель 10 кВ.")
+    child.block_type = "table_row"
+    child.container_id = "docx-table-1"
+    result = atomize_fragments("doc", [parent, child])
+    assert len(result) == 2
+    assert "intro" not in {x.fragment_id for x in result[-1].context_sources}
+    assert "parent_scope_unresolved" in result[-1].warnings
