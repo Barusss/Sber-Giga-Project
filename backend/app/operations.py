@@ -32,8 +32,7 @@ from app.normatives.verification import DEFAULT_STANDARDS_BATCH, check_document_
 from app.requirements.workspace import run_comparison as execute_comparison
 from app.requirements.atom_review import run_atom_recheck
 from app.requirements.checkpoints import (
-    ComparisonPause, ComparisonInterrupted, ComparisonUncertain,
-    checkpoint_counts,
+    ComparisonPause, ComparisonCancelled, checkpoint_counts,
 )
 
 router = APIRouter(tags=["operations"])
@@ -375,6 +374,10 @@ def _worker(job_id: str):
             db.rollback()
             _update(db, job_id, status="cancelled", stage="cancelled",
                     message="Операция остановлена")
+        except ComparisonCancelled:
+            db.rollback()
+            _update(db, job_id, status="cancelled", stage="cancelled",
+                    message="Операция остановлена, чекпоинты сохранены")
         except ComparisonPause as exc:
             db.rollback()
             label = str(exc) or "Операция приостановлена"
