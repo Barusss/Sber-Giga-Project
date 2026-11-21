@@ -23,6 +23,8 @@ from app.requirements.router import (
     _lock_project_for_analysis, _analyze_project_requirements, get_project_requirements,
 )
 from app.requirements.znp_first import ZnPFirstAgent
+from app.requirements.checkpoints import CheckpointedDeepSeek
+from app.ai.deepseek import DeepSeekClient
 from app.requirements.schemas import (
     AnalyzeProjectRequirementsRequest, ConfirmRequirementRequest, RequirementStatus,
 )
@@ -211,43 +213,61 @@ def run_comparison(
     progress_callback: Callable[[str, int, int, str | None], None] | None = None,
     *,
     test_mode: bool = False,
+    checkpoint_job_id: str | None = None,
 ):
     pair = _pair(db, project_id, pair_id, edit=True)
-    with _analysis_lock(project_id):
-        _lock_project_for_analysis(db, project_id)
-        response = _analyze_project_requirements(AnalyzeProjectRequirementsRequest(
-            project_id=project_id,
-            tu_document_id=pair.tu_document_id,
-            znp_document_id=pair.znp_document_id,
-            force=False,
-            test_mode=test_mode,
-        ), db, ZnPFirstAgent(), progress_callback=progress_callback)
-        if progress_callback:
-            progress_callback("snapshot", response.stats["total"], response.stats["total"], None)
-        if test_mode:
-            # A preview is a read-only historical snapshot. It cannot replace
-            # the current full run or modify confirmations and project findings.
-            run = ComparisonRun(
-                pair_id=pair.id, result=response.model_dump(mode="json"),
-                is_current=False,
+    model = DeepSeekClient()
+    if checkpoint_job_id:
+        model = CheckpointedDeepSeek(checkpoint_job_id, model)
+    agent = ZnPFirstAgent(ai_client=model)
+    published_run: ComparisonRun | None = None
+
+    def publish(response, session):
+        nonlocal published_run
+        for old in session.scalars(select(ComparisonRun).where(
+            ComparisonRun.pair_id == pair.id,
+            ComparisonRun.is_current.is_(True),
+        )).all():
+            old.is_current = False
+        published_run = ComparisonRun(
+            pair_id=pair.id, result=response.model_dump(mode="json"),
+            is_current=True,
+        )
+        session.add(published_run)
+        session.flush()
+
+    try:
+        with _analysis_lock(project_id):
+            _lock_project_for_analysis(db, project_id)
+            response = _analyze_project_requirements(
+                AnalyzeProjectRequirementsRequest(
+                    project_id=project_id,
+                    tu_document_id=pair.tu_document_id,
+                    znp_document_id=pair.znp_document_id,
+                    force=False,
+                    test_mode=test_mode,
+                ), db, agent, progress_callback=progress_callback,
+                on_published=None if test_mode else publish,
             )
-        else:
-            persisted = get_project_requirements(
-                project_id, pair.tu_document_id, pair.znp_document_id, db,
-            )
-            persisted.trace_info = response.trace_info
-            for old in db.scalars(select(ComparisonRun).where(
-                ComparisonRun.pair_id == pair.id, ComparisonRun.is_current.is_(True)
-            )).all():
-                old.is_current = False
-            run = ComparisonRun(
-                pair_id=pair.id, result=persisted.model_dump(mode="json"),
-                is_current=True,
-            )
-        db.add(run)
-        db.commit()
-        db.refresh(run)
-        return {"run": _summary(run), "result": run.result}
+            if progress_callback:
+                progress_callback("snapshot", response.stats["total"], response.stats["total"], None)
+            if test_mode:
+                # Preview remains non-current and does not change findings.
+                run = ComparisonRun(
+                    pair_id=pair.id, result=response.model_dump(mode="json"),
+                    is_current=False,
+                )
+                db.add(run)
+                db.commit()
+            else:
+                # Committed in the SAME transaction as comparison verifications.
+                run = published_run
+                if run is None:
+                    raise RuntimeError("Comparison published without snapshot")
+            db.refresh(run)
+            return {"run": _summary(run), "result": run.result}
+    finally:
+        agent.ai.close() if hasattr(agent.ai, "close") else None
 
 
 
