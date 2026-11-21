@@ -508,10 +508,16 @@ def enqueue_operation(project_id: str, payload: OperationRequest, db: Session = 
 def list_operations(project_id: str, db: Session = Depends(get_db)):
     if db.get(Project, project_id) is None:
         raise HTTPException(404, "Project not found")
-    jobs = db.scalars(
-        select(OperationJob).where(OperationJob.project_id == project_id)
-        .order_by(OperationJob.created_at.desc()).limit(40)
-    ).all()
+    # Paused and active work must never disappear behind 40 newer history rows.
+    important = db.scalars(select(OperationJob).where(
+        OperationJob.project_id == project_id,
+        OperationJob.status.in_(ACTIVE),
+    ).order_by(OperationJob.created_at.desc())).all()
+    history = db.scalars(select(OperationJob).where(
+        OperationJob.project_id == project_id,
+        OperationJob.status.not_in(ACTIVE),
+    ).order_by(OperationJob.created_at.desc()).limit(40)).all()
+    jobs = sorted([*important, *history], key=lambda job: job.created_at, reverse=True)
     return [_out(job) for job in jobs]
 
 
