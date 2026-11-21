@@ -227,3 +227,20 @@ def test_targeted_truncation_reuses_failure_to_split_without_repaying(database):
     assert provider.calls == 2
     assert checkpoint_counts(job_id, Factory)["saved"] == 1
     assert checkpoint_counts(job_id, Factory)["uncertain"] == 0
+
+
+def test_cancel_takes_precedence_over_pause_even_for_cached_response(database):
+    from app.requirements.checkpoints import ComparisonCancelled
+
+    Factory, job_id = database
+    with Factory() as db:
+        job = db.get(OperationJob, job_id)
+        job.cancel_requested = True
+        job.pause_requested = True
+        db.commit()
+    provider = Spy()
+    with pytest.raises(ComparisonCancelled):
+        CheckpointedDeepSeek(job_id, provider, Factory).complete_json(
+            system_prompt="x", user_prompt='{"znp_atom":{"id":"a1"}}',
+        )
+    assert provider.calls == 0
