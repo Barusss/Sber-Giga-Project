@@ -377,3 +377,30 @@ def test_unnumbered_prose_note_after_table_remains_with_condition_and_warning():
     assert {source.fragment_id for source in result[0].sources} == {"row", "note"}
     assert "mixed_table_prose_scope_requires_review" in result[0].warnings
     assert "context_scope_requires_review" in result[0].warnings
+
+
+
+def test_retrieval_chunks_do_not_join_adjacent_tables_with_same_section():
+    from app.documents.chunking import build_chunks
+
+    old = fragment("old", 1, "1. Ограничение только для КЛ-2.")
+    new = fragment("new", 2, "1.1. Для КЛ-1 предусмотреть кабель 10 кВ.")
+    for fragment_item in (old, new):
+        fragment_item.block_type = "table_row"
+    old.container_id = "docx-table-1"
+    new.container_id = "docx-table-2"
+
+    chunks = build_chunks([old, new])
+    assert len(chunks) == 2
+    assert [chunk.pieces[0].fragment.id for chunk in chunks] == ["old", "new"]
+
+
+def test_legacy_table_rows_without_container_id_do_not_share_retrieval_chunk():
+    from app.documents.chunking import build_chunks
+
+    old = fragment("old", 1, "1. Условие для КЛ-2.")
+    new = fragment("new", 2, "1.1. Условие для КЛ-1.")
+    for fragment_item in (old, new):
+        fragment_item.block_type = "table_row"
+    chunks = build_chunks([old, new])
+    assert len(chunks) == 2
