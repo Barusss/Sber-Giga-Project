@@ -21,7 +21,7 @@ from app.requirements.source_coverage import source_coverage_ledger
 def audit_file(path: Path) -> tuple[dict, list[Fragment]]:
     raw = path.read_bytes()
     document_id = str(uuid5(
-        NAMESPACE_URL, "znp-source-coverage:" + sha256(raw).hexdigest(),
+        NAMESPACE_URL, "parent-scope-audit:" + sha256(raw).hexdigest(),
     ))
     blocks = extract_blocks(raw, path.suffix.lower())
     fragments = [
