@@ -45,6 +45,7 @@ def source_coverage_ledger(
     context_ids = {s.fragment_id for atom in atoms for s in atom.context_sources}
     by_role = Counter()
     unclassified_by_block_type = Counter()
+    excluded_by_reason = Counter()
     records = []
     seen = set()
     for fragment in fragments:
@@ -61,6 +62,8 @@ def source_coverage_ledger(
             role = "excluded" if reason else "unclassified"
             if role == "unclassified":
                 unclassified_by_block_type[fragment.block_type or "unknown"] += 1
+            else:
+                excluded_by_reason[reason] += 1
         by_role[role] += 1
         records.append({
             "fragment_id": fragment.id,
@@ -90,6 +93,11 @@ def source_coverage_ledger(
         "atoms": len(atoms),
         "by_role": dict(by_role),
         "unclassified_by_block_type": dict(unclassified_by_block_type),
+        "excluded_by_reason": dict(excluded_by_reason),
+        "unclassified_fragment_ids": [
+            item["fragment_id"] for item in records
+            if item["role"] == "unclassified"
+        ],
         "unclassified_count": by_role["unclassified"],
         "complete": by_role["unclassified"] == 0,
         "records": records,
@@ -101,6 +109,48 @@ def source_coverage_summary(ledger: dict) -> dict:
     return {
         key: ledger[key] for key in (
             "schema", "total_fragments", "atoms", "by_role",
-            "unclassified_by_block_type", "unclassified_count", "complete",
+            "unclassified_by_block_type", "excluded_by_reason",
+            "unclassified_fragment_ids", "unclassified_count", "complete",
         )
     }
+
+
+def apply_source_coverage_guard(response, ledger: dict) -> None:
+    """Keep a finished AI pass visible, but NEVER auto-fulfill an incomplete ZnP.
+
+    Unclassified fragments may contain crucial annex restrictions. They must
+    first be explained or recovered, regardless of how optimistic the LLM is.
+    This modifies a fresh automated response, not historical human decisions.
+    """
+    from app.requirements.schemas import RequirementStatus
+
+    if response.trace_info is None:
+        response.trace_info = {}
+    response.trace_info["source_coverage"] = source_coverage_summary(ledger)
+    if ledger["complete"]:
+        return
+    response.trace_info["degraded"] = True
+    downgraded = 0
+    for item in response.checked_requirements:
+        if item.status != RequirementStatus.fulfilled:
+            continue
+        item.status = RequirementStatus.needs_review
+        item.automatic_status = RequirementStatus.needs_review
+        item.confidence_score = 0.0
+        suffix = (
+            "Полнота исходного ЗнП не подтверждена: "
+            f"{ledger['unclassified_count']} фрагментов не классифицированы. "
+            "Автоматическое соответствие отложено до проверки источников."
+        )
+        item.reasoning = ((item.reasoning or "").rstrip() + " " + suffix).strip()
+        details = dict(item.validation_details or {})
+        details["source_coverage_incomplete"] = True
+        item.validation_details = details
+        downgraded += 1
+    response.trace_info["source_coverage"]["downgraded_fulfilled"] = downgraded
+    response.stats = {
+        status.value: sum(
+            item.status == status for item in response.checked_requirements
+        ) for status in RequirementStatus
+    }
+    response.stats["total"] = len(response.checked_requirements)
