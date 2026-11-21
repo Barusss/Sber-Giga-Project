@@ -144,9 +144,9 @@ class DeepSeekClient:
         )
         # Body capture contains document text: never includes Authorization.
         diagnostics.capture(call_id, "request", body)
-        # Retry connection failures and one observed transient response failure.
-        # A timed-out request may already have been billed by the provider.
-        # Never replay WriteError, ReadError, or an HTTP response.
+        # Retry only failures to establish a connection. Once a request may
+        # have reached the provider, never send it again automatically: a
+        # timeout/protocol error can occur after DeepSeek has billed the call.
         for attempt in range(1, 4):
             started = time.monotonic()
             try:
@@ -173,26 +173,6 @@ class DeepSeekClient:
                         f"({type(exc).__name__}); check container network or retry."
                     ) from exc
                 time.sleep((0.3, 0.8)[attempt - 1])
-            except (httpx.ReadTimeout, httpx.RemoteProtocolError) as exc:
-                elapsed_ms = round((time.monotonic() - request_started) * 1000)
-                diagnostics.record(
-                    "provider.network.error", call_id=call_id, stage="request",
-                    error_type=type(exc).__name__, attempt=attempt,
-                    elapsed_ms=elapsed_ms, retrying=attempt == 1,
-                )
-                logger.warning(
-                    "DeepSeek network error: stage=request type=%s attempt=%d/2 elapsed_ms=%d",
-                    type(exc).__name__, attempt, elapsed_ms,
-                )
-                if attempt == 1:
-                    continue
-                reason = "connection closed unexpectedly"
-                if isinstance(exc, httpx.ReadTimeout):
-                    reason = "timed out"
-                raise DeepSeekAPIError(
-                    f"DeepSeek request {reason} after {attempt} attempts "
-                    f"({type(exc).__name__})."
-                ) from exc
             except httpx.TimeoutException as exc:
                 logger.warning(
                     "DeepSeek network error: stage=request type=%s attempt=1/1 elapsed_ms=%d",
@@ -296,6 +276,7 @@ class DeepSeekClient:
             calls = message.get("tool_calls")
             if (finish_reason != "tool_calls" or not isinstance(calls, list)
                     or len(calls) != 1 or not isinstance(calls[0], dict)
+                    or calls[0].get("type") != "function"
                     or not isinstance(calls[0].get("function"), dict)
                     or calls[0]["function"].get("name") != "submit_evidence_links"):
                 diagnostics.record(
@@ -368,6 +349,16 @@ class DeepSeekClient:
         if not isinstance(value, dict):
             diagnostics.record("provider.json.invalid_type", type=type(value).__name__)
             raise DeepSeekResponseError("DeepSeek JSON response must be an object.")
+        if tool_schema is not None:
+            from app.requirements.evidence_refs import validate_strict_tool_arguments
+            if not validate_strict_tool_arguments(value, tool_schema):
+                diagnostics.record(
+                    "provider.response.rejected", code="invalid_strict_tool_arguments",
+                    raw_sha=diagnostics.sha(raw),
+                )
+                raise DeepSeekResponseError(
+                    "DeepSeek strict function arguments do not match the required schema."
+                )
         diagnostics.record(
             "provider.json.valid", key_count=len(value), keys=sorted(value.keys())[:20],
         )
