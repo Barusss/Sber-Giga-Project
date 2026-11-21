@@ -77,8 +77,9 @@ class DeepSeekClient:
         system_prompt: str,
         user_prompt: str,
         json_mode: bool = False,
+        tool_schema: dict[str, Any] | None = None,
     ) -> str:
-        """Return model text; json_mode asks DeepSeek for one JSON object."""
+        """Return model text or forced strict-tool arguments (opt-in only)."""
         key = self._config.deepseek_api_key.get_secret_value().strip()
         if not key:
             diagnostics.record("provider.preflight_failed", reason="missing_api_key")
@@ -104,8 +105,24 @@ class DeepSeekClient:
             body["temperature"] = 0
         if json_mode:
             body["response_format"] = {"type": "json_object"}
+        if tool_schema is not None:
+            body["tools"] = [{
+                "type": "function",
+                "function": {
+                    "name": "submit_evidence_links",
+                    "description": "Return evidence IDs and conservative relationships.",
+                    "strict": True,
+                    "parameters": tool_schema,
+                },
+            }]
+            body["tool_choice"] = {
+                "type": "function", "function": {"name": "submit_evidence_links"},
+            }
 
-        url = self._config.deepseek_base_url.rstrip("/") + "/chat/completions"
+        base = self._config.deepseek_base_url.rstrip("/")
+        if tool_schema is not None and not base.endswith("/beta"):
+            base += "/beta"
+        url = base + "/chat/completions"
         headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
         call_id = uuid4().hex
         request_bytes = json.dumps(body, ensure_ascii=False).encode("utf-8")
@@ -233,7 +250,7 @@ class DeepSeekClient:
         try:
             result = response.json()
             choice = result["choices"][0]
-            content = choice["message"]["content"]
+            content = choice["message"].get("content")
             finish_reason = choice.get("finish_reason")
         except (ValueError, TypeError, KeyError, IndexError) as exc:
             diagnostics.record(
@@ -275,6 +292,20 @@ class DeepSeekClient:
                 code="finish_reason_incomplete", finish_reason=finish_reason,
             )
             raise DeepSeekResponseError("DeepSeek did not finish the response.")
+        if tool_schema is not None:
+            calls = message.get("tool_calls")
+            if (finish_reason != "tool_calls" or not isinstance(calls, list)
+                    or len(calls) != 1 or not isinstance(calls[0], dict)
+                    or not isinstance(calls[0].get("function"), dict)
+                    or calls[0]["function"].get("name") != "submit_evidence_links"):
+                diagnostics.record(
+                    "provider.response.rejected", call_id=call_id,
+                    code="missing_forced_tool_call",
+                )
+                raise DeepSeekResponseError(
+                    "DeepSeek did not return the required structured function call."
+                )
+            content = calls[0]["function"].get("arguments")
         if not isinstance(content, str) or not content.strip():
             diagnostics.record("provider.response.rejected", call_id=call_id, code="empty_content")
             raise DeepSeekResponseError("DeepSeek returned empty content.")
@@ -288,8 +319,21 @@ class DeepSeekClient:
         user_prompt: str,
     ) -> dict[str, Any]:
         """Generate and parse one JSON object for facts or requirement extraction."""
+        tool_schema = None
+        if (self._config.requirements_evidence_id_mode
+                and self._config.deepseek_strict_evidence_tools):
+            try:
+                payload = json.loads(user_prompt)
+            except (ValueError, TypeError):
+                payload = {}
+            if isinstance(payload, dict) and payload.get("evidence_format") == "id_v1":
+                from app.requirements.evidence_refs import link_schema
+                tool_schema = link_schema(
+                    targeted=payload.get("phase") == "targeted",
+                )
         raw = self.complete(
-            system_prompt=system_prompt, user_prompt=user_prompt, json_mode=True,
+            system_prompt=system_prompt, user_prompt=user_prompt,
+            json_mode=tool_schema is None, tool_schema=tool_schema,
         )
         try:
             value = json.loads(raw)
