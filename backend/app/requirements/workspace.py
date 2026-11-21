@@ -214,6 +214,7 @@ def run_comparison(
     *,
     test_mode: bool = False,
     checkpoint_job_id: str | None = None,
+    checkpoint_session_factory=None,
 ):
     pair = _pair(db, project_id, pair_id, edit=True)
     if checkpoint_job_id:
@@ -225,7 +226,9 @@ def run_comparison(
             return {"run": _summary(finished), "result": finished.result}
     model = DeepSeekClient()
     if checkpoint_job_id:
-        model = CheckpointedDeepSeek(checkpoint_job_id, model)
+        model = CheckpointedDeepSeek(
+            checkpoint_job_id, model, session_factory=checkpoint_session_factory,
+        )
     agent = ZnPFirstAgent(ai_client=model)
     published_run: ComparisonRun | None = None
 
