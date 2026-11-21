@@ -265,3 +265,23 @@ def test_workspace_persists_deepseek_atomization_trace(client, monkeypatch):
     saved = client.get(f"{pairs_url}/{pair['id']}/runs/{run.json()['run']['id']}")
     assert saved.status_code == 200
     assert saved.json()["result"]["trace_info"]["atomization"] == atomization
+
+
+
+def test_source_coverage_preflight_is_read_only_and_uses_real_fragments(client, monkeypatch):
+    project_id, docs = prepare(client, monkeypatch)
+    base = f"/api/v1/projects/{project_id}/comparisons"
+    pair = client.post(base, json={"pairs": [{
+        "tu_document_id": docs["tu"][0],
+        "znp_document_id": docs["znp"][0],
+    }]}).json()[0]
+    endpoint = f"{base}/{pair['id']}/source-coverage"
+    response = client.get(endpoint)
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["available"]
+    assert data["complete"]
+    assert data["by_role"]["atom_source"] == 1
+    assert data["unclassified_count"] == 0
+    assert client.get(endpoint).json() == data
+    assert client.get(f"{base}/{pair['id']}/runs").json() == []
