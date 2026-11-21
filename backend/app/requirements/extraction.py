@@ -224,6 +224,17 @@ def extract_clauses(fragments: Sequence[Fragment], *, conservative: bool = False
         if current is not None and block_type != "heading":
             previous_fragment = current.sections[-1][0]
             crossed_container = _container_boundary(previous_fragment, fragment)
+            if block_type == "table_row":
+                # A prose note can remain with the preceding table, but must
+                # not hide its identity when a new table starts after it.
+                previous_table = next((
+                    source for source, _ in reversed(current.sections)
+                    if source.block_type == "table_row"
+                ), None)
+                if previous_table is not None:
+                    crossed_container = (
+                        crossed_container or _container_boundary(previous_table, fragment)
+                    )
             # A numbered child in another independently identified section is
             # not part of the previous clause, even if 1/1.1 looks hierarchical.
             if (current.section_path and fragment.section_path

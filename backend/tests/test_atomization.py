@@ -426,3 +426,18 @@ def test_repeated_heading_text_does_not_reuse_prior_section_instance_parent():
     assert "h1" not in context_ids
     assert "p1" not in context_ids
     assert "parent_scope_unresolved" in last.warnings
+
+
+def test_prose_note_cannot_bridge_two_distinct_tables():
+    old = fragment("old-table", 1, "1. Допускается кабель 95 мм².")
+    old.block_type = "table_row"
+    old.container_id = "docx-table-1"
+    note = fragment("note-between", 2, "Только при наличии двух линий.")
+    new = fragment("new-table", 3, "Параметр | Значение")
+    new.block_type = "table_row"
+    new.container_id = "docx-table-2"
+    atoms = atomize_fragments("doc", [old, note, new])
+    assert len(atoms) == 2
+    assert {s.fragment_id for s in atoms[0].sources} == {"old-table", "note-between"}
+    assert [s.fragment_id for s in atoms[1].sources] == ["new-table"]
+    assert "Только при наличии двух линий." in atoms[0].text
