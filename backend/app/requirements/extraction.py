@@ -56,6 +56,32 @@ _IGNORED_HEADING_PATTERNS = (
 _IGNORED_HEADING_RE = tuple(
     re.compile(pattern, re.IGNORECASE) for pattern in _IGNORED_HEADING_PATTERNS
 )
+# Annex titles are not automatically administrative material. Technical
+# specifications, parameter tables and restrictions frequently follow them.
+_ANNEX_HEADING_RE = re.compile(
+    r"^приложение\s+(?:\d{1,3}|[А-ЯЁA-Z])(?=\s|[.:—–-]|$)",
+    re.IGNORECASE,
+)
+
+
+def _technical_annex_heading(text: str) -> bool:
+    label = _heading_label(text)
+    if not _ANNEX_HEADING_RE.match(label):
+        return False
+    # Keep ordinary catalogs excluded; do not turn abbreviations into specs.
+    remainder = _ANNEX_HEADING_RE.sub("", label, count=1).lstrip(" .:—–-")
+    return not (re.match(
+        r"^(?:перечень|список)\s+(?:сокращени|обозначени|нормативн)|"
+        r"^(?:термины\s+и\s+определения|условные\s+обозначения)\b",
+        remainder, re.IGNORECASE,
+    ))
+
+
+def _skip_heading(text: str, *, conservative: bool) -> bool:
+    if conservative and _technical_annex_heading(text):
+        return False
+    return _is_ignored_heading(text)
+
 _PREAMBLE_RE = re.compile(
     r"\b(?:настоящ\w*|требовани\w*|распространя\w*|определя\w*|"
     r"устанавлива\w*|предъявля\w*|должн\w*|необходим\w*)\b",
@@ -203,7 +229,7 @@ def extract_clauses(fragments: Sequence[Fragment], *, conservative: bool = False
                 and not _next_is_body(ordered, index)
             ):
                 current = None
-                if _is_ignored_heading(text):
+                if _skip_heading(text, conservative=conservative):
                     pending_heading = None
                     skip_section = True
                 elif block_type == "heading" or _start_clause_number(text):
@@ -246,7 +272,7 @@ def extract_clauses(fragments: Sequence[Fragment], *, conservative: bool = False
 
         if block_type == "heading":
             current = None
-            if _is_ignored_heading(text):
+            if _skip_heading(text, conservative=conservative):
                 pending_heading = None
                 skip_section = True
             else:
@@ -254,7 +280,7 @@ def extract_clauses(fragments: Sequence[Fragment], *, conservative: bool = False
                 skip_section = False
             continue
 
-        if _is_ignored_heading(text) and _looks_like_heading(text):
+        if _skip_heading(text, conservative=conservative) and _looks_like_heading(text):
             current = None
             pending_heading = None
             skip_section = True
