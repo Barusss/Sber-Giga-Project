@@ -13,6 +13,16 @@ def upgrade():
     op.add_column("operation_jobs", sa.Column(
         "pause_requested", sa.Boolean(), nullable=False, server_default=sa.false(),
     ))
+    op.add_column("comparison_runs", sa.Column(
+        "operation_job_id", sa.String(36),
+        sa.ForeignKey("operation_jobs.id", ondelete="SET NULL"), nullable=True,
+    ))
+    op.create_index("ix_comparison_runs_operation_job_id",
+                    "comparison_runs", ["operation_job_id"])
+    op.create_unique_constraint(
+        "uq_comparison_run_job_pair", "comparison_runs",
+        ["operation_job_id", "pair_id"],
+    )
     op.create_table(
         "comparison_llm_checkpoints",
         sa.Column("id", sa.String(36), primary_key=True),
@@ -62,4 +72,9 @@ def downgrade():
     op.drop_index("ix_comparison_llm_checkpoints_job_id",
                   table_name="comparison_llm_checkpoints")
     op.drop_table("comparison_llm_checkpoints")
+    op.drop_constraint("uq_comparison_run_job_pair", "comparison_runs",
+                       type_="unique")
+    op.drop_index("ix_comparison_runs_operation_job_id",
+                  table_name="comparison_runs")
+    op.drop_column("comparison_runs", "operation_job_id")
     op.drop_column("operation_jobs", "pause_requested")
