@@ -630,7 +630,9 @@ class ZnPFirstAgent:
         if len(znp_vectors) != len(znp_clauses) or not self.embedder.enabled:
             znp_vectors = None
 
-        for requirement in tu_requirements:
+        if progress_callback:
+            progress_callback("coverage", 0, len(tu_requirements), None)
+        for requirement_index, requirement in enumerate(tu_requirements, start=1):
             entries = links[requirement.id]
             diagnostics.record(
                 "coverage.requirement.begin",
@@ -843,6 +845,11 @@ class ZnPFirstAgent:
             if getattr(self.ai, "exhausted", False):
                 model_available = False
                 model_error = "Достигнут лимит запросов DeepSeek для сверки"
+            if progress_callback:
+                progress_callback(
+                    "coverage", requirement_index, len(tu_requirements),
+                    requirement.clause_number,
+                )
 
         for trace in traces:
             if trace["proposed_links"] and not trace["validated_links"] and trace["outcome"] == "no_links":
@@ -864,7 +871,9 @@ class ZnPFirstAgent:
         audits: dict[str, dict[str, Any]] = {}
         audited_atom_ids: set[str] = set()
         audit_failed = False
-        for requirement in tu_requirements:
+        if progress_callback:
+            progress_callback("audit", 0, len(tu_requirements), None)
+        for audit_index, requirement in enumerate(tu_requirements, start=1):
             covered = all_obligations_covered(coverage_results[requirement.id])
             candidates = (
                 conflict_candidates(requirement, znp_clauses)
@@ -918,6 +927,11 @@ class ZnPFirstAgent:
                 "complete": not pending_count and not uncertain,
                 "skipped_uncovered": not covered,
             }
+            if progress_callback:
+                progress_callback(
+                    "audit", audit_index, len(tu_requirements),
+                    requirement.clause_number,
+                )
 
         atom_links: dict[str, list[dict[str, Any]]] = defaultdict(list)
         audit_link_counts: Counter[str] = Counter()
@@ -1089,7 +1103,7 @@ class ZnPFirstAgent:
                 "znp_atom_results": [{
                     "atom_id": atom.id,
                     "clause_number": atom.clause_number,
-                    "text": atom.text[:1800],
+                    "text": atom.text,
                     "page": atom.page,
                     "fragment_id": atom.fragment_id,
                     "fragment_text": atom.fragment_text,
