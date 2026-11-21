@@ -178,3 +178,52 @@ def test_restart_requeues_safe_job_and_pauses_uncertain_one(database, monkeypatc
         assert db.get(OperationJob, first_id).status == "queued"
         assert db.get(OperationJob, second_id).status == "paused"
     assert submitted == [first_id]
+
+
+def test_targeted_truncation_reuses_failure_to_split_without_repaying(database):
+    from app.ai.deepseek import DeepSeekResponseError
+
+    Factory, job_id = database
+
+    class Model:
+        def __init__(self):
+            self.calls = 0
+
+        def complete_json(self, *, system_prompt, user_prompt):
+            import json
+            self.calls += 1
+            count = len(json.loads(user_prompt)["znp_candidates"])
+            if count > 2:
+                raise DeepSeekResponseError(
+                    "DeepSeek response was truncated; increase DEEPSEEK_MAX_TOKENS."
+                )
+            return {"links": []}
+
+    import json
+    provider = Model()
+    full = json.dumps({
+        "phase": "targeted", "tu_requirement": {"id": "t1"},
+        "znp_candidates": [{"atom_id": f"a{i}"} for i in range(4)],
+    })
+    small = json.dumps({
+        "phase": "targeted", "tu_requirement": {"id": "t1"},
+        "znp_candidates": [{"atom_id": f"a{i}"} for i in range(2)],
+    })
+    with pytest.raises(DeepSeekResponseError, match="truncated"):
+        CheckpointedDeepSeek(job_id, provider, Factory).complete_json(
+            system_prompt="targeted", user_prompt=full,
+        )
+    assert provider.calls == 1
+    # A restarted worker can safely split without paying for full batch again.
+    with pytest.raises(DeepSeekResponseError, match="truncated"):
+        CheckpointedDeepSeek(job_id, provider, Factory).complete_json(
+            system_prompt="targeted", user_prompt=full,
+        )
+    assert provider.calls == 1
+    result = CheckpointedDeepSeek(job_id, provider, Factory).complete_json(
+        system_prompt="targeted", user_prompt=small,
+    )
+    assert result == {"links": []}
+    assert provider.calls == 2
+    assert checkpoint_counts(job_id, Factory)["saved"] == 1
+    assert checkpoint_counts(job_id, Factory)["uncertain"] == 0
