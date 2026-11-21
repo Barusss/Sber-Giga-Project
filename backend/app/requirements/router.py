@@ -1000,6 +1000,24 @@ def _analyze_project_requirements(
                     source_coverage,
                 ).items() if key != "unclassified_fragment_ids"},
             )
+            if (source_coverage["unclassified_count"] > 0
+                    and not payload.allow_incomplete_sources):
+                # Stop BEFORE semantic atomization, retrieval and the first
+                # paid call. UI and API users must knowingly authorize an
+                # incomplete (never auto-fulfilled) report.
+                count = source_coverage["unclassified_count"]
+                diagnostics.record(
+                    "comparison.source_coverage_blocked",
+                    unclassified_count=count, no_paid_calls=True,
+                )
+                raise HTTPException(
+                    422,
+                    f"ZnP source coverage incomplete: {count} unclassified "
+                    "fragments. No DeepSeek calls were made. "
+                    "Review source coverage or explicitly set "
+                    "allow_incomplete_sources=true to continue with "
+                    "automatic fulfilled verdicts disabled.",
+                )
             diagnostics.record(
                 "comparison.source_atoms", count=len(original_atoms),
                 max_chars=max((len(a.text) for a in original_atoms), default=0),
