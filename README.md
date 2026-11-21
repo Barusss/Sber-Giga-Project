@@ -139,6 +139,7 @@ GitHub Actions проверяет backend, сборку frontend и интегр
 - [Документы, OCR, chunks, facts и поиск](docs/DATA_PIPELINE.md)
 - [Аудит чанкинга](docs/CHUNKING_AUDIT.md)
 - [Настройка DeepSeek](docs/DEEPSEEK.md)
+- [План масштабирования сверки ТУ ↔ ЗнП (предложение, не реализовано)](docs/TU_ZNP_SCALABILITY_ROADMAP.md)
 - [Извлечение нормативных ссылок](docs/NORMATIVE_EXTRACTION.md)
 - [Локальный реестр и Росстандарт](docs/NORMATIVE_VERIFICATION.md)
 - [Экспертный нормативный отчёт](docs/EXPERT_NORMATIVE_REPORT.md)
