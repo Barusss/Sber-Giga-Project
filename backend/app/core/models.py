@@ -70,6 +70,9 @@ class Fragment(Base):
     text: Mapped[str] = mapped_column(Text)
     block_type: Mapped[str] = mapped_column(String(32), default="paragraph", server_default="page")
     section_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # DOCX table identity from extraction, not a user-facing section label.
+    # Historical fragments are NULL until reindexed from their original file.
+    container_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     bbox: Mapped[list | None] = mapped_column(JSON().with_variant(JSONB(), "postgresql"), nullable=True)
     extraction_method: Mapped[str] = mapped_column(String(16), default="text", server_default="legacy")
     document: Mapped[Document] = relationship(back_populates="fragments")
