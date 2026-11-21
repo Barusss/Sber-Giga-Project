@@ -180,7 +180,9 @@ type ComparisonProgressData = {
 const comparisonSteps = [
   {stage:'reading', label:'Разбор документов'},
   {stage:'embedding', label:'Поиск соответствий'},
-  {stage:'verifying', label:'Проверка требований'},
+  {stage:'verifying', label:'Поиск связей ЗнП → ТУ'},
+  {stage:'coverage', label:'Проверка покрытия и обратный поиск'},
+  {stage:'audit', label:'Аудит противоречий'},
   {stage:'persisting', label:'Формирование замечаний'},
   {stage:'snapshot', label:'Сохранение результата'},
 ]
@@ -189,9 +191,11 @@ function comparisonStageIndex(stage: string): number {
   if (stage === 'reading' || stage === 'preparing') return 0
   if (stage === 'embedding') return 1
   if (stage === 'verifying') return 2
-  if (stage === 'persisting') return 3
-  if (stage === 'snapshot') return 4
-  if (stage === 'complete' || stage === 'comparing') return 5
+  if (stage === 'coverage') return 3
+  if (stage === 'audit') return 4
+  if (stage === 'persisting') return 5
+  if (stage === 'snapshot') return 6
+  if (stage === 'complete' || stage === 'comparing') return 7
   return -1
 }
 
@@ -234,11 +238,14 @@ function ComparisonProgress({job}: {job: Operation}) {
   const total = data.requirements_total
   const hasCount = current !== null && total !== null && total > 0
   const percent = hasCount ? Math.min(100, Math.round(current / total * 100)) : null
+  const sourceIsZnp = data.stage === 'verifying'
+  const sourceIsTu = data.stage === 'coverage' || data.stage === 'audit'
+  const countLabel = sourceIsZnp ? 'положений ЗнП' : sourceIsTu ? 'требований ТУ' : 'элементов'
 
   return <div className="operation-comparison-detail">
     <div className="operation-comparison-heading">
       <strong>Пара {data.pair_index} из {data.pair_total}</strong>
-      {hasCount && <span>{job.test_mode ? 'Положений ЗнП в тесте' : 'Положений ЗнП'}: {total}</span>}
+      {hasCount && <span>{countLabel}: {total}</span>}
     </div>
     <ol className="operation-stage-list" aria-label="Этапы сверки">
       {comparisonSteps.map((step,index) => <li key={step.stage}
@@ -250,23 +257,24 @@ function ComparisonProgress({job}: {job: Operation}) {
     </ol>
     {hasCount && stage >= 2 && <div className="operation-requirements-progress">
       <div className="operation-requirements-head">
-        <strong>Обработано {current} из {total} положений ЗнП</strong>
+        <strong>Обработано {current} из {total} {countLabel}</strong>
         <span>{percent}%</span>
       </div>
       <div className="operation-progress" role="progressbar"
-        aria-label="Проверено положений ЗнП в текущей паре"
+        aria-label={`Проверено ${countLabel} в текущей паре`}
         aria-valuemin={0} aria-valuemax={total} aria-valuenow={current}>
         <span className="operation-progress-fill" style={{width:`${percent}%`}}/>
       </div>
       <div className="operation-requirements-foot">
-        {data.current_clause && stage === 2
-          ? <span>Сейчас: положение ЗнП {data.current_clause}</span>
-          : <span>{stage === 2 ? `Осталось положений: ${total-current}` : 'Проверка положений завершена'}</span>}
+        {data.current_clause && (sourceIsZnp || sourceIsTu)
+          ? <span>Сейчас: {sourceIsZnp ? 'положение ЗнП' : 'требование ТУ'} {data.current_clause}</span>
+          : <span>Осталось: {Math.max(0, total-current)}</span>}
         {stage === 2 && data.remaining_seconds !== null &&
           <span>Примерно осталось: {formatRemaining(data.remaining_seconds)}</span>}
       </div>
-      {data.current_clause && stage === 2 && <p className="operation-remaining-note">
-        Осталось положений ЗнП: {total-current}. Время оценивается по уже обработанным положениям.
+      {data.current_clause && (sourceIsZnp || sourceIsTu) && <p className="operation-remaining-note">
+        Осталось {countLabel}: {Math.max(0,total-current)}.
+        Прогресс каждого этапа отдельно фиксируется в базе.
       </p>}
     </div>}
     {!hasCount && stage >= 0 && stage < 2 &&
