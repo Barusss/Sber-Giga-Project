@@ -37,6 +37,10 @@ from app.core.models import (
 from app.ai import diagnostics
 from app.requirements.agent import RequirementsAgent
 from app.requirements.atomization import atomize_fragments
+from app.requirements.source_coverage import (
+    source_coverage_ledger, source_coverage_summary,
+    apply_source_coverage_guard,
+)
 from app.requirements.semantic_atomization import semantic_atomize, atomization_workload
 from app.requirements.budget_planning import plan_full_run
 from app.requirements.preview_selection import select_technical_preview
@@ -971,6 +975,7 @@ def _analyze_project_requirements(
     # legacy numbered-clause splitting. Each atom retains exact source spans.
     conservative_atoms = []
     atomization_trace = None
+    source_coverage = None
     llm_ledger = None
     if isinstance(agent, ZnPFirstAgent):
         llm_ledger = TrackedRequirementsLLM(
@@ -988,6 +993,13 @@ def _analyze_project_requirements(
         fragments_by_id.update({fragment.id: fragment for fragment in znp_fragments})
         if znp_fragments:
             original_atoms = atomize_fragments(znp_doc.id, znp_fragments)
+            source_coverage = source_coverage_ledger(znp_fragments, original_atoms)
+            diagnostics.record(
+                "comparison.source_coverage",
+                **{key: value for key, value in source_coverage_summary(
+                    source_coverage,
+                ).items() if key != "unclassified_fragment_ids"},
+            )
             diagnostics.record(
                 "comparison.source_atoms", count=len(original_atoms),
                 max_chars=max((len(a.text) for a in original_atoms), default=0),
@@ -1244,6 +1256,8 @@ def _analyze_project_requirements(
     )
     if response.trace_info is None:
         response.trace_info = {}
+    if source_coverage is not None:
+        apply_source_coverage_guard(response, source_coverage)
     if atomization_trace is not None:
         response.trace_info["atomization"] = atomization_trace
         if atomization_trace["degraded"]:
