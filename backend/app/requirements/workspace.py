@@ -216,6 +216,13 @@ def run_comparison(
     checkpoint_job_id: str | None = None,
 ):
     pair = _pair(db, project_id, pair_id, edit=True)
+    if checkpoint_job_id:
+        finished = db.scalar(select(ComparisonRun).where(
+            ComparisonRun.pair_id == pair.id,
+            ComparisonRun.operation_job_id == checkpoint_job_id,
+        ))
+        if finished is not None:
+            return {"run": _summary(finished), "result": finished.result}
     model = DeepSeekClient()
     if checkpoint_job_id:
         model = CheckpointedDeepSeek(checkpoint_job_id, model)
@@ -224,14 +231,19 @@ def run_comparison(
 
     def publish(response, session):
         nonlocal published_run
+        if progress_callback:
+            # Pause check BEFORE the atomic official-result transaction commits.
+            progress_callback(
+                "snapshot", response.stats["total"], response.stats["total"], None,
+            )
         for old in session.scalars(select(ComparisonRun).where(
             ComparisonRun.pair_id == pair.id,
             ComparisonRun.is_current.is_(True),
         )).all():
             old.is_current = False
         published_run = ComparisonRun(
-            pair_id=pair.id, result=response.model_dump(mode="json"),
-            is_current=True,
+            pair_id=pair.id, operation_job_id=checkpoint_job_id,
+            result=response.model_dump(mode="json"), is_current=True,
         )
         session.add(published_run)
         session.flush()
@@ -249,13 +261,13 @@ def run_comparison(
                 ), db, agent, progress_callback=progress_callback,
                 on_published=None if test_mode else publish,
             )
-            if progress_callback:
+            if test_mode and progress_callback:
                 progress_callback("snapshot", response.stats["total"], response.stats["total"], None)
             if test_mode:
                 # Preview remains non-current and does not change findings.
                 run = ComparisonRun(
-                    pair_id=pair.id, result=response.model_dump(mode="json"),
-                    is_current=False,
+                    pair_id=pair.id, operation_job_id=checkpoint_job_id,
+                    result=response.model_dump(mode="json"), is_current=False,
                 )
                 db.add(run)
                 db.commit()
@@ -267,7 +279,8 @@ def run_comparison(
             db.refresh(run)
             return {"run": _summary(run), "result": run.result}
     finally:
-        agent.ai.close() if hasattr(agent.ai, "close") else None
+        if hasattr(agent.ai, "close"):
+            agent.ai.close()
 
 
 
