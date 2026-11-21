@@ -300,3 +300,70 @@ def test_large_normative_reference_catalog_does_not_fake_complete_coverage():
     assert {row["fragment_id"] for row in ledger["records"]
             if row["role"] == "unclassified"} == {ref.id for ref in references}
     assert all(row["text_sha256"] for row in ledger["records"])
+
+
+def test_styled_headings_in_word_contents_are_not_duplicate_requirements(tmp_path):
+    """An explicit TOC may contain Heading-styled entries without page numbers."""
+    from app.documents.parser import _extract_docx
+
+    word = WordDocument()
+    word.add_paragraph("Содержание")
+    word.add_paragraph("1. ОБЩИЕ ПОЛОЖЕНИЯ", style="Heading 1")
+    word.add_paragraph("1.1. Общая схема электроснабжения", style="Heading 2")
+    word.add_paragraph("1. ОБЩИЕ ПОЛОЖЕНИЯ", style="Heading 1")
+    word.add_paragraph("1.1. Общая схема электроснабжения", style="Heading 2")
+    word.add_paragraph("1.1. Предусмотреть напряжение 10 кВ.")
+    from io import BytesIO
+    buf = BytesIO()
+    word.save(buf)
+
+    blocks = _extract_docx(buf.getvalue())
+    assert [(x.text, x.block_type) for x in blocks[:3]] == [
+        ("Содержание", "toc"),
+        ("1. ОБЩИЕ ПОЛОЖЕНИЯ", "toc"),
+        ("1.1. Общая схема электроснабжения", "toc"),
+    ]
+    assert [x.block_type for x in blocks[3:]] == [
+        "heading", "heading", "paragraph",
+    ]
+    assert blocks[-1].section_path == (
+        "1. ОБЩИЕ ПОЛОЖЕНИЯ / 1.1. Общая схема электроснабжения"
+    )
+    from app.documents.parser import extract_blocks
+    parsed = extract_blocks(buf.getvalue(), ".docx")
+    assert len(parsed) == len(blocks)
+
+
+def test_toc_heuristic_does_not_hide_unique_technical_heading(tmp_path):
+    """A unique heading after contents is not disposable without evidence."""
+    from app.documents.parser import _extract_docx
+    from io import BytesIO
+
+    word = WordDocument()
+    word.add_paragraph("Содержание")
+    word.add_paragraph("1. ТЕХНИЧЕСКИЕ ТРЕБОВАНИЯ", style="Heading 1")
+    word.add_paragraph("1.1. Предусмотреть резервную кабельную линию 10 кВ.")
+    buf = BytesIO()
+    word.save(buf)
+    blocks = _extract_docx(buf.getvalue())
+    assert [block.block_type for block in blocks] == [
+        "toc", "heading", "paragraph",
+    ]
+    assert blocks[-1].section_path == "1. ТЕХНИЧЕСКИЕ ТРЕБОВАНИЯ"
+
+
+def test_explicit_word_toc_style_is_provenance_even_without_page_leaders(tmp_path):
+    from app.documents.parser import _extract_docx
+    from docx.enum.style import WD_STYLE_TYPE
+    from io import BytesIO
+
+    word = WordDocument()
+    word.styles.add_style("TOC 1", WD_STYLE_TYPE.PARAGRAPH)
+    word.add_paragraph("1. Общие положения", style="TOC 1")
+    word.add_paragraph("1. Общие положения", style="Heading 1")
+    word.add_paragraph("1.1. Установить защиту 10 кВ.")
+    buf = BytesIO()
+    word.save(buf)
+    blocks = _extract_docx(buf.getvalue())
+    assert [block.block_type for block in blocks] == ["toc", "heading", "paragraph"]
+    assert blocks[-1].section_path == "1. Общие положения"
