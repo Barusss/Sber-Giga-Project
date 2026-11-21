@@ -404,3 +404,25 @@ def test_legacy_table_rows_without_container_id_do_not_share_retrieval_chunk():
         fragment_item.block_type = "table_row"
     chunks = build_chunks([old, new])
     assert len(chunks) == 2
+
+
+
+def test_repeated_heading_text_does_not_reuse_prior_section_instance_parent():
+    older_heading = fragment("h1", 1, "Раздел 1. Требования")
+    newer_heading = fragment("h2", 3, "Раздел 1. Требования")
+    for heading in (older_heading, newer_heading):
+        heading.block_type = "heading"
+        heading.section_path = "Раздел 1"
+    parent = fragment("p1", 2, "1. Только при наличии резервной КЛ-2.")
+    child = fragment("c2", 4, "1.1. Для КЛ-1 предусмотреть кабель 10 кВ.")
+
+    result = atomize_fragments(
+        "doc", [older_heading, parent, newer_heading, child],
+    )
+    assert len(result) == 2
+    last = result[-1]
+    context_ids = {source.fragment_id for source in last.context_sources}
+    assert "h2" in context_ids
+    assert "h1" not in context_ids
+    assert "p1" not in context_ids
+    assert "parent_scope_unresolved" in last.warnings
