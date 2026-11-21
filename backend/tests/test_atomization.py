@@ -362,3 +362,18 @@ def test_unresolved_parent_scope_prevents_automatic_support_even_with_identical_
     assert link["scope_consistent"]
     assert link["relation"] == "partial"
     assert "parent_scope_unresolved" in link["warnings"]
+
+
+
+def test_unnumbered_prose_note_after_table_remains_with_condition_and_warning():
+    row = fragment("row", 1, "1. Допускается кабель 95 мм².")
+    row.block_type = "table_row"
+    row.container_id = "docx-table-1"
+    note = fragment("note", 2, "Только при наличии двух независимых линий.")
+    note.block_type = "paragraph"
+    result = atomize_fragments("doc", [row, note])
+    assert len(result) == 1
+    assert "Только при наличии двух независимых линий." in result[0].text
+    assert {source.fragment_id for source in result[0].sources} == {"row", "note"}
+    assert "mixed_table_prose_scope_requires_review" in result[0].warnings
+    assert "context_scope_requires_review" in result[0].warnings
