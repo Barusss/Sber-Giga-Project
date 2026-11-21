@@ -127,6 +127,7 @@ def test_full_run_budget_guard_refuses_before_model_and_keeps_history(client, mo
     assert client.get(runs_url).json() == []
 
 
+
 def test_incomplete_coverage_does_not_save_snapshot(client, monkeypatch):
     project_id, docs = prepare(client, monkeypatch)
 
@@ -326,6 +327,12 @@ def test_incomplete_znp_preflight_blocks_paid_model_until_explicit_consent(
     assert "No DeepSeek calls were made" in refusal.json()["detail"]
     assert "allow_incomplete_sources" in refusal.json()["detail"]
     assert client.get(runs_url).json() == []
+
+    legacy_refusal = client.post(
+        "/api/v1/requirements/analyze", json={"project_id": project_id},
+    )
+    assert legacy_refusal.status_code == 422, legacy_refusal.text
+    assert "No DeepSeek calls were made" in legacy_refusal.json()["detail"]
 
 
 def test_authorized_incomplete_znp_run_marks_source_coverage_degraded(

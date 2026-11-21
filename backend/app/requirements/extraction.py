@@ -288,6 +288,20 @@ def extract_clauses(fragments: Sequence[Fragment], *, conservative: bool = False
 
         clause_number = _start_clause_number(text)
         if skip_section:
+            if (conservative and block_type == "paragraph" and not clause_number
+                    and not re.match(r"^\s*\d+[.)]\s", text)
+                    and _ANNEX_HEADING_RE.match(_heading_label(fragment.section_path or ""))
+                    and _PREAMBLE_RE.search(text)):
+                # A catalog may introduce rules about applicability/versioning.
+                # Retain that prose verbatim without treating every numbered
+                # bibliographic entry as a technical requirement.
+                drafts.append(_Draft(
+                    clause_number=f"Без номера {fragment.position}",
+                    sections=[(fragment, text)], section_path=fragment.section_path,
+                ))
+                current = None
+                pending_heading = None
+                continue
             # A real subsection ends a service/TOC block; table rows and
             # single-level appendix entries stay excluded.
             if clause_number and "." in clause_number and block_type != "table_row":

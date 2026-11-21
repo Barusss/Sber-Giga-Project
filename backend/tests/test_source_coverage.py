@@ -245,3 +245,21 @@ def test_number_sign_appendix_requires_manual_scope_review():
     atoms = atomize_fragments("doc", [heading, row])
     assert len(atoms) == 1
     assert "appendix_scope_requires_review" in atoms[0].warnings
+
+
+def test_normative_catalog_does_not_drop_unnumbered_applicability_rule():
+    section = "Приложение А. Перечень нормативных документов"
+    heading = fragment("catalog", 0, section, block_type="heading", section_path=section)
+    rule = fragment(
+        "rule", 1,
+        "В настоящем приложении приведены нормативные документы. "
+        "При их изменении проектировщик должен согласовать применяемую редакцию.",
+        section_path=section,
+    )
+    reference = fragment("reference", 2, "100. ГОСТ Р 12345-2024. Требования к защите.", section_path=section)
+    atoms = atomize_fragments("doc", [heading, rule, reference])
+    assert any(s.fragment_id == "rule" for a in atoms for s in a.sources)
+    assert any("appendix_scope_requires_review" in a.warnings for a in atoms)
+    ledger = source_coverage_ledger([heading, rule, reference], atoms)
+    assert next(r for r in ledger["records"] if r["fragment_id"] == "rule")["role"] == "atom_source"
+    assert next(r for r in ledger["records"] if r["fragment_id"] == "reference")["role"] == "unclassified"
