@@ -134,6 +134,19 @@ def normalize_clause_text(text: str) -> str:
     return re.sub(r"\s+", " ", normalized).strip()
 
 
+def _container_boundary(previous: Fragment, current: Fragment) -> bool:
+    """A numbered group may not silently span distinct tables or table/prose."""
+    previous_table = previous.block_type == "table_row"
+    current_table = current.block_type == "table_row"
+    if not (previous_table or current_table):
+        return False
+    if previous_table != current_table:
+        return True
+    # NULL means legacy extraction: grouping consecutive tables is not proven.
+    return not (previous.container_id and current.container_id
+                and previous.container_id == current.container_id)
+
+
 def extract_clauses(fragments: Sequence[Fragment], *, conservative: bool = False) -> list[Clause]:
     """Group ordered fragments into atomic, deduplicated clauses.
 
@@ -204,6 +217,13 @@ def extract_clauses(fragments: Sequence[Fragment], *, conservative: bool = False
             current.sections.append((fragment, text))
             continue
 
+        crossed_container = False
+        if current is not None and block_type != "heading":
+            previous_fragment = current.sections[-1][0]
+            crossed_container = _container_boundary(previous_fragment, fragment)
+            if crossed_container:
+                current = None
+
         if block_type == "heading":
             current = None
             if _is_ignored_heading(text):
@@ -257,6 +277,16 @@ def extract_clauses(fragments: Sequence[Fragment], *, conservative: bool = False
             pending_heading = None
         elif current is not None:
             current.sections.append((fragment, text))
+        elif conservative and crossed_container:
+            # An unnumbered row/comment is still a document statement;
+            # after a verified table boundary it must not vanish or inherit
+            # the previous table's applicability.
+            current = _Draft(
+                clause_number=f"Без номера {fragment.position}",
+                sections=[(fragment, text)],
+                section_path=fragment.section_path,
+            )
+            drafts.append(current)
         elif not drafts:
             if preamble is None:
                 preamble = _Draft(
