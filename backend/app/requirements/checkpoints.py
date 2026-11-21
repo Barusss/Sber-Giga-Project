@@ -21,6 +21,25 @@ from app.core.models import ComparisonLLMCheckpoint, OperationJob
 CHECKPOINT_SCHEMA = "comparison-llm-v1"
 
 
+def validate_phase_reply(phase: str, reply: dict) -> None:
+    """Do not persist malformed model output as a reusable checkpoint."""
+    required_lists = {
+        "atomization": ("atoms",),
+        "matching": ("links",),
+        "targeted": ("links",),
+        "contradictions": ("conflicts", "uncertain_ids"),
+        "coverage": ("evidence_ids",),
+    }
+    for key in required_lists.get(phase, ()):
+        if not isinstance(reply.get(key), list):
+            raise ValueError(f"DeepSeek returned invalid {phase} payload: missing {key}")
+    if phase == "coverage" and (
+        not isinstance(reply.get("covered"), bool)
+        or not isinstance(reply.get("object_consistent"), bool)
+    ):
+        raise ValueError("DeepSeek returned invalid coverage decision")
+
+
 class ComparisonPause(BaseException):
     """Stop without allowing blanket except Exception to swallow this signal."""
 
@@ -173,6 +192,7 @@ class CheckpointedDeepSeek:
             )
             if not isinstance(result, dict):
                 raise ValueError("DeepSeek must return a JSON object")
+            validate_phase_reply(phase, result)
         except Exception as exc:
             with self.session_factory() as db:
                 row = db.scalar(select(ComparisonLLMCheckpoint).where(
