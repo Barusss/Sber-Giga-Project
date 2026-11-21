@@ -101,10 +101,10 @@ def _control(db, job_id: str) -> OperationJob:
     if job is None:
         raise ComparisonPause("Operation no longer exists")
     db.refresh(job)
-    if job.pause_requested or job.status == "paused":
-        raise ComparisonPause("Операция поставлена на паузу")
     if job.cancel_requested or job.status == "cancelled":
         raise ComparisonCancelled("Операция остановлена")
+    if job.pause_requested or job.status == "paused":
+        raise ComparisonPause("Операция поставлена на паузу")
     if job.status not in ("running", "queued"):
         raise ComparisonPause("Operation is not active")
     return job
