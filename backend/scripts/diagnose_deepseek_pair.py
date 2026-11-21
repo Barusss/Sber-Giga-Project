@@ -90,6 +90,24 @@ def run_pair(
     tu_raw = [clause for clause in extract_clauses(tu_fragments)
               if not is_service_clause(clause.text)]
     znp_original = atomize_fragments(znp_id, znp_fragments)
+    parent_scope_report = {
+        "warnings": dict(Counter(
+            warning for atom in znp_original for warning in atom.warnings
+        )),
+        "table_rows": sum(f.block_type == "table_row" for f in znp_fragments),
+        "table_rows_with_container": sum(
+            f.block_type == "table_row" and bool(f.container_id)
+            for f in znp_fragments
+        ),
+        "distinct_table_containers": len({
+            f.container_id for f in znp_fragments
+            if f.block_type == "table_row" and f.container_id
+        }),
+        "atoms_with_parent_context": sum(
+            bool(atom.context_sources) for atom in znp_original
+        ),
+    }
+    diagnostics.record("extraction.parent_scope", **parent_scope_report)
     diagnostics.record(
         "extraction.completed", tu_requirements=len(tu_raw),
         znp_original_atoms=len(znp_original),
@@ -118,6 +136,7 @@ def run_pair(
             "mode": "dry-run", "tu_clauses": len(tu_raw),
             "znp_atoms": len(znp_original),
             "deepseek_calls": 0,
+            "parent_scope": parent_scope_report,
             "budget_plan": budget.as_dict(),
         }
     if budget.blockers:
@@ -225,6 +244,7 @@ def run_pair(
         "budget_plan": budget.as_dict(),
         "tu_requirements": len(tu_items),
         "znp_atoms": len(znp_items),
+        "parent_scope": parent_scope_report,
         "atomization": semantic.trace(),
         "usage": ledger.trace(),
         "comparison_stages": stages,
