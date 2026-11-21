@@ -154,6 +154,14 @@ def atomize_fragments(document_id: str, fragments: Sequence[Fragment]) -> list[D
             cursor = position + len(source_text)
         if not sources or "\n".join(source.text for source in sources) != clause.text:
             raise ValueError("Atom text is not completely covered by source fragments")
+        source_types = {by_id[source.fragment_id].block_type for source in sources}
+        if "table_row" in source_types and len(source_types) > 1:
+            # Unnumbered prose/notes may limit the preceding table. Keep
+            # verbatim contents, but never auto-certify an uncertain boundary.
+            warnings = tuple(dict.fromkeys((
+                *warnings, "mixed_table_prose_scope_requires_review",
+                "context_scope_requires_review",
+            )))
         identity = json.dumps(["conservative-v1", document_id,
                                [asdict(source) for source in sources],
                                [asdict(source) for source in context]], ensure_ascii=False, sort_keys=True)
