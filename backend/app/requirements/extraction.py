@@ -197,6 +197,7 @@ def extract_clauses(fragments: Sequence[Fragment], *, conservative: bool = False
     pending_heading: Fragment | None = None
     toc_mode = False
     skip_section = False
+    pdf_approval = False
 
     for index, fragment in enumerate(ordered):
         text = fragment.text.strip()
@@ -216,6 +217,13 @@ def extract_clauses(fragments: Sequence[Fragment], *, conservative: bool = False
             pending_heading = None
             toc_mode = True
             skip_section = False
+            continue
+
+        if fragment.bbox and re.fullmatch(r"заказчик\s+подрядчик", text, re.I):
+            current = None
+            pending_heading = None
+            pdf_approval = True
+            skip_section = True
             continue
 
         if is_toc_line(text):
@@ -272,6 +280,7 @@ def extract_clauses(fragments: Sequence[Fragment], *, conservative: bool = False
 
         if block_type == "heading":
             current = None
+            pdf_approval = False
             if _skip_heading(text, conservative=conservative):
                 pending_heading = None
                 skip_section = True
@@ -284,9 +293,14 @@ def extract_clauses(fragments: Sequence[Fragment], *, conservative: bool = False
             current = None
             pending_heading = None
             skip_section = True
+            pdf_approval = bool(fragment.bbox and re.match(r"^(утверждаю|согласовано)\b", text, re.I))
             continue
 
         clause_number = _start_clause_number(text)
+        if fragment.bbox and not clause_number:
+            compact_number = re.match(r"^(\d{1,2})\.(?=[А-ЯЁ][а-яё])", text)
+            if compact_number:
+                clause_number = compact_number.group(1)
         if skip_section:
             if (conservative and block_type == "paragraph" and not clause_number
                     and not re.match(r"^\s*\d+[.)]\s", text)
@@ -304,8 +318,9 @@ def extract_clauses(fragments: Sequence[Fragment], *, conservative: bool = False
                 continue
             # A real subsection ends a service/TOC block; table rows and
             # single-level appendix entries stay excluded.
-            if clause_number and "." in clause_number and block_type != "table_row":
+            if clause_number and ("." in clause_number or pdf_approval) and block_type != "table_row":
                 skip_section = False
+                pdf_approval = False
             else:
                 current = None
                 pending_heading = None
@@ -357,6 +372,15 @@ def extract_clauses(fragments: Sequence[Fragment], *, conservative: bool = False
             else:
                 preamble.sections.append((fragment, text))
 
+    if not drafts and preamble and preamble.sections[0][0].page != preamble.sections[-1][0].page:
+        # Separately addressed and signed pages contain independent letters.
+        # Without clause boundaries, leave their fragments available for review.
+        addressed = {f.page for f, text in preamble.sections
+                     if re.search(r"\bдиректору\b", text, re.I)}
+        signed = {f.page for f, text in preamble.sections
+                  if re.search(r"\bглавный\s+инженер\b", text, re.I)}
+        if len(addressed & signed) >= 2:
+            return []
     if preamble is not None and (conservative or _keep_preamble(preamble)):
         drafts.insert(0, preamble)
 

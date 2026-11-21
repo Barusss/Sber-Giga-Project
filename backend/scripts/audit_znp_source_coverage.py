@@ -31,6 +31,7 @@ def audit_file(path: Path) -> tuple[dict, list[Fragment]]:
             page=block.page, position=block.position,
             text=block.text, block_type=block.block_type,
             section_path=block.section_path,
+            bbox=block.bbox, extraction_method=block.extraction_method,
             container_id=getattr(block, "container_id", None),
         ) for index, block in enumerate(blocks, 1)
     ]

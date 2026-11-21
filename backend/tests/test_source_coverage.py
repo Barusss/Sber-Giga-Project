@@ -471,3 +471,110 @@ def test_pdf_native_text_without_scan_does_not_use_ocr(monkeypatch):
     pdf.close()
     assert result
     assert all(block.extraction_method == "text" for block in result)
+
+def test_docx_contents_with_case_changes_and_a_nonmatching_entry(tmp_path):
+    from io import BytesIO
+    from app.documents.parser import extract_blocks
+
+    word = WordDocument()
+    for text in (
+        "Содержание", "1. Исходные данные", "2. Неоднозначное название",
+        "3. Ограничения", "1. ИСХОДНЫЕ ДАННЫЕ",
+    ):
+        word.add_paragraph(text, style="Heading 1")
+    word.add_paragraph("1.1. Установить защиту.")
+    word.add_heading("3. ОГРАНИЧЕНИЯ", level=1)
+    word.add_paragraph("3.1. Предусмотреть резерв.")
+    buf = BytesIO()
+    word.save(buf)
+    blocks = extract_blocks(buf.getvalue(), ".docx")
+    assert [b.block_type for b in blocks] == [
+        "toc", "toc", "heading", "toc", "heading", "paragraph", "heading", "paragraph",
+    ]
+    assert blocks[-1].section_path == "3. ОГРАНИЧЕНИЯ"
+
+def test_unstructured_multipage_preamble_cannot_certify_two_letters():
+    first = fragment("first", 0, "Директору АО. Необходимо обеспечить резервирование линии. Главный инженер И. И.", section_path=None)
+    second = fragment("second", 0, "Директору АО. Согласовываем изменение схемы подключения. Главный инженер П. П.", section_path=None)
+    second.page = 2
+    sources = [first, second]
+    assert extract_clauses(sources) == []
+    atoms = atomize_fragments("doc", sources)
+    assert not atoms
+    ledger = source_coverage_ledger(sources, atoms)
+    assert not ledger["complete"]
+    assert set(ledger["unclassified_fragment_ids"]) == {"first", "second"}
+
+def test_pdf_approval_does_not_swallow_numbered_design_rows():
+    texts = ["Утверждаю:\nДиректор", "1. Заказчик\nПроектная организация",
+             "10.Особые условия", "Сейсмичность района 9 баллов."]
+    fragments = [fragment(str(i), i, t, section_path=None) for i, t in enumerate(texts)]
+    for item in fragments:
+        item.bbox = [1, 2, 10, 20]
+    atoms = atomize_fragments("doc", fragments)
+    assert [(a.clause_number, [s.fragment_id for s in a.sources]) for a in atoms] == [
+        ("1", ["1"]), ("10", ["2", "3"]),
+    ]
+
+@pytest.mark.parametrize("text", [
+    "1. Расчётная температура жидкости 48 °С,",
+    "3. Насос циркуляционный — 2 шт, (тип уточнить)",
+])
+def test_ocr_numbered_design_values_are_source_text(text):
+    from app.documents.parser import _ocr_heading_level
+
+    assert _ocr_heading_level(text) is None
+
+def test_ocr_detached_number_column_requires_aligned_text():
+    from app.documents.parser import _detached_numbers
+
+    labels = [(f"{n}.", [10, n * 12, 18, n * 12 + 8], (1, 1)) for n in (1, 2, 3)]
+    bodies = [("Условие проектирования", [25, n * 12, 170, n * 12 + 9], (2, n))
+              for n in (1, 2, 3)]
+    assert set(_detached_numbers(labels + bodies)) == {"1", "2", "3"}
+    assert not _detached_numbers(labels)
+
+@pytest.mark.parametrize("alternate_y_delta, expected_calls_accepted", [(0, True), (10, False)])
+def test_tesseract_rejoins_only_verified_numbered_rows(monkeypatch, alternate_y_delta, expected_calls_accepted):
+    from types import SimpleNamespace
+    import pytesseract
+    from app.documents.parser import _ocr_lines
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "ocr_backend", "tesseract")
+    calls = []
+
+    def ocr_data(image, *, config, **kwargs):
+        mode = int(config.split()[-1])
+        calls.append(mode)
+        words = []
+        for n in (1, 2, 3):
+            words.append((f"{n}.", 10, n * 16, n))
+        for n in (1, 2, 3):
+            words.append(("Условие проектирования", 25, n * 16, n + 3))
+        if mode == 4:
+            words = [(f"{n}. | Условие проектирования", 10, n * 16 + alternate_y_delta, n)
+                     for n in (1, 2, 3)]
+        return dict(text=[w[0] for w in words], left=[w[1] for w in words],
+                    top=[w[2] for w in words], block_num=[w[3] for w in words],
+                    width=[8] * len(words), height=[8] * len(words),
+                    par_num=[1] * len(words), line_num=[1] * len(words))
+
+    monkeypatch.setattr(pytesseract, "image_to_data", ocr_data)
+    size = SimpleNamespace(width=200, height=200)
+    lines = _ocr_lines(SimpleNamespace(rect=size), size, 1)
+    assert calls == [3, 4]
+    assert (len(lines) == 3) == expected_calls_accepted
+
+def test_pdf_signature_block_does_not_extend_last_requirement():
+    texts = ["1. Предоставить комплект документов.", "ЗАКАЗЧИК ПОДРЯДЧИК", "Адрес организации"]
+    fragments = [fragment(str(i), i, t, section_path=None) for i, t in enumerate(texts)]
+    for item in fragments:
+        item.bbox = [1, 2, 10, 20]
+    atoms = atomize_fragments("doc", fragments)
+    assert [s.fragment_id for s in atoms[0].sources] == ["0"]
+
+
+def test_ocr_numbered_preservation_instruction_is_body():
+    from app.documents.parser import _ocr_heading_level
+    assert _ocr_heading_level("3.2. Кабельные вводы сохранить,") is None

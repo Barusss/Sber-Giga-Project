@@ -72,16 +72,23 @@ def _extract_docx(data: bytes) -> list[ExtractedBlock]:
     # Word sometimes formats TOC entries as actual Heading paragraphs,
     # without dotted leaders or page numbers. Only recognise such entries
     # when the same heading occurs later in the document body.
-    remaining_paragraphs = Counter(
-        item.text.strip() for item in elements
-        if isinstance(item, Paragraph) and item.text.strip()
-    )
     has_styled_headings = any(
         isinstance(item, Paragraph) and item.style
         and (item.style.name or "").lower().startswith(("heading", "заголовок"))
         for item in elements
     )
     in_toc = False
+    first_index_heading = None
+    remaining_headings = Counter()
+    outlined_headings = Counter()
+    for item in elements:
+        if isinstance(item, Paragraph):
+            title = item.text.strip()
+            style = (item.style.name or "").lower() if item.style else ""
+            if heading_level(title, style, allow_unstyled=not has_styled_headings):
+                remaining_headings[title] += 1
+                if style.startswith(("heading", "заголовок")) or item._p.xpath("./w:pPr/w:outlineLvl"):
+                    outlined_headings[title.casefold()] += 1
     table_index = 0
 
     for element in elements:
@@ -89,9 +96,13 @@ def _extract_docx(data: bytes) -> list[ExtractedBlock]:
             content = element.text.strip()
             if not content:
                 continue
-            remaining_paragraphs[content] -= 1
             style = (element.style.name or "").lower() if element.style else ""
             level = heading_level(content, style, allow_unstyled=not has_styled_headings)
+            key = content.casefold()
+            if level:
+                remaining_headings[content] -= 1
+                if style.startswith(("heading", "заголовок")) or element._p.xpath("./w:pPr/w:outlineLvl"):
+                    outlined_headings[key] -= 1
             # Explicit Word TOC styles are structural provenance, not content.
             if re.match(r"^toc(?:\s*\d+|\s+heading)?$", style):
                 blocks.append(ExtractedBlock(1, len(blocks), content, "toc"))
@@ -99,22 +110,27 @@ def _extract_docx(data: bytes) -> list[ExtractedBlock]:
 
             if content.casefold() in {"содержание", "оглавление"}:
                 in_toc = True
+                first_index_heading = None
                 headings.clear()
                 blocks.append(ExtractedBlock(1, len(blocks), content, "toc"))
                 continue
 
             if in_toc:
-                # When a heading is reproduced verbatim later, the first
-                # occurrence under an explicit TOC title is an index entry.
-                # Never use this heuristic outside an active TOC.
+                # The first repeated heading marks the return to the body.
                 is_repeated_heading = (
-                    bool(level) and remaining_paragraphs[content] > 0
+                    bool(level) and key != first_index_heading
+                    and (remaining_headings[content] > 0 or outlined_headings[key] > 0)
                 )
+                if is_repeated_heading and first_index_heading is None:
+                    first_index_heading = key
                 if (_is_toc_entry(content) or _PAGE_FOOTER.match(content)
                         or is_repeated_heading):
                     blocks.append(ExtractedBlock(1, len(blocks), content, "toc"))
                     continue
-                in_toc = False
+                # Keep a nonmatching heading visible. Later entries can still
+                # match before the body repeats the first confirmed heading.
+                in_toc = bool(level and first_index_heading and key != first_index_heading
+                              and outlined_headings[first_index_heading])
 
             if level:
                 headings[level] = content
@@ -176,7 +192,11 @@ def _is_toc_entry(text: str) -> bool:
 
 def _ocr_heading_level(text: str) -> int | None:
     """Conservative layout inference: never promote a numbered command."""
-    if _OCR_CLAUSE_VERBS.search(text):
+    if _OCR_CLAUSE_VERBS.search(text) or re.search(r"\bсохранить\b", text, re.I):
+        return None
+    if _NUMBERED_LINE.match(text) and re.search(
+        r"\d\s*(?:°\s*[СC]|шт\.?)\s*[,;]", text, re.I,
+    ):
         return None
     # In scanned conditions, 1.2.3. is usually an atomic requirement,
     # not a section heading. Avoid assuming one from noisy OCR typography.
@@ -185,7 +205,26 @@ def _ocr_heading_level(text: str) -> int | None:
     return heading_level(text, "", allow_unstyled=True)
 
 
-def _ocr_lines(page, picture, page_idx: int):
+def _detached_numbers(lines):
+    """Number labels followed separately by nearby text on the same baseline."""
+    labels = {}
+    for index, (text, box, _) in enumerate(lines):
+        number = re.fullmatch(r"(\d{1,3})[.)]?", text)
+        if not number:
+            continue
+        for body, other, _ in lines[index + 1:]:
+            if (len(body) >= 12 and body[0].isalpha()
+                    and abs(box[1] - other[1]) <= 3 and 0 < other[0] - box[2] <= 24):
+                labels[number[1]] = box
+                break
+    for anchor in labels.values():
+        column = {number: box for number, box in labels.items() if abs(box[0] - anchor[0]) <= 4}
+        if len(column) >= 3:
+            return column
+    return {}
+
+
+def _ocr_lines(page, picture, page_idx: int, *, psm: int = 3):
     """Read OCR word coordinates once, retaining line order and real PDF boxes."""
     if settings.ocr_backend == "paddleocr":
         from app.documents.ocr import paddle_lines
@@ -193,7 +232,7 @@ def _ocr_lines(page, picture, page_idx: int):
     import pytesseract
 
     data = pytesseract.image_to_data(
-        picture, lang="rus+eng", config="--oem 1 --psm 3",
+        picture, lang="rus+eng", config=f"--oem 1 --psm {psm}",
         output_type=pytesseract.Output.DICT, timeout=settings.ocr_timeout_seconds,
     )
     scale_x = float(page.rect.width) / picture.width
@@ -234,6 +273,24 @@ def _ocr_lines(page, picture, page_idx: int):
         height = float(data["height"][index])
         coords.append((left, top, left + width, top + height))
     flush()
+    if psm == 3:
+        detached = _detached_numbers(lines)
+        if detached:
+            # Tesseract's single-column mode can reunite the labels and body.
+            # Keep the first pass if any verified label lacks a numbered row.
+            try:
+                aligned = _ocr_lines(page, picture, page_idx, psm=4)
+            except RuntimeError:
+                return lines
+            joined = set()
+            for text, box, _ in aligned:
+                prefix = re.match(r"^(\d{1,3})[.)]?\s+(?:[|—–-]\s*)?\w", text)
+                if prefix and prefix[1] in detached:
+                    label = detached[prefix[1]]
+                    if abs(box[0] - label[0]) <= 4 and abs(box[1] - label[1]) <= 4:
+                        joined.add(prefix[1])
+            if joined == detached.keys():
+                return aligned
     return lines
 
 
