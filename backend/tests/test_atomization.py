@@ -149,9 +149,9 @@ def test_parent_condition_survives_intervening_child_heading():
     parent = fragment("p", 1, "1. При наличии двух линий допускается:")
     heading = fragment("h", 2, "1.1. Кабели")
     heading.block_type = "heading"
-    heading.section_path = heading.text
+    heading.section_path = "Раздел 1 / " + heading.text
     body = fragment("b", 3, "1.1.1. Кабель 95 мм².")
-    body.section_path = heading.text
+    body.section_path = heading.section_path
     child = atomize_fragments("doc", [parent, heading, body])[-1]
     assert {source.fragment_id for source in child.context_sources} == {"p", "h"}
     assert "context_scope_requires_review" in child.warnings
@@ -233,7 +233,7 @@ def test_same_prose_section_parent_is_kept_with_manual_scope_warning():
     between = fragment("heading", 1, "1.1. Требования к линиям")
     between.block_type = "heading"
     between.section_path = "Раздел 1 / Требования к линиям"
-    child.section_path = "Раздел 1 / Требования к линиям"
+    second.section_path = "Раздел 1 / Требования к линиям"
     atoms = atomize_fragments("doc", [first, between, second])
     assert "parent" in {source.fragment_id for source in atoms[-1].context_sources}
     assert "context_scope_requires_review" in atoms[-1].warnings
