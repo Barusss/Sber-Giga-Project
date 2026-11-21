@@ -48,6 +48,10 @@ COMPARISON_KINDS = ("comparison", "comparison_batch", "comparison_atom_recheck")
 KINDS = ("normative_extract", "normative_check", *COMPARISON_KINDS)
 
 
+class ResumeRequest(BaseModel):
+    accept_replay_risk: bool = False
+
+
 class OperationRequest(BaseModel):
     kind: str
     document_id: str | None = None
@@ -401,15 +405,16 @@ def _enqueue(db: Session, project_id: str, kind: str, params: dict) -> Operation
                 if kind == "upload" or job.params.get("document_id") == params.get("document_id"):
                     raise HTTPException(409, "Операция уже выполняется")
             elif set(job.params.get("pair_ids", [])) & set(params.get("pair_ids", [])):
-                raise HTTPException(409, "Эта сверка уже выполняется")
-        if kind in ("comparison", "comparison_batch"):
-            other_kind = "comparison" if kind == "comparison_batch" else "comparison_batch"
+                raise HTTPException(409, "Эта сверка уже выполняется или приостановлена")
+        if kind in COMPARISON_KINDS:
             for job in db.scalars(select(OperationJob).where(
-                OperationJob.project_id == project_id, OperationJob.kind == other_kind,
+                OperationJob.project_id == project_id,
+                OperationJob.kind.in_(COMPARISON_KINDS),
+                OperationJob.kind != kind,
                 OperationJob.status.in_(ACTIVE),
             )).all():
                 if set(job.params.get("pair_ids", [])) & set(params.get("pair_ids", [])):
-                    raise HTTPException(409, "Эта сверка уже выполняется")
+                    raise HTTPException(409, "Эта сверка уже выполняется или приостановлена")
         job = OperationJob(
             project_id=project_id, kind=kind, params=params, stage="queued",
             status="queued", message="Ожидает выполнения",
@@ -448,6 +453,10 @@ def enqueue_operation(project_id: str, payload: OperationRequest, db: Session = 
         raise HTTPException(422, "Unsupported operation")
     if payload.test_mode and payload.kind != "comparison":
         raise HTTPException(422, "Test mode supports one comparison pair only")
+    if payload.kind == "comparison_atom_recheck" and (
+        not payload.run_id or not payload.atom_id
+    ):
+        raise HTTPException(422, "Select a saved run and a ZnP atom")
     if payload.kind in ("normative_extract", "normative_check"):
         document = db.get(Document, payload.document_id) if payload.document_id else None
         if document is None or document.project_id != project_id:
@@ -466,6 +475,22 @@ def enqueue_operation(project_id: str, payload: OperationRequest, db: Session = 
             "pair_ids": list(dict.fromkeys(payload.pair_ids)),
             "test_mode": payload.test_mode,
         }
+        if payload.kind == "comparison_atom_recheck":
+            if len(params["pair_ids"]) != 1:
+                raise HTTPException(422, "An atom recheck requires exactly one pair")
+            run = db.get(ComparisonRun, payload.run_id)
+            if run is None or run.pair_id != params["pair_ids"][0]:
+                raise HTTPException(404, "Saved comparison run not found")
+            rows = ((run.result or {}).get("trace_info") or {}).get("znp_atom_results") or []
+            atom = next((x for x in rows if x.get("atom_id") == payload.atom_id), None)
+            if atom is None:
+                raise HTTPException(404, "ZnP atom not found in saved run")
+            if not atom.get("sources"):
+                raise HTTPException(
+                    409, "Old run does not contain source provenance for safe AI recheck",
+                )
+            params["run_id"] = payload.run_id
+            params["atom_id"] = payload.atom_id
     return _out(_enqueue(db, project_id, payload.kind, params))
 
 
@@ -493,8 +518,68 @@ def cancel_operation(project_id: str, job_id: str, db: Session = Depends(get_db)
     job = db.get(OperationJob, job_id)
     if job is None or job.project_id != project_id:
         raise HTTPException(404, "Operation not found")
-    if job.status in ACTIVE and not job.cancel_requested:
+    if job.status == "paused":
+        job.status = "cancelled"
+        job.pause_requested = False
+        job.cancel_requested = True
+        job.message = "Операция остановлена, чекпоинты сохранены"
+        job.completed_at = now()
+        db.commit()
+    elif job.status in ACTIVE and not job.cancel_requested:
         job.cancel_requested = True
         job.message = "Остановка после текущего этапа"
         db.commit()
+    return _out(job)
+
+
+@router.post("/projects/{project_id}/operations/{job_id}/pause")
+def pause_operation(project_id: str, job_id: str, db: Session = Depends(get_db)):
+    _project(db, project_id)
+    job = db.get(OperationJob, job_id)
+    if job is None or job.project_id != project_id:
+        raise HTTPException(404, "Operation not found")
+    if job.kind not in COMPARISON_KINDS:
+        raise HTTPException(422, "Pause is supported for comparisons only")
+    if job.status in ("queued", "running"):
+        job.pause_requested = True
+        if job.status == "queued":
+            job.status = "paused"
+            job.stage = "paused"
+        job.message = "Пауза после текущего запроса; ответы сохранены"
+        db.commit()
+    return _out(job)
+
+
+@router.post("/projects/{project_id}/operations/{job_id}/resume")
+def resume_operation(project_id: str, job_id: str,
+                     payload: ResumeRequest, db: Session = Depends(get_db)):
+    _project(db, project_id)
+    job = db.get(OperationJob, job_id)
+    if job is None or job.project_id != project_id:
+        raise HTTPException(404, "Operation not found")
+    if job.kind not in COMPARISON_KINDS:
+        raise HTTPException(422, "Resume is supported for comparisons only")
+    if job.status not in ("paused", "failed"):
+        raise HTTPException(409, "Operation cannot be resumed from this status")
+    uncertain = db.scalar(select(ComparisonLLMCheckpoint.id).where(
+        ComparisonLLMCheckpoint.job_id == job.id,
+        ComparisonLLMCheckpoint.status.in_(("sent", "failed")),
+    ).limit(1))
+    if uncertain and not payload.accept_replay_risk:
+        raise HTTPException(
+            409, "Неизвестно, оплатил ли провайдер последний запрос. "
+                 "Подтвердите возможность повторного списания.",
+        )
+    params = dict(job.params)
+    params["retry_uncertain"] = bool(payload.accept_replay_risk)
+    job.params = params
+    job.pause_requested = False
+    job.cancel_requested = False
+    job.status = "queued"
+    job.stage = "queued"
+    job.message = "Восстановление из сохранённых ответов DeepSeek"
+    job.error = None
+    job.completed_at = None
+    db.commit()
+    _workers.submit(_worker, job.id)
     return _out(job)
