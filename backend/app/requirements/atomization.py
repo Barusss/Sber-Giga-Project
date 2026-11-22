@@ -1,12 +1,13 @@
 """Conservative, traceable document statements for the new comparison flow."""
 import json
 import re
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, replace
+from pathlib import Path
 from typing import Sequence
 from uuid import NAMESPACE_URL, uuid5
 
 from app.core.models import Fragment
-from app.documents.parser import TABLE_REVIEW
+from app.documents.parser import TABLE_REVIEW, requires_pdf_layout_review
 from app.requirements.extraction import extract_clauses
 
 
@@ -58,7 +59,15 @@ def _section_ancestors(section_path: str | None) -> list[str]:
     return [" / ".join(parts[:size]) for size in range(len(parts), 0, -1)]
 
 
-def atomize_fragments(document_id: str, fragments: Sequence[Fragment], *, pdf_data: bytes | None = None) -> list[DocumentAtom]:
+def atomize_document(document, fragments):
+    path = Path(document.stored_path)
+    data = path.read_bytes() if path.suffix.lower() == ".pdf" and path.is_file() else None
+    return atomize_fragments(document.id, fragments, pdf_data=data,
+                            unverified_pdf=requires_pdf_layout_review(document))
+
+
+def atomize_fragments(document_id: str, fragments: Sequence[Fragment], *, pdf_data: bytes | None = None,
+                      unverified_pdf: bool = False) -> list[DocumentAtom]:
     """Keep each extracted clause whole; reject unverifiable source mappings."""
     by_id = {}
     for fragment in fragments:
@@ -200,6 +209,9 @@ def atomize_fragments(document_id: str, fragments: Sequence[Fragment], *, pdf_da
         seen_numbers.add(base_number)
         if clause.clause_number == "Преамбула":
             preamble_sources = tuple(sources)
+    if unverified_pdf:
+        atoms = [replace(atom, warnings=tuple(dict.fromkeys((*atom.warnings, TABLE_REVIEW))))
+                 for atom in atoms]
     if pdf_data is not None:
         from app.requirements.pdf_cell_sources import bind_pdf_cells
 
@@ -228,6 +240,6 @@ def atomize_fragments(document_id: str, fragments: Sequence[Fragment], *, pdf_da
                                   ensure_ascii=False, sort_keys=True)
             atoms.append(DocumentAtom(
                 str(uuid5(NAMESPACE_URL, identity)), document_id, number, text,
-                None, sources, (), ("table_structure_unverified",),
+                None, sources, (), (),
             ))
     return atoms

@@ -722,3 +722,32 @@ def test_pdf_cell_citation_cannot_use_neighbouring_source():
     proposal = dict(relation="supports", tu_quote="Power 8.6 MW",
                     znp_quote="Power 8.6 MW", confidence=1)
     assert ZnPFirstAgent._validated_link(znp, tu, proposal, 1) is None
+
+def test_pdf_verified_rows_can_support_but_unverified_tu_cannot():
+    import fitz
+    from app.requirements.znp_first import ZnPFirstAgent
+    from app.requirements.schemas import ZNPClause
+    doc = fitz.open()
+    page = doc.new_page(width=600, height=300)
+    for y in (50, 100, 150):
+        page.draw_line((40, y), (560, y))
+    for x in (40, 280, 560):
+        page.draw_line((x, 50), (x, 150))
+    for y, number in ((80, 1), (130, 2)):
+        page.insert_text((50, y), f"{number}. Transformer power")
+        page.insert_text((300, y), "10 MVA transformer")
+    data = doc.tobytes()
+    fragments = [Fragment(id=str(i), document_id="doc", **vars(b))
+                 for i, b in enumerate(extract_blocks(data, ".pdf"))]
+    atoms = atomize_fragments("doc", fragments, pdf_data=data, unverified_pdf=True)
+    assert len(atoms) == 2 and all(not a.warnings for a in atoms)
+    a = atoms[0]
+    znp = ZNPClause(id=a.id, clause_number=a.clause_number, text=a.text,
+                    sources=[asdict(s) for s in a.sources], warnings=list(a.warnings))
+    tu = TURequirement(id="tu", clause_number="1", category=RequirementCategory.other,
+                        text=a.text, sources=znp.sources)
+    quote = a.sources[-1].text
+    proposal = dict(relation="supports", confidence=1, tu_quote=quote, znp_quote=quote)
+    assert ZnPFirstAgent._validated_link(znp, tu, proposal, 1)["relation"] == "supports"
+    tu.warnings = ["table_structure_unverified"]
+    assert ZnPFirstAgent._validated_link(znp, tu, proposal, 1)["relation"] == "partial"

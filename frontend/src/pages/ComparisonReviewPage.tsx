@@ -307,7 +307,7 @@ export function ComparisonReviewPage({projectId, approved}: {projectId: string; 
         // Fresh audit prevents spending on a document changed after page load.
         const audit = await request<SourceCoveragePreflight>(`${root}/source-coverage`)
         setSourceCoverage(audit)
-        if (audit.table_structure_unverified?.length) return
+
         if (!audit.available) throw new Error(
           'Нет индексированных исходных фрагментов ЗнП. Сверку запускать нельзя.'
         )
@@ -382,13 +382,13 @@ export function ComparisonReviewPage({projectId, approved}: {projectId: string; 
           onClick={() => rerun(true)} title="До 10 технических требований ТУ и 10 атомарных положений ЗнП. Преамбулы и перечни актов пропускаются. Основной результат не меняется.">
           Тест: 10 ТУ × 10 ЗнП
         </button>
-        <button type="button" disabled={busy || running || layoutUnverified} onClick={() => rerun(false)}>
+        <button type="button" disabled={busy || running} onClick={() => rerun(false)}>
           {running ? 'Проверка выполняется' : busy ? 'Запускаем…' : 'Полная проверка'}
         </button>
       </div>}
     </div>
     {layoutUnverified && <p className="workspace-analysis-note">
-      Автоматическая сверка приостановлена. Для PDF требуется проверить, к каким строкам и столбцам относятся значения.
+      Для части PDF принадлежность значений строкам и столбцам требует проверки. Такие источники не дают автоматического подтверждения.
     </p>}
     {!layoutUnverified && sourceCoverage && sourceCoverage.available && sourceCoverage.unclassified_count > 0 &&
       <p className="workspace-analysis-note">

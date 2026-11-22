@@ -11,7 +11,6 @@ the final decision.
 import logging
 import re
 import threading
-from pathlib import Path
 from datetime import datetime, timezone
 from uuid import NAMESPACE_URL, uuid5
 
@@ -38,7 +37,7 @@ from app.core.models import (
 )
 from app.ai import diagnostics
 from app.requirements.agent import RequirementsAgent
-from app.requirements.atomization import atomize_fragments
+from app.requirements.atomization import atomize_fragments, atomize_document
 from app.requirements.source_coverage import (
     source_coverage_ledger, source_coverage_summary,
     apply_source_coverage_guard,
@@ -710,7 +709,7 @@ def analyze_requirements(
 
     if isinstance(payload, CheckRequirementsRequest):
         if any(TABLE_REVIEW in item.warnings for item in (*payload.tu_requirements, *payload.znp_clauses)):
-            raise HTTPException(422, f"{TABLE_REVIEW}: требуется проверка строк и столбцов PDF.")
+            agent = ZnPFirstAgent(ai_client=agent.ai, embedder=agent.embedder)
         response = agent.verify_all(payload.tu_requirements, payload.znp_clauses)
         _attach_provenance(
             response.checked_requirements,
@@ -935,15 +934,31 @@ def _analyze_project_requirements(
     if znp_doc.kind != DocumentKind.znp:
         raise HTTPException(422, "Selected ZNP document must have kind=znp")
 
-    if any(requires_pdf_layout_review(doc) for doc in (tu_doc, znp_doc)):
-        raise HTTPException(422, f"{TABLE_REVIEW}: требуется проверка строк и столбцов PDF. "
-                                 "Автоматическая сверка остановлена до сопоставления.")
+    pdf_review = any(requires_pdf_layout_review(doc) for doc in (tu_doc, znp_doc))
+    if pdf_review and payload.test_mode:
+        raise HTTPException(422, f"{TABLE_REVIEW}: используйте полную проверку источников.")
+    if pdf_review and not isinstance(agent, ZnPFirstAgent):
+        agent = ZnPFirstAgent(ai_client=agent.ai, embedder=agent.embedder)
 
     tu_raw = [
         clause
         for clause in _extract_clauses_from_doc(db, tu_doc)
         if not is_service_clause(clause.text)
     ]
+    tu_atoms = {}
+    if requires_pdf_layout_review(tu_doc):
+        tu_fragments = db.scalars(select(Fragment).where(
+            Fragment.document_id == tu_doc.id
+        ).order_by(Fragment.page, Fragment.position)).all()
+        for atom in atomize_document(tu_doc, tu_fragments):
+            tu_atoms[(atom.clause_number, atom.text)] = atom
+        if tu_atoms:
+            tu_raw = [Clause(
+                clause_number=a.clause_number, text=a.text, page=a.sources[0].page,
+                fragment_id=a.sources[0].fragment_id,
+                fragment_ids=list(dict.fromkeys(s.fragment_id for s in a.sources)),
+                section_path=a.section_path, fragment_text=a.sources[0].text,
+            ) for a in tu_atoms.values() if not is_service_clause(a.text)]
     znp_raw = _extract_clauses_from_doc(db, znp_doc)
     diagnostics.record(
         "comparison.clauses_extracted",
@@ -992,11 +1007,7 @@ def _analyze_project_requirements(
     ).all()
     fragments_by_id.update({fragment.id: fragment for fragment in znp_fragments})
     if znp_fragments:
-        source_path = Path(znp_doc.stored_path)
-        pdf_data = (source_path.read_bytes()
-                    if source_path.suffix.lower() == ".pdf" and source_path.is_file()
-                    else None)
-        original_atoms = atomize_fragments(znp_doc.id, znp_fragments, pdf_data=pdf_data)
+        original_atoms = atomize_document(znp_doc, znp_fragments)
         source_coverage = source_coverage_ledger(znp_fragments, original_atoms)
         diagnostics.record(
             "comparison.source_coverage",
@@ -1166,6 +1177,7 @@ def _analyze_project_requirements(
     tu_clauses: dict[str, Clause] = {}
     db_requirements: dict[str, DBTURequirement] = {}
     for clause in tu_raw:
+        tu_atom = tu_atoms.get((clause.clause_number, clause.text))
         category = classify_requirement_category(clause.text)
         key = _requirement_key(tu_doc.id, clause.clause_number, clause.text)
         db_requirement = existing_by_key.get(key)
@@ -1205,11 +1217,12 @@ def _analyze_project_requirements(
                 page=clause.page,
                 fragment_text=clause.fragment_text,
                 section_path=clause.section_path,
-                sources=[
+                sources=[asdict(s) for s in tu_atom.sources] if tu_atom else [
                     {"fragment_id": fid, "page": fragments_by_id[fid].page,
                      "text": fragments_by_id[fid].text.strip()}
                     for fid in clause.fragment_ids if fid in fragments_by_id
                 ],
+                warnings=list(tu_atom.warnings) if tu_atom else ([TABLE_REVIEW] if requires_pdf_layout_review(tu_doc) else []),
             )
         )
 
