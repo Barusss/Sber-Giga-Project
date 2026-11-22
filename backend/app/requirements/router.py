@@ -11,6 +11,7 @@ the final decision.
 import logging
 import re
 import threading
+from pathlib import Path
 from datetime import datetime, timezone
 from uuid import NAMESPACE_URL, uuid5
 
@@ -991,7 +992,11 @@ def _analyze_project_requirements(
     ).all()
     fragments_by_id.update({fragment.id: fragment for fragment in znp_fragments})
     if znp_fragments:
-        original_atoms = atomize_fragments(znp_doc.id, znp_fragments)
+        source_path = Path(znp_doc.stored_path)
+        pdf_data = (source_path.read_bytes()
+                    if source_path.suffix.lower() == ".pdf" and source_path.is_file()
+                    else None)
+        original_atoms = atomize_fragments(znp_doc.id, znp_fragments, pdf_data=pdf_data)
         source_coverage = source_coverage_ledger(znp_fragments, original_atoms)
         diagnostics.record(
             "comparison.source_coverage",

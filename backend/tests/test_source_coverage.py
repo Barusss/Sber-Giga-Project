@@ -637,3 +637,88 @@ def test_exact_pdf_quote_cannot_certify_cell_affiliation(side):
     (tu if side == "tu" else znp).warnings.append("table_structure_unverified")
     link = ZnPFirstAgent._validated_link(znp, tu, proposal, 1)
     assert link["relation"] == "partial" and "table_structure_unverified" in link["warnings"]
+
+def test_partial_atom_source_never_marks_fragment_fully_covered():
+    original = fragment("mixed", 1, "1. Местоположение. 9. Мощность 8,6 МВт.")
+    text = "1. Местоположение."
+    part = AtomSource(original.id, original.page, 0, len(text), text)
+    atom = DocumentAtom("a", "doc", "1", text, None, (part,), (), ())
+    ledger = source_coverage_ledger([original], [atom])
+    assert ledger["unclassified_count"] == 1
+    assert ledger["complete"] is False
+
+
+def test_pdf_rows_atomize_values_with_the_correct_source_ranges():
+    import fitz
+
+    doc = fitz.open()
+    page = doc.new_page(width=600, height=400)
+    for y in (80, 130, 180, 230):
+        page.draw_line((40, y), (560, y))
+    for x in (40, 280, 560):
+        page.draw_line((x, 80), (x, 230))
+    for y, label, value in (
+        (110, "7. Location", "River"),
+        (160, "9. Power", "8.6 MW cos 0.8"),
+        (210, "10. Seismic", "9 points"),
+    ):
+        page.insert_text((55, y), label)
+        page.insert_text((295, y), value)
+    data = doc.tobytes()
+    blocks = extract_blocks(data, ".pdf")
+    fragments = [Fragment(id=str(i), document_id="doc", **vars(block))
+                 for i, block in enumerate(blocks)]
+    atoms = atomize_fragments("doc", fragments, pdf_data=data)
+    rows = {a.clause_number: a for a in atoms}
+    assert "8.6" not in rows["7"].text
+    assert "8.6" in rows["9"].text and "0.8" in rows["9"].text
+    assert "points" in rows["10"].text and "8.6" not in rows["10"].text
+    original = {item.id: item for item in fragments}
+    for atom in rows.values():
+        assert atom.text == "\n".join(source.text for source in atom.sources)
+        for source in atom.sources:
+            assert original[source.fragment_id].text[source.start_offset:source.end_offset] == source.text
+
+def test_pdf_repeated_values_keep_distinct_offsets():
+    import fitz
+    from app.requirements.pdf_cell_sources import bind_pdf_cells
+
+    document = fitz.open()
+    page = document.new_page(width=500, height=300)
+    for y in (50, 100, 150):
+        page.draw_line((40, y), (460, y))
+    for x in (40, 240, 460):
+        page.draw_line((x, 50), (x, 150))
+    page.insert_text((50, 80), "1. First operating parameter")
+    page.insert_text((250, 80), "9")
+    page.insert_text((50, 130), "2. Second operating parameter")
+    page.insert_text((250, 130), "9")
+    data = document.tobytes()
+    fragments = [Fragment(id=str(i), document_id="doc", **vars(block))
+                 for i, block in enumerate(extract_blocks(data, ".pdf"))]
+    cells = bind_pdf_cells(data, fragments)
+    values = [(sources[0].fragment_id, sources[0].start_offset) for _, cell, sources, reason in cells
+              if cell.column == 1 and reason is None]
+    assert len(values) == 2 and len(set(values)) == 2
+
+
+def test_partial_coverage_rejects_invalid_source_offsets():
+    original = fragment("bad", 1, "Source text.")
+    bad = AtomSource("bad", 1, 0, 6, "wrong")
+    atom = DocumentAtom("a", "doc", "1", "wrong", None, (bad,), (), ())
+    with pytest.raises(ValueError, match="Invalid source span"):
+        source_coverage_ledger([original], [atom])
+
+def test_pdf_cell_citation_cannot_use_neighbouring_source():
+    from app.requirements.znp_first import ZnPFirstAgent
+    from app.requirements.schemas import ZNPClause
+
+    tu = TURequirement(id="tu", clause_number="1", category=RequirementCategory.other,
+                       text="Power 8.6 MW", sources=[{"text": "Power 8.6 MW"}])
+    znp = ZNPClause(id="z", clause_number="7", text="Location",
+                    sources=[{"fragment_id": "same", "text": "Location",
+                              "start_offset": 0, "end_offset": 8}],
+                    fragment_text="Location Power 8.6 MW")
+    proposal = dict(relation="supports", tu_quote="Power 8.6 MW",
+                    znp_quote="Power 8.6 MW", confidence=1)
+    assert ZnPFirstAgent._validated_link(znp, tu, proposal, 1) is None

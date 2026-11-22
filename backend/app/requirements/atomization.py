@@ -58,7 +58,7 @@ def _section_ancestors(section_path: str | None) -> list[str]:
     return [" / ".join(parts[:size]) for size in range(len(parts), 0, -1)]
 
 
-def atomize_fragments(document_id: str, fragments: Sequence[Fragment]) -> list[DocumentAtom]:
+def atomize_fragments(document_id: str, fragments: Sequence[Fragment], *, pdf_data: bytes | None = None) -> list[DocumentAtom]:
     """Keep each extracted clause whole; reject unverifiable source mappings."""
     by_id = {}
     for fragment in fragments:
@@ -200,4 +200,34 @@ def atomize_fragments(document_id: str, fragments: Sequence[Fragment]) -> list[D
         seen_numbers.add(base_number)
         if clause.clause_number == "Преамбула":
             preamble_sources = tuple(sources)
+    if pdf_data is not None:
+        from app.requirements.pdf_cell_sources import bind_pdf_cells
+
+        cells = bind_pdf_cells(pdf_data, fragments)
+        rows = {}
+        touched = set()
+        for page, cell, sources, reason in cells:
+            if reason is None:
+                rows.setdefault((page, cell.row), {})[cell.column] = sources
+                touched.update(source.fragment_id for source in sources)
+        if touched:
+            # Existing whole-fragment groups could include neighbouring rows.
+            # Keep their uncovered material visible to the coverage ledger.
+            atoms = [atom for atom in atoms if not touched.intersection(
+                source.fragment_id for source in (*atom.sources, *atom.context_sources)
+            )]
+        for (page, row), columns in rows.items():
+            if set(columns) != {0, 1}:
+                continue
+            sources = (*columns[0], *columns[1])
+            text = "\n".join(source.text for source in sources)
+            number_match = re.match(r"^\s*(\d+(?:\.\d+)*)", columns[0][0].text)
+            number = number_match.group(1) if number_match else f"Строка {row}"
+            identity = json.dumps(["pdf-grid-v1", document_id, page, row,
+                                   [asdict(source) for source in sources]],
+                                  ensure_ascii=False, sort_keys=True)
+            atoms.append(DocumentAtom(
+                str(uuid5(NAMESPACE_URL, identity)), document_id, number, text,
+                None, sources, (), ("table_structure_unverified",),
+            ))
     return atoms

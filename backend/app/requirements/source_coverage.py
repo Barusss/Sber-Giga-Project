@@ -71,6 +71,10 @@ def source_coverage_ledger(
     """
     source_ids = {s.fragment_id for atom in atoms for s in atom.sources}
     context_ids = {s.fragment_id for atom in atoms for s in atom.context_sources}
+    ranges = {}
+    for atom in atoms:
+        for source in (*atom.sources, *atom.context_sources):
+            ranges.setdefault(source.fragment_id, []).append(source)
     by_role = Counter()
     unclassified_by_block_type = Counter()
     excluded_by_reason = Counter()
@@ -82,7 +86,22 @@ def source_coverage_ledger(
             raise ValueError(f"Duplicate source fragment ID: {fragment.id}")
         seen.add(fragment.id)
         reason = None
-        if fragment.id in source_ids:
+        covered = [False] * len(fragment.text or "")
+        for source in ranges.get(fragment.id, []):
+            if (source.start_offset < 0 or source.end_offset > len(covered)
+                    or source.start_offset >= source.end_offset
+                    or fragment.text[source.start_offset:source.end_offset] != source.text):
+                raise ValueError("Invalid source span")
+            covered[source.start_offset:source.end_offset] = [True] * (source.end_offset - source.start_offset)
+        partial = bool(ranges.get(fragment.id)) and any(
+            not checked and not char.isspace()
+            for checked, char in zip(covered, fragment.text)
+        )
+        if partial:
+            role = "unclassified"
+            reason = "partial_source_coverage"
+            unclassified_by_block_type[fragment.block_type or "unknown"] += 1
+        elif fragment.id in source_ids:
             role = "atom_source"
         elif fragment.id in context_ids:
             role = "context_only"

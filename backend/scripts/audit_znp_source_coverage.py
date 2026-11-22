@@ -35,7 +35,7 @@ def audit_file(path: Path) -> tuple[dict, list[Fragment]]:
             container_id=getattr(block, "container_id", None),
         ) for index, block in enumerate(blocks, 1)
     ]
-    atoms = atomize_fragments(document_id, fragments)
+    atoms = atomize_fragments(document_id, fragments, pdf_data=raw if path.suffix.lower() == ".pdf" else None)
     ledger = source_coverage_ledger(fragments, atoms)
     ledger["source_sha256"] = sha256(raw).hexdigest()
     ledger["source_atoms"] = [{

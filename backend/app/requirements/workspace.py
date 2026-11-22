@@ -4,6 +4,7 @@ The existing engineering analysis stays the single source of truth for
 calculation. This module manages the requested pairs and snapshots each run.
 """
 from copy import deepcopy
+from pathlib import Path
 from datetime import datetime, timezone
 from typing import Callable
 
@@ -316,8 +317,11 @@ def get_source_coverage(project_id: str, pair_id: str,
             "unclassified_count": 0,
             "message": "Документ не имеет индексированных исходных фрагментов.",
         }
+    znp_document = next(doc for doc in documents if doc.id == pair.znp_document_id)
+    path = Path(znp_document.stored_path)
+    pdf_data = path.read_bytes() if path.suffix.lower() == ".pdf" and path.is_file() else None
     ledger = source_coverage_ledger(
-        fragments, atomize_fragments(pair.znp_document_id, fragments),
+        fragments, atomize_fragments(pair.znp_document_id, fragments, pdf_data=pdf_data),
     )
     return {"available": True, **source_coverage_summary(ledger),
             "complete": ledger["complete"] and not review_ids, TABLE_REVIEW: review_ids}
