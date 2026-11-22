@@ -52,9 +52,10 @@ def test_unexpected_three_column_layout_fails_closed():
 
 
 def test_merged_or_open_row_is_excluded_not_inferred():
+    # The divider exists in row 1 only; row 2 has no verified columns.
     doc = _native_grid(merged_row=True)
     cells = extract_closed_two_column_grid(doc[0])
-    assert [(cell.row, cell.column) for cell in cells] == [(2, 0), (2, 1)]
+    assert [(cell.row, cell.column) for cell in cells] == [(1, 0), (1, 1)]
 
 
 def test_word_crossing_column_divider_rejects_affected_row():
