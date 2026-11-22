@@ -1,12 +1,16 @@
 """Correctness expectations that fail on dev@18488f4 (audit, not fixes)."""
 from io import BytesIO
+
+import pytest
+
+# Storage tests use model replies under the ZnPFirst project route.
+pytestmark = pytest.mark.usefixtures("storage_matching_stub")
 from types import SimpleNamespace
 import json
 
 import fitz
 from docx import Document as WordDocument
 from PIL import Image
-import pytest
 
 from app.documents.chunking import build_chunks
 from app.documents.parser import extract_blocks

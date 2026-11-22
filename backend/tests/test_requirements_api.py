@@ -7,6 +7,11 @@ import threading
 import time
 from io import BytesIO
 
+import pytest
+
+# Storage tests use model replies under the ZnPFirst project route.
+pytestmark = pytest.mark.usefixtures("storage_matching_stub")
+
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -16,6 +21,7 @@ from app.core.models import Fragment
 from app.documents.parser import ExtractedBlock
 from app.main import app
 from app.requirements.agent import RequirementsAgent
+from app.requirements.znp_first import ZnPFirstAgent
 from app.requirements.extraction import Clause
 from app.requirements.router import _fragment_for_quote, _apply_quote_provenance
 from app.requirements.schemas import RequirementCheckItem, RequirementStatus, TURequirement, RequirementCategory, ZNPClause
@@ -95,7 +101,7 @@ def test_analyze_persists_fragment_provenance(client, monkeypatch):
     assert "3.1." in power["znp_fragment_text"]
 
     meter = items["1.2"]
-    assert meter["status"] == "missing"
+    assert meter["status"] == "needs_review"  # ZnPFirst keeps unproved absence reviewable.
     assert meter["tu_page"] == 2
     assert meter["tu_fragment_id"]
     assert meter["znp_fragment_id"] is None
@@ -200,7 +206,7 @@ def test_analyze_skips_headings_toc_and_service_sections(client, monkeypatch):
 
     assert set(items) == {"1.1", "2"}
     assert items["1.1"]["status"] == "needs_review"
-    assert items["2"]["status"] == "missing"
+    assert items["2"]["status"] == "needs_review"
     assert items["2"]["requirement"]["text"] == \
         "Установить счетчик класса точности 0.5S."
     assert data["stats"]["total"] == 2
@@ -399,7 +405,10 @@ def test_reanalysis_preserves_human_decisions_and_evidence_links(client, monkeyp
     findings = client.get(f"/api/v1/projects/{pid}/findings").json()
     finding = next(
         item for item in findings
-        if item["type"] == "missing_requirement"
+        if item['type'] == 'needs_review' and any(
+            entry.get('requirement_id') == missing['requirement']['id']
+            for entry in item['evidence']
+        )
     )
     assert any(
         entry.get("requirement_id") == missing["requirement"]["id"]
@@ -463,7 +472,7 @@ def test_reanalysis_preserves_human_decisions_and_evidence_links(client, monkeyp
     }
     assert forced_items["1.2"]["is_confirmed_by_human"] is False
     assert forced_items["1.2"]["human_override_status"] is None
-    assert forced_items["1.2"]["status"] == "missing"
+    assert forced_items["1.2"]["status"] == "needs_review"
     reset_findings = client.get(f"/api/v1/projects/{pid}/findings").json()
     reset = next(
         item for item in reset_findings
@@ -552,23 +561,37 @@ def test_list_evidence_is_persisted_with_source_fragments(client, monkeypatch):
                 ExtractedBlock(3, 0, "2.2. Установить устройство ВГ-456.")]
     pid, docs = _project_with_documents(client, monkeypatch, blocks)
     def reply(self, system_prompt, user_prompt):
-        return {"action": "finish", "status": "fulfilled", "confidence_score": 0.95,
-            "tu_quote": "устройство АБ-123", "reasoning": "Подтверждено",
-            "evidence_items": [
-                {"item_id": 1, "status": "fulfilled", "evidence": [{"clause_id": "znp-1", "quote": "устройство АБ-123"}]},
-                {"item_id": 2, "status": "fulfilled", "evidence": [{"clause_id": "znp-2", "quote": "устройство ВГ-456"}]},
-            ]}
+        import json
+        p = json.loads(user_prompt)
+        if 'znp_atom' in p:
+            atom = p['znp_atom']
+            word = 'АБ-123' if 'АБ-123' in atom['text'] else 'ВГ-456'
+            return {'links': [dict(requirement_id=c['requirement_id'], relation='supports',
+                tu_quote='устройство '+word, znp_quote='устройство '+word,
+                confidence=.95) for c in p['tu_candidates']], 'search_more': False}
+        if 'obligation' in p:
+            return {'covered': True, 'object_consistent': True,
+                    'evidence_ids': [e['link_id'] for e in p.get('evidence', [])
+                                     if any(word in p['obligation']['text'] and word in e['znp_quote']
+                                            for word in ('АБ-123', 'ВГ-456'))]}
+        return {'atoms': [], 'links': [], 'conflicts': [], 'uncertain_ids': []}
     monkeypatch.setattr("app.ai.deepseek.DeepSeekClient.complete_json", reply)
     response = client.post("/api/v1/requirements/analyze", json={"project_id": pid})
     assert response.status_code == 200, response.text
     item = response.json()["checked_requirements"][0]
     assert item["status"] == "fulfilled"
-    details = item["validation_details"]["items"]
-    assert len(details) == 2
-    assert all(part["evidence"][0]["document_id"] == docs["znp"] for part in details)
-    assert len({part["evidence"][0]["fragment_id"] for part in details}) == 2
-    stored = client.get(f"/api/v1/requirements/projects/{pid}").json()["checked_requirements"][0]
-    assert stored["validation_details"]["items"] == details
+    details = item['validation_details']
+    assert len(details['obligation_coverage']) == 2
+    assert all(part['status'] == 'fulfilled' for part in details['obligation_coverage'])
+    matches = details['matches']
+    assert len({match['fragment_id'] for match in matches}) == 2
+    from sqlalchemy import select
+    with next(app.dependency_overrides[get_db]()) as db:
+        for match in matches:
+            assert db.get(Fragment, match['fragment_id']).document_id == docs['znp']
+    stored = client.get(f"/api/v1/requirements/projects/{pid}").json()['checked_requirements'][0]
+    assert stored['validation_details'] == details
+
 
 
 def test_single_evidence_spanning_fragments_is_not_misattributed():
@@ -740,7 +763,7 @@ def test_parallel_analysis_is_serialized(tmp_path, monkeypatch):
 
     app.dependency_overrides[get_db] = override
     monkeypatch.setattr("app.documents.router.extract_blocks", _requirements_blocks)
-    original_verify = RequirementsAgent.verify_all
+    original_verify = ZnPFirstAgent.verify_all
 
     def slow_verify(self, tu_requirements, znp_clauses):
         # The delay happens after existing rows were read and before the commit,
@@ -748,7 +771,7 @@ def test_parallel_analysis_is_serialized(tmp_path, monkeypatch):
         time.sleep(0.2)
         return original_verify(self, tu_requirements, znp_clauses)
 
-    monkeypatch.setattr(RequirementsAgent, "verify_all", slow_verify)
+    monkeypatch.setattr(ZnPFirstAgent, "verify_all", slow_verify)
     try:
         with TestClient(app) as parallel_client:
             project = parallel_client.post(
@@ -856,7 +879,7 @@ def test_explicit_document_roles_are_validated_before_analysis(client, monkeypat
 
 def test_validation_details_survive_read_and_confirmed_reanalysis(client, monkeypatch):
     pid, _ = _project_with_documents(client, monkeypatch, _requirements_blocks)
-    original_verify = RequirementsAgent.verify_all
+    original_verify = ZnPFirstAgent.verify_all
     details = {"version": 1, "model_reasoning": "Исходный вывод модели"}
 
     def with_details(self, tu_requirements, znp_clauses):
@@ -864,7 +887,7 @@ def test_validation_details_survive_read_and_confirmed_reanalysis(client, monkey
         result.checked_requirements[0].validation_details = details
         return result
 
-    monkeypatch.setattr(RequirementsAgent, "verify_all", with_details)
+    monkeypatch.setattr(ZnPFirstAgent, "verify_all", with_details)
     endpoint = "/api/v1/requirements/analyze"
     response = client.post(endpoint, json={"project_id": pid})
     assert response.status_code == 200, response.text
@@ -904,7 +927,7 @@ def test_reanalysis_keeps_confirmed_evidence_and_source_when_new_match_changes(c
     })
     assert confirmed.status_code == 200, confirmed.text
 
-    original_verify = RequirementsAgent.verify_all
+    original_verify = ZnPFirstAgent.verify_all
 
     def changed_match(self, tu_requirements, znp_clauses):
         result = original_verify(self, tu_requirements, znp_clauses)
@@ -918,7 +941,7 @@ def test_reanalysis_keeps_confirmed_evidence_and_source_when_new_match_changes(c
                 item.reasoning = "Новая модель не нашла совпадений"
         return result
 
-    monkeypatch.setattr(RequirementsAgent, "verify_all", changed_match)
+    monkeypatch.setattr(ZnPFirstAgent, "verify_all", changed_match)
     repeated = client.post(endpoint, json={"project_id": pid})
     assert repeated.status_code == 200, repeated.text
     kept = next(

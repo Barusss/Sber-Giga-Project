@@ -18,3 +18,15 @@ python scripts/p0_56_deepseek_probe.py --saved-result ../diagnostics/p0-56/origi
 Omit both live flags for dry-run. Private requests and responses stay under ignored diagnostics/. Source ownership is checked against the saved extracted atoms; PDFs are hash-checked, not extracted again. The snapshot does not contain the full original Fragment.text, so this probe does not independently re-prove text offsets.
 
 source_coverage.complete=false (11 unclassified fragments). The synthetic guard rehearsal must remain needs_review. This probe only evaluates links; it does not publish a comparison verdict. A real first run still requires API credentials, provider balance, and explicit user approval. Truncation at 1024 output tokens stops the experiment without retry.
+
+## Source-selected diagnostic preview
+
+Both project APIs use ZnPFirst. Explicit requirement-list requests retain their legacy contract.
+
+For a bounded diagnostic pass, send test_mode=true and preview_znp_source_id=<real ZnP Fragment ID>. The source must identify exactly one existing atom in the selected document; unknown, foreign or ambiguous sources are refused. The selector is forbidden outside test_mode. PDF review guards still apply.
+
+Only that ZnP source atom enters semantic atomization. All extracted TU clauses stay in the production retrieval pool; no expected TU candidate or rank is supplied. Existing preview request limits and disabled targeted search remain. The diagnostic may therefore list more than ten TU rows, but matching still sees the normal bounded candidate batch. Metadata marks diagnostic_only and tu_limit=null for this mode.
+
+The full original ZnP coverage ledger is applied to preview verdicts. Incomplete coverage forbids automatic fulfilled. The comparison API saves only a non-current test snapshot; the analyze API returns a read-only diagnostic response. Neither modifies official requirements, verifications or findings.
+
+Optional private regression: tests/test_control_a_preview.py with /old mounted to the prior PR51 audit and /inputs/tu.docx, /inputs/znp.docx mounted to the originals. The replay is explicitly adapted to current candidate IDs only after exact source/text/context identity checks. No HTTP is used.

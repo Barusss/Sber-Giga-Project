@@ -719,6 +719,7 @@ def analyze_requirements(
         return response
 
     project_id = payload.project_id
+    agent = ZnPFirstAgent(ai_client=agent.ai, embedder=agent.embedder)
 
     with _analysis_lock(project_id):
         _lock_project_for_analysis(db, project_id)
@@ -734,8 +735,9 @@ def _analyze_test_subset(
     db: Session,
     agent: ZnPFirstAgent,
     progress_callback: Callable[[str, int, int, str | None], None] | None,
+    preview_znp_source_id: str | None = None,
 ) -> CheckRequirementsResponse:
-    """Read-only 10 x 10 preview. Never write requirements, findings or verdicts.
+    """Read-only preview; source-selected diagnostics retain the full TU pool.
 
     Restrict source inputs BEFORE DeepSeek atomization. Keep every child atom
     of those ten source clauses so splitting cannot silently drop evidence.
@@ -751,6 +753,15 @@ def _analyze_test_subset(
     ).all()
     original_atoms = atomize_fragments(znp_doc.id, znp_fragments)
     source_atoms = select_technical_preview(original_atoms, limit=10)
+    if preview_znp_source_id:
+        source_atoms = [atom for atom in original_atoms if any(
+            source.fragment_id == preview_znp_source_id for source in atom.sources
+        )]
+        if len(source_atoms) != 1:
+            raise HTTPException(422, "Diagnostic source must identify exactly one ZnP atom in this document")
+        # Keep the complete TU search pool: selecting the atom must never
+        # preselect the expected TU match or alter candidate ranking.
+        selected_tu = tu_raw
     if not selected_tu or not source_atoms:
         raise HTTPException(
             422, "Test mode needs eligible technical TU and ZnP clauses; "
@@ -876,20 +887,25 @@ def _analyze_test_subset(
     result.stats["total"] = len(result.checked_requirements)
     if result.trace_info is None:
         result.trace_info = {}
+    apply_source_coverage_guard(
+        result, source_coverage_ledger(znp_fragments, original_atoms),
+    )
     result.trace_info["test_mode"] = {
         "enabled": True,
-        "tu_limit": 10,
+        "tu_limit": None if preview_znp_source_id else 10,
         "znp_limit": 10,
         "tu_selected": len(tu_schemas),
         "tu_obligations_estimated": expected_obligations,
         "coverage_call_budget": coverage_budget,
         "targeted_enabled": False,
-        "technical_selection": True,
+        "technical_selection": not bool(preview_znp_source_id),
         "znp_source_clauses_selected": len(source_atoms),
         "znp_atoms_selected": len(znp_schemas),
         "znp_atoms_after_split": len(atomization.atoms),
         "truncated_after_atomization": False,
         "isolated": True,
+        "preview_znp_source_id": preview_znp_source_id,
+        "diagnostic_only": True,
     }
     result.trace_info["atomization"] = atomization.trace()
     result.trace_info["llm_usage"] = ledger.trace()
@@ -935,6 +951,8 @@ def _analyze_project_requirements(
         raise HTTPException(422, "Selected ZNP document must have kind=znp")
 
     pdf_review = any(requires_pdf_layout_review(doc) for doc in (tu_doc, znp_doc))
+    if payload.preview_znp_source_id and not payload.test_mode:
+        raise HTTPException(422, "preview_znp_source_id requires test_mode=true")
     if pdf_review and payload.test_mode:
         raise HTTPException(422, f"{TABLE_REVIEW}: используйте полную проверку источников.")
     if pdf_review and not isinstance(agent, ZnPFirstAgent):
@@ -992,6 +1010,7 @@ def _analyze_project_requirements(
             raise HTTPException(422, "Test mode requires ZnP-first agent")
         return _analyze_test_subset(
             tu_doc, znp_doc, tu_raw, db, agent, progress_callback,
+            preview_znp_source_id=payload.preview_znp_source_id,
         )
 
     # The project-workspace comparison uses conservative ZnP atoms, not the

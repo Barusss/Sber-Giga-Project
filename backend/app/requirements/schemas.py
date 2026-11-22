@@ -112,6 +112,7 @@ class AnalyzeProjectRequirementsRequest(BaseModel):
     znp_document_id: Optional[str] = None
     force: bool = False
     test_mode: bool = False
+    preview_znp_source_id: Optional[str] = None
     allow_incomplete_sources: bool = False
 
 
