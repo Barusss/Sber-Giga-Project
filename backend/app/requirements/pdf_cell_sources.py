@@ -27,6 +27,14 @@ def bind_pdf_cells(data, fragments):
                 continue
             blocks = page.get_text("blocks", sort=True)
             words = page.get_text("words")
+            raw_blocks = page.get_text("rawdict")["blocks"]
+            characters = [
+                char
+                for block in raw_blocks if block.get("type") == 0
+                for line in block["lines"]
+                for span in line["spans"]
+                for char in span["chars"]
+            ]
             mapped_words = {}
             for block_index, block in enumerate(blocks):
                 if len(block) < 7 or block[6] != 0:
@@ -47,6 +55,16 @@ def bind_pdf_cells(data, fragments):
                 if [m.group() for m in tokens] != [w[4] for w in block_words]:
                     continue
                 for word, token in zip(block_words, tokens):
+                    x0, y0, x1, y1 = word[:4]
+                    enclosed = [
+                        char for char in characters
+                        if char["bbox"][0] >= x0 - 0.1
+                        and char["bbox"][1] >= y0 - 0.1
+                        and char["bbox"][2] <= x1 + 0.1
+                        and char["bbox"][3] <= y1 + 0.1
+                    ]
+                    if "".join(char["c"] for char in enclosed) != token.group():
+                        continue
                     key = (tuple(round(float(v), 3) for v in word[:4]), word[4])
                     mapped_words.setdefault(key, []).append(
                         AtomSource(fragment.id, fragment.page, token.start(), token.end(), token.group())
