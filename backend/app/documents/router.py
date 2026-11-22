@@ -11,7 +11,7 @@ from app.core.config import settings
 from app.core.db import get_db
 from app.core.models import Chunk, ChunkSource, Document, DocumentKind, Fragment, Project, ReviewState
 from app.core.schemas import DocumentOut, FragmentOut, ProjectCreate, ProjectOut
-from app.documents.parser import extract_blocks
+from app.documents.parser import extract_blocks, pdf_layout_version
 from app.documents.chunking import build_chunks, CHUNKING_VERSION
 
 router = APIRouter(tags=["documents"])
@@ -65,10 +65,14 @@ def _save_document(project_id: str, kind: DocumentKind, file: UploadFile,
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(data)
     try:
+        version = "text-v3"
+        if any(b.extraction_method == "ocr" for b in blocks):
+            version = "paddleocr-v5" if settings.ocr_backend == "paddleocr" else "tesseract-v3"
+        if suffix == ".pdf":
+            version = pdf_layout_version(version, blocks)
         document = Document(
             project_id=project_id, kind=kind,
-            extraction_version=("paddleocr-v5" if settings.ocr_backend == "paddleocr" else "tesseract-v3")
-                if any(b.extraction_method == "ocr" for b in blocks) else "text-v3",
+            extraction_version=version,
             filename=Path(file.filename or "document").name[:255],
             stored_path=str(target), mime_type=file.content_type or "application/octet-stream"
         )
@@ -194,6 +198,8 @@ def reindex_document_chunks(document_id: str, db: Session = Depends(get_db)):
         fragment.block_type = block.block_type
         fragment.section_path = block.section_path
         fragment.container_id = block.container_id
+    if path.suffix.lower() == ".pdf":
+        document.extraction_version = pdf_layout_version(document.extraction_version.split("+")[0], blocks)
 
     chunk_ids = select(Chunk.id).where(Chunk.document_id == document_id)
     db.execute(delete(ChunkSource).where(ChunkSource.chunk_id.in_(chunk_ids)))

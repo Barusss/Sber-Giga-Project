@@ -19,6 +19,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.db import get_db
+from app.documents.parser import TABLE_REVIEW, requires_pdf_layout_review
 from app.core.models import (
     Chunk,
     Document,
@@ -707,6 +708,8 @@ def analyze_requirements(
     agent = RequirementsAgent()
 
     if isinstance(payload, CheckRequirementsRequest):
+        if any(TABLE_REVIEW in item.warnings for item in (*payload.tu_requirements, *payload.znp_clauses)):
+            raise HTTPException(422, f"{TABLE_REVIEW}: требуется проверка строк и столбцов PDF.")
         response = agent.verify_all(payload.tu_requirements, payload.znp_clauses)
         _attach_provenance(
             response.checked_requirements,
@@ -930,6 +933,10 @@ def _analyze_project_requirements(
         raise HTTPException(422, "Selected TU document must have kind=tu")
     if znp_doc.kind != DocumentKind.znp:
         raise HTTPException(422, "Selected ZNP document must have kind=znp")
+
+    if any(requires_pdf_layout_review(doc) for doc in (tu_doc, znp_doc)):
+        raise HTTPException(422, f"{TABLE_REVIEW}: требуется проверка строк и столбцов PDF. "
+                                 "Автоматическая сверка остановлена до сопоставления.")
 
     tu_raw = [
         clause

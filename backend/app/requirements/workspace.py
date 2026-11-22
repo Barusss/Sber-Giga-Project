@@ -14,6 +14,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.db import get_db
+from app.documents.parser import TABLE_REVIEW, requires_pdf_layout_review
 from app.core.models import (
     ComparisonPair, ComparisonRun, ComparisonAtomReview, Document, DocumentKind, Fragment, Finding, Project,
     RequirementAnalysis, RequirementVerification, TURequirement, ReviewState,
@@ -302,19 +303,24 @@ def get_source_coverage(project_id: str, pair_id: str,
                         db: Session = Depends(get_db)):
     """No-API source completeness preflight before a paid full comparison."""
     pair = _pair(db, project_id, pair_id)
+    documents = db.scalars(select(Document).where(Document.id.in_(
+        [pair.tu_document_id, pair.znp_document_id]
+    ))).all()
+    review_ids = [doc.id for doc in documents if requires_pdf_layout_review(doc)]
     fragments = db.scalars(select(Fragment).where(
         Fragment.document_id == pair.znp_document_id,
     ).order_by(Fragment.page, Fragment.position)).all()
     if not fragments:
         return {
-            "available": False, "complete": False,
+            "available": False, "complete": False, TABLE_REVIEW: review_ids,
             "unclassified_count": 0,
             "message": "Документ не имеет индексированных исходных фрагментов.",
         }
     ledger = source_coverage_ledger(
         fragments, atomize_fragments(pair.znp_document_id, fragments),
     )
-    return {"available": True, **source_coverage_summary(ledger)}
+    return {"available": True, **source_coverage_summary(ledger),
+            "complete": ledger["complete"] and not review_ids, TABLE_REVIEW: review_ids}
 
 
 @router.get("/projects/{project_id}/comparisons/{pair_id}/runs")

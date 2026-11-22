@@ -351,3 +351,45 @@ def test_authorized_incomplete_znp_run_marks_source_coverage_degraded(
     assert report["trace_info"]["source_coverage"]["unclassified_count"] >= 2
     assert report["trace_info"]["degraded"]
     assert report["stats"]["fulfilled"] == 0
+
+def test_pdf_layout_blocks_both_routes_and_checkpoint_replay(client, monkeypatch):
+    from app.core.db import get_db
+    from app.core.models import Document
+    from app.main import app
+    from app.requirements.workspace import run_comparison
+    from fastapi import HTTPException
+    import pytest
+
+    project_id, docs = prepare(client, monkeypatch)
+    base = f"/api/v1/projects/{project_id}/comparisons"
+    pair = client.post(base, json={"pairs": [{"tu_document_id": docs["tu"][0],
+                                             "znp_document_id": docs["znp"][0]}]}).json()[0]
+    session = app.dependency_overrides[get_db]()
+    db = next(session)
+    try:
+        def forbidden(*args, **kwargs):
+            pytest.fail("Unverified PDF reached the model or its checkpoint")
+
+        monkeypatch.setattr("app.requirements.checkpoints.CheckpointedDeepSeek.complete_json", forbidden)
+        monkeypatch.setattr("app.ai.deepseek.DeepSeekClient.complete_json", forbidden)
+        for kind, version in (("tu", "text-v3"), ("znp", "tesseract-v3+review1")):
+            doc = db.get(Document, docs[kind][0])
+            doc.extraction_version = version
+            db.commit()
+            preflight = client.get(f"{base}/{pair['id']}/source-coverage").json()
+            assert not preflight["complete"]
+            assert preflight["table_structure_unverified"] == [doc.id]
+            for mode in ("true", "false"):
+                result = client.post(f"{base}/{pair['id']}/runs?test_mode={mode}&allow_incomplete_sources=true")
+                assert result.status_code == 422
+                assert "table_structure_unverified" in result.json()["detail"]
+            legacy = client.post("/api/v1/requirements/analyze", json={"project_id": project_id, "allow_incomplete_sources": True})
+            assert legacy.status_code == 422 and "table_structure_unverified" in legacy.json()["detail"]
+            with pytest.raises(HTTPException, match="table_structure_unverified"):
+                run_comparison(project_id, pair["id"], db, checkpoint_job_id="paused-job",
+                               allow_incomplete_sources=True)
+            doc.extraction_version = "text-v3+flow1"
+            db.commit()
+        assert client.get(f"{base}/{pair['id']}/runs").json() == []
+    finally:
+        session.close()

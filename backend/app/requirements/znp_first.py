@@ -338,6 +338,8 @@ class ZnPFirstAgent:
             confidence = 0.0
         params = tool_verify_engineering_params(requirement.text, atom.text)
         warnings = list(getattr(atom, "warnings", ()) or ())
+        if "table_structure_unverified" in requirement.warnings and "table_structure_unverified" not in warnings:
+            warnings.append("table_structure_unverified")
         if relation == "supports":
             if (not params["params_match"] or confidence < 0.7 or warnings
                     or not scope_overlap(requirement.text, atom.text)):

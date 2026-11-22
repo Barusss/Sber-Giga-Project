@@ -4,7 +4,7 @@ Physical DOCX page numbers cannot be known without rendering: page=1 is a
 logical placeholder, and its fragment type/section is preserved instead.
 """
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from io import BytesIO
 import re
 
@@ -17,6 +17,21 @@ from docx.text.paragraph import Paragraph
 
 class UnsupportedFile(ValueError):
     pass
+
+
+TABLE_REVIEW = "table_structure_unverified"
+
+
+def pdf_layout_version(version, blocks):
+    if any((b.container_id or "").startswith(TABLE_REVIEW) or b.extraction_method == "ocr"
+           for b in blocks):
+        return version + "+review1"
+    return version + "+flow1"
+
+
+def requires_pdf_layout_review(document):
+    return ((document.filename.lower().endswith(".pdf") or document.stored_path.lower().endswith(".pdf"))
+            and not document.extraction_version.endswith("+flow1"))
 
 
 @dataclass(frozen=True)
@@ -413,9 +428,22 @@ def extract_blocks(data: bytes, extension: str) -> list[ExtractedBlock]:
                     extracted, toc_mode = _ocr_page_blocks(
                         page, picture, page_idx, sections, toc_mode,
                     )
-                    blocks.extend(extracted)
+                    # Keep the page identity, never manufacture table/row/col IDs.
+                    marker = f"{TABLE_REVIEW}:{page_idx}"
+                    blocks.extend(replace(block, container_id=marker) for block in extracted)
+                    if not extracted:
+                        blocks.append(ExtractedBlock(page_idx, 0, "", extraction_method="ocr",
+                                                     container_id=marker))
                     continue
 
+                # Only a simple native text flow avoids the review barrier.
+                # Separate blocks, graphic rules and large inter-word gaps can
+                # carry field/value relationships absent from flattened text.
+                words = page.get_text("words", sort=True)
+                ambiguous = (len(native) != 1 or "\n" in native[0][0] or bool(page.get_drawings()) or bool(page.get_images())
+                             or any(current[1] <= previous[3] and current[0] - previous[2] > 12
+                                    for previous, current in zip(words, words[1:])))
+                marker = f"{TABLE_REVIEW}:{page_idx}" if ambiguous else None
                 for pos, (content, bbox) in enumerate(native):
                     # A digital PDF already has text boundaries provided by
                     # MuPDF; we do not modify the original source string.
@@ -434,7 +462,7 @@ def extract_blocks(data: bytes, extension: str) -> list[ExtractedBlock]:
                         sections[i] for i in sorted(sections)
                     ) or None
                     blocks.append(ExtractedBlock(
-                        page_idx, pos, content, block_type, section, bbox, "text",
+                        page_idx, pos, content, block_type, section, bbox, "text", marker,
                     ))
         return blocks
 

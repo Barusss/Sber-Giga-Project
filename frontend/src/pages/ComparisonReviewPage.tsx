@@ -69,6 +69,7 @@ type SourceCoveragePreflight = {
   unclassified_count: number
   unclassified_by_block_type?: Record<string, number>
   review_hint_counts?: Record<string, number>
+  table_structure_unverified?: string[]
   message?: string
 }
 type AtomReview = {
@@ -129,6 +130,7 @@ export function ComparisonReviewPage({projectId, approved}: {projectId: string; 
   const [detail, setDetail] = useState<RunDetail|null>(null)
   const [atomReviews, setAtomReviews] = useState<AtomReview[]>([])
   const [sourceCoverage, setSourceCoverage] = useState<SourceCoveragePreflight|null>(null)
+  const layoutUnverified = Boolean(sourceCoverage?.table_structure_unverified?.length)
   const [status, setStatus] = useState<'all'|Status>('all')
   const [perspective, setPerspective] = useState<'znp'|'tu'>('znp')
   const [search, setSearch] = useState('')
@@ -305,6 +307,7 @@ export function ComparisonReviewPage({projectId, approved}: {projectId: string; 
         // Fresh audit prevents spending on a document changed after page load.
         const audit = await request<SourceCoveragePreflight>(`${root}/source-coverage`)
         setSourceCoverage(audit)
+        if (audit.table_structure_unverified?.length) return
         if (!audit.available) throw new Error(
           'Нет индексированных исходных фрагментов ЗнП. Сверку запускать нельзя.'
         )
@@ -375,16 +378,19 @@ export function ComparisonReviewPage({projectId, approved}: {projectId: string; 
         {pair && <p>{pair.tu_filename} / {pair.znp_filename}</p>}
       </div>
       {pair && !approved && <div className="workspace-row-actions">
-        <button type="button" className="secondary" disabled={busy || running}
+        <button type="button" className="secondary" disabled={busy || running || layoutUnverified}
           onClick={() => rerun(true)} title="До 10 технических требований ТУ и 10 атомарных положений ЗнП. Преамбулы и перечни актов пропускаются. Основной результат не меняется.">
           Тест: 10 ТУ × 10 ЗнП
         </button>
-        <button type="button" disabled={busy || running} onClick={() => rerun(false)}>
+        <button type="button" disabled={busy || running || layoutUnverified} onClick={() => rerun(false)}>
           {running ? 'Проверка выполняется' : busy ? 'Запускаем…' : 'Полная проверка'}
         </button>
       </div>}
     </div>
-    {sourceCoverage && sourceCoverage.available && sourceCoverage.unclassified_count > 0 &&
+    {layoutUnverified && <p className="workspace-analysis-note">
+      Автоматическая сверка приостановлена. Для PDF требуется проверить, к каким строкам и столбцам относятся значения.
+    </p>}
+    {!layoutUnverified && sourceCoverage && sourceCoverage.available && sourceCoverage.unclassified_count > 0 &&
       <p className="workspace-analysis-note">
         Исходный ЗнП: {sourceCoverage.total_fragments} фрагментов,
         {sourceCoverage.unclassified_count} не классифицированы после извлечения.

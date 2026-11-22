@@ -6,6 +6,7 @@ from typing import Sequence
 from uuid import NAMESPACE_URL, uuid5
 
 from app.core.models import Fragment
+from app.documents.parser import TABLE_REVIEW
 from app.requirements.extraction import extract_clauses
 
 
@@ -173,6 +174,9 @@ def atomize_fragments(document_id: str, fragments: Sequence[Fragment]) -> list[D
         if not sources or "\n".join(source.text for source in sources) != clause.text:
             raise ValueError("Atom text is not completely covered by source fragments")
         source_types = {by_id[source.fragment_id].block_type for source in sources}
+        if any((by_id[s.fragment_id].container_id or "").startswith(TABLE_REVIEW)
+               for s in (*sources, *context)):
+            warnings += (TABLE_REVIEW,)
         if "table_row" in source_types and len(source_types) > 1:
             # Unnumbered prose/notes may limit the preceding table. Keep
             # verbatim contents, but never auto-certify an uncertain boundary.

@@ -578,3 +578,62 @@ def test_pdf_signature_block_does_not_extend_last_requirement():
 def test_ocr_numbered_preservation_instruction_is_body():
     from app.documents.parser import _ocr_heading_level
     assert _ocr_heading_level("3.2. Кабельные вводы сохранить,") is None
+
+def test_scanned_grid_has_no_automatic_cell_provenance(monkeypatch):
+    import fitz
+    from PIL import Image, ImageDraw
+    from io import BytesIO
+    from app.documents.parser import ExtractedBlock
+
+    pdf = fitz.open()
+    page = pdf.new_page(width=400, height=200)
+    image = Image.new("RGB", (400, 200), "white")
+    draw = ImageDraw.Draw(image)
+    for y in (10, 50, 90, 130, 170):
+        draw.line((10, y, 390, y), fill="black")
+    draw.line((180, 50, 180, 170), fill="black")
+    for xy, text in [((20, 20), "Design values"), ((20, 60), "1. Station"),
+                     ((190, 60), "7 MW"), ((20, 100), "1. Transformer"),
+                     ((190, 100), "9 MVA"), ((20, 140), "Reserve"), ((190, 140), "Not required")]:
+        draw.text(xy, text, fill="black")
+    stream = BytesIO()
+    image.save(stream, "PNG")
+    page.insert_image(page.rect, stream=stream.getvalue())
+    # OCR deliberately returns perfectly legible text with an incorrect scope.
+    def fake_ocr(page, image, page_idx, sections, toc_mode):
+        return [ExtractedBlock(1, 0, "1. Station 9 MVA.", bbox=[10, 50, 380, 120],
+                               extraction_method="ocr")], False
+    monkeypatch.setattr("app.documents.parser._ocr_page_blocks", fake_ocr)
+    blocks = extract_blocks(pdf.tobytes(), ".pdf")
+    assert blocks[0].container_id == "table_structure_unverified:1"
+
+def test_native_table_and_plain_text_keep_distinct_layout_status():
+    import fitz
+    from app.documents.parser import pdf_layout_version
+
+    pdf = fitz.open()
+    page = pdf.new_page()
+    page.insert_text((40, 50), "1. Nominal value of the test equipment.")
+    assert pdf_layout_version("text-v3", extract_blocks(pdf.tobytes(), ".pdf")) == "text-v3+flow1"
+    page.draw_line((170, 20), (170, 100))
+    page.insert_text((190, 50), "7 MVA")
+    page.insert_text((40, 80), "1. Operating temperature")
+    page.insert_text((190, 80), "84 C")
+    blocks = extract_blocks(pdf.tobytes(), ".pdf")
+    assert all(b.container_id == "table_structure_unverified:1" for b in blocks)
+    assert pdf_layout_version("text-v3", blocks) == "text-v3+review1"
+
+
+@pytest.mark.parametrize("side", ["tu", "znp"])
+def test_exact_pdf_quote_cannot_certify_cell_affiliation(side):
+    from app.requirements.znp_first import ZnPFirstAgent
+    from app.requirements.schemas import ZNPClause
+    text = "Установить трансформатор мощностью 7 МВА."
+    source = {"text": text, "fragment_id": "s", "page": 1}
+    znp = ZNPClause(id="z", clause_number="1", text=text, sources=[source])
+    tu = TURequirement(id="t", clause_number="1", category=RequirementCategory.other, text=text, sources=[source])
+    proposal = dict(relation="supports", tu_quote=text, znp_quote=text, confidence=1)
+    assert ZnPFirstAgent._validated_link(znp, tu, proposal, 1)["relation"] == "supports"
+    (tu if side == "tu" else znp).warnings.append("table_structure_unverified")
+    link = ZnPFirstAgent._validated_link(znp, tu, proposal, 1)
+    assert link["relation"] == "partial" and "table_structure_unverified" in link["warnings"]
