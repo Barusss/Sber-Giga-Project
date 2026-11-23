@@ -7,6 +7,7 @@ The legacy agent is retained for old API requests and regression comparison.
 from __future__ import annotations
 
 import json
+import re
 import time
 from math import isfinite
 from collections import Counter, defaultdict
@@ -29,6 +30,16 @@ from app.requirements.schemas import (
 from app.requirements.tools import (
     tool_check_list_coverage, tool_search_znp_clauses, tool_validate_quotes,
     tool_verify_engineering_params,
+)
+
+# Deliberately narrow: a legal entity/branch name is identification, not
+# evidence of an address, a parameter or an obligation. This is a safety
+# guard for nominal headings, not a general semantic entailment checker.
+_ENTITY_NAME_ONLY_RE = re.compile(
+    r'(?:(?i:филиал)\s+)?(?i:ПАО|ОАО|ЗАО|АО|ООО)\s*'
+    r'(?:«[^»\n]+»|"[^"\n]+")'
+    r'(?:\s*[—–-]\s*[А-ЯЁA-Z][а-яёa-z-]+'
+    r'(?:\s+[А-ЯЁA-Z][А-ЯЁA-Z0-9-]+)?)?'
 )
 
 MATCH_PROMPT = """Ты проверяешь одно положение ЗнП на соответствие требованиям ТУ.
@@ -348,6 +359,8 @@ class ZnPFirstAgent:
         if "table_structure_unverified" in requirement.warnings and "table_structure_unverified" not in warnings:
             warnings.append("table_structure_unverified")
         if relation == "supports":
+            if _ENTITY_NAME_ONLY_RE.fullmatch(" ".join(znp_quote.split())):
+                warnings.append("identity_only_evidence")
             if (not params["params_match"] or confidence < 0.7 or warnings
                     or not scope_overlap(requirement.text, atom.text)):
                 relation = "partial"
