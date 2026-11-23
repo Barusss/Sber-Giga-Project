@@ -121,6 +121,7 @@ class Clause:
     fragment_ids: list[str]
     section_path: str | None
     fragment_text: str
+    warnings: tuple[str, ...] = ()
 
 
 @dataclass
@@ -128,6 +129,7 @@ class _Draft:
     clause_number: str
     sections: list[tuple[Fragment, str]]
     section_path: str | None
+    warnings: tuple[str, ...] = ()
 
     @property
     def text(self) -> str:
@@ -146,6 +148,22 @@ def is_service_clause(text: str) -> bool:
     """Recognise formal TU sections that are not engineering requirements."""
     first_line = text.strip().splitlines()[0] if text.strip() else ""
     return any(pattern.match(first_line) for pattern in _SERVICE_RE)
+
+
+def _unnumbered_pdf_technical(fragment: Fragment, text: str) -> bool:
+    """Recover declarative technical prose, never a project title/reference."""
+    if not fragment.bbox or fragment.block_type != "paragraph":
+        return False
+    parameter = re.match(
+        r"^(?:(?:согласованн\w*|номинальн\w*|установленн\w*)\s+"
+        r"(?:величин\w*\s+)?)?(?:мощност\w*|напряжени\w*|частот\w*|ток\w*)\b",
+        text, re.I,
+    )
+    action = re.match(r"^(?:предусмотр\w*|обеспеч\w*|выполн\w*|установить|"
+                      r"не\s+предусматр\w*)\b", text, re.I)
+    technical = re.search(r"мощност|напряжен|электростанци|трансформатор|"
+                          r"кабел|защит|заземлен|частот", text, re.I)
+    return bool(parameter or (action and technical))
 
 
 def is_toc_line(text: str) -> bool:
@@ -301,6 +319,18 @@ def extract_clauses(fragments: Sequence[Fragment], *, conservative: bool = False
             compact_number = re.match(r"^(\d{1,2})\.(?=[А-ЯЁ][а-яё])", text)
             if compact_number:
                 clause_number = compact_number.group(1)
+        if (not clause_number and skip_section
+                and _unnumbered_pdf_technical(fragment, text)):
+            # Do not exit the skipped service block for subsequent fragments,
+            # and do not glue this statement to either adjacent requirement.
+            drafts.append(_Draft(
+                clause_number=f"Без номера {fragment.position}",
+                sections=[(fragment, text)], section_path=fragment.section_path,
+                warnings=("unnumbered_technical_scope_requires_review",),
+            ))
+            current = None
+            pending_heading = None
+            continue
         if skip_section:
             if (conservative and block_type == "paragraph" and not clause_number
                     and not re.match(r"^\s*\d+[.)]\s", text)
@@ -522,6 +552,7 @@ def _draft_to_clauses(draft: _Draft, *, conservative: bool = False) -> list[Clau
                 fragment_ids=_fragment_ids(draft.sections),
                 section_path=draft.section_path,
                 fragment_text=first_text,
+                warnings=draft.warnings,
             )
         ]
 
@@ -558,6 +589,7 @@ def _draft_to_clauses(draft: _Draft, *, conservative: bool = False) -> list[Clau
                 fragment_ids=_unique_ids(overlapping) or _fragment_ids(draft.sections),
                 section_path=draft.section_path,
                 fragment_text=first_text,
+                warnings=draft.warnings,
             )
         )
     return clauses

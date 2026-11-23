@@ -164,7 +164,7 @@ def assess_coverage(
     selected_text = "\n".join(allowed[key]["atom_text"] for key in chosen)
     from app.requirements.tools import tool_verify_engineering_params
     obligation_params = tool_verify_engineering_params(obligation.text, selected_text)
-    safe = safe and obligation_params["params_match"]
+    safe = safe and obligation_params["supports_safe"]
     complete = (
         response.get("covered") is True
         and response.get("object_consistent") is True

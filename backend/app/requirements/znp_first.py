@@ -42,6 +42,18 @@ _ENTITY_NAME_ONLY_RE = re.compile(
     r'(?:\s+[А-ЯЁA-Z][А-ЯЁA-Z0-9-]+)?)?'
 )
 
+
+def _identity_names_only(text: str) -> bool:
+    remaining = " ".join(text.split()).strip(" .;,")
+    if not remaining:
+        return False
+    while remaining:
+        match = _ENTITY_NAME_ONLY_RE.match(remaining)
+        if match is None:
+            return False
+        remaining = remaining[match.end():].lstrip(" .;,")
+    return True
+
 MATCH_PROMPT = """Ты проверяешь одно положение ЗнП на соответствие требованиям ТУ.
 Перед тобой положение ЗнП и предварительно найденные кандидаты ТУ.
 Поиск уже выполнен Python; не делай вывод об отсутствии требования из одного списка кандидатов.
@@ -340,6 +352,18 @@ class ZnPFirstAgent:
                     else "znp_quote_not_in_source"
                 ] += 1
             return None
+        if _identity_names_only(znp_quote):
+            # Identification can prove identification itself, not an address,
+            # engineering parameter or contract condition in the same clause.
+            identification = re.sub(r"^\s*\d+(?:\.\d+)*[.)]?\s*", "", requirement.text)
+            identification = re.sub(
+                r"^(?:наименование\s+(?:организации|заказчика|заявителя)|"
+                r"организация|заказчик|заявитель)\s*:\s*", "", identification, flags=re.I,
+            )
+            if not _identity_names_only(identification):
+                if rejection_counts is not None:
+                    rejection_counts["insufficient_obligation_evidence"] += 1
+                return None
         def source_field(source, name):
             if isinstance(source, dict):
                 return source.get(name)
@@ -358,13 +382,13 @@ class ZnPFirstAgent:
         warnings = list(getattr(atom, "warnings", ()) or ())
         if "table_structure_unverified" in requirement.warnings and "table_structure_unverified" not in warnings:
             warnings.append("table_structure_unverified")
+        if params["comparison_status"] == "unknown" and not params["supports_safe"]:
+            warnings.append("engineering_params_unknown")
         if relation == "supports":
-            if _ENTITY_NAME_ONLY_RE.fullmatch(" ".join(znp_quote.split())):
-                warnings.append("identity_only_evidence")
-            if (not params["params_match"] or confidence < 0.7 or warnings
+            if (not params["supports_safe"] or confidence < 0.7 or warnings
                     or not scope_overlap(requirement.text, atom.text)):
                 relation = "partial"
-        if relation == "conflicts" and params["params_match"]:
+        if relation == "conflicts" and params["comparison_status"] != "mismatch":
             # Semantic opposition may be real, but Python cannot certify it.
             relation = "partial"
         return {
@@ -380,6 +404,7 @@ class ZnPFirstAgent:
             "tu_quote": tu_quote,
             "quote": znp_quote,
             "relation": relation,
+            "proposed_relation": proposal["relation"],
             "confidence": round(confidence, 3),
             "model_confidence_available": model_confidence_available,
             "search_score": round(float(similarity), 3),

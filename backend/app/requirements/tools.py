@@ -1075,10 +1075,93 @@ def tool_get_neighbor_clauses(
 # ---------------------------------------------------------------------------
 # ИНСТРУМЕНТ 3: Детерминированный валидатор инженерных параметров
 # ---------------------------------------------------------------------------
+def _verification_text(text: str) -> str:
+    """Read a separated table unit/value without altering source evidence."""
+    units = {"mw": "МВт", "kw": "кВт", "mva": "МВА", "kva": "кВА", "kv": "кВ"}
+    text = re.sub(r"(?<=\d)\s*(MW|kW|MVA|kVA|kV)\b",
+                  lambda m: " " + units[m.group(1).casefold()], text, flags=re.I)
+    extra = []
+    for line in text.splitlines():
+        cells = [c.strip() for c in re.split(r"\||\s+[—–]\s+", line)]
+        if len(cells) < 3:
+            continue
+        units = [i for i, c in enumerate(cells) if _TABLE_UNIT_RE.fullmatch(c)]
+        labels = [i for i, c in enumerate(cells)
+                  if re.search(r"[а-яёa-z]", c, re.I) and i not in units]
+        if not units or not labels:
+            continue
+        for i, cell in enumerate(cells):
+            if i <= labels[0] or not _TABLE_VALUE_RE.fullmatch(cell):
+                continue
+            unit = _table_nearest_unit(cells, i, units)
+            extra.append(f"{cells[labels[0]]} {cell} {unit}")
+    return text + "\n" + "\n".join(extra)
+
+
+_SIGNED_NUMBER = r"[+-]?\d+(?:[.,]\d+)?"
+_VERIFICATION_RANGE_RE = re.compile(
+    r"(?<![\w.])(?:от\s*)?(?P<lower>" + _SIGNED_NUMBER + r")"
+    r"\s*(?:до|\.{2,}|…|[–—-])\s*(?P<upper>" + _SIGNED_NUMBER + r")"
+    r"(?:\s*(?P<unit>о\.?\s*е\.?|" + _UNIT_SRC + r")(?![а-яёa-z0-9]))?(?![\d.,])",
+    re.I,
+)
+_VERIFICATION_QUANTITY_RE = re.compile(
+    r"(?<![\w.,])(?P<value>" + _SIGNED_NUMBER + r")\s*(?P<unit>"
+    + _UNIT_SRC + r")(?![а-яёa-z0-9])"
+)
+_PARAMETER_OBJECT_RE = re.compile(
+    r"трансформатор\w*|электростанци\w*|станци\w*|генератор\w*|\b(?:ГЭС|ГРЭС|ТЭЦ)\b", re.I,
+)
+
+
+def _verification_ranges(text: str) -> list[dict[str, str]]:
+    found = []
+    for line in _normalize_typography(text).splitlines():
+        line = _NORMATIVE_CODE_RE.sub(" ", line)
+        for match in _VERIFICATION_RANGE_RE.finditer(line):
+            unit = match.group("unit")
+            if not unit and re.search(r"(?<!\w)о\.?\s*е\.?(?!\w)", line, re.I):
+                unit = "о.е."
+            # Bare dates/identifiers are not engineering ranges.
+            if not unit and not re.search(r"диапазон|коэффициент|предел", line, re.I):
+                continue
+            found.append(dict(lower=_normalize_number(match.group("lower")),
+                              upper=_normalize_number(match.group("upper")),
+                              unit=_canonical_unit(unit or "1")))
+    return found
+
+
+def _verification_quantities(text: str) -> list[dict[str, str | None]]:
+    found = []
+    text = _ORDER_DATE_RE.sub(" ", _NORMATIVE_CODE_RE.sub(" ", _normalize_typography(text)))
+    for match in _VERIFICATION_QUANTITY_RE.finditer(text):
+        context, _ = _constraint_context(text, match.start())
+        objects = list(_PARAMETER_OBJECT_RE.finditer(context))
+        owner = None
+        if objects:
+            name = objects[-1].group().casefold()
+            owner = "station"
+            if name.startswith("трансформатор"):
+                owner = "transformer"
+            elif name.startswith("генератор"):
+                owner = "generator"
+        found.append(dict(value=_normalize_number(match.group("value")),
+                          unit=_canonical_unit(match.group("unit")), object=owner))
+    # An address number is an explicit identifier, not an unparsed physical
+    # quantity. Compare it separately instead of certifying an empty result.
+    for match in re.finditer(r"\b(?:д\.|дом)\s*(\d+[а-яa-z]?)(?!\w)", text, re.I):
+        found.append(dict(value=match.group(1).casefold(), unit="house_number", object=None))
+    return found
+
+
 def tool_verify_engineering_params(tu_text: str, znp_text: str) -> dict[str, Any]:
     """Сверяет числовые, единичные и нормативные параметры между ТУ и ЗнП."""
     mismatches: list[str] = []
     mismatch_types: list[str] = []
+    tu_text = _verification_text(tu_text)
+    znp_text = _verification_text(znp_text)
+    tu_ranges = _verification_ranges(tu_text)
+    znp_ranges = _verification_ranges(znp_text)
 
     # 1. Мощность (кВт, МВт, кВА, МВА)
     power_re = r"(\d+(?:[.,]\d+)?)\s*(кВт|МВт|кВА|МВА)\b(?!\s*[·*x×]\s*ч)"
@@ -1100,7 +1183,8 @@ def tool_verify_engineering_params(tu_text: str, znp_text: str) -> dict[str, Any
         znp_power.add((_normalize_number(value), unit.lower()))
     if tu_power and znp_power and tu_power != znp_power:
         mismatches.append(f"Несовпадение мощности: ТУ={tu_power}, ЗнП={znp_power}")
-        mismatch_types.append("mismatch")
+        power_range = any(r["unit"] in {"квт", "мвт", "ква", "мва"} for r in tu_ranges)
+        mismatch_types.append("range_scope_unknown" if power_range else "mismatch")
     elif tu_power and not znp_power:
         mismatches.append(f"В ЗнП не указано значение мощности из ТУ ({tu_power})")
         mismatch_types.append("missing")
@@ -1172,7 +1256,7 @@ def tool_verify_engineering_params(tu_text: str, znp_text: str) -> dict[str, Any
             mismatches.append(
                 _constraint_mismatch_message(requirement, contextual)
             )
-            mismatch_types.append("mismatch")
+            mismatch_types.append("range_scope_unknown" if requirement["comparison"] == "range" else "mismatch")
 
     # 6. Нормативные коды: каждый код из ТУ должен присутствовать в ЗнП.
     # Точки и дефисы в обозначениях взаимозаменяемы (СТО ...044.2010 /
@@ -1184,8 +1268,64 @@ def tool_verify_engineering_params(tu_text: str, znp_text: str) -> dict[str, Any
             mismatches.append(f"В ЗнП не найден нормативный код: {code}")
             mismatch_types.append("missing")
 
+    tu_quantities = _verification_quantities(tu_text)
+    znp_quantities = _verification_quantities(znp_text)
+    range_uncertain = bool(tu_ranges and tu_ranges != znp_ranges)
+    if range_uncertain:
+        # A wider capability and a violated allowable interval are not the
+        # same engineering claim. Retain both bounds for expert review.
+        mismatches.append("Границы диапазона различаются или не подтверждены; требуется проверка смысла ограничения")
+        mismatch_types.append("range_scope_unknown")
+    object_uncertain = False
+    if tu_power and znp_power and not ({u for _, u in tu_power} & {u for _, u in znp_power}):
+        object_uncertain = True  # Active and apparent power are not comparable.
+    for required in tu_quantities:
+        candidates = [q for q in znp_quantities if q["unit"] == required["unit"]]
+        if required["object"] and candidates and all(
+            q["object"] and q["object"] != required["object"] for q in candidates
+        ):
+            object_uncertain = True
+        own_candidates = [q for q in candidates if q["object"] == required["object"]]
+        if required["object"] and own_candidates and not tu_ranges and not any(
+            q["value"] == required["value"] for q in own_candidates
+        ):
+            mismatches.append("Различается параметр конкретного объекта: " + str(required["object"]))
+            mismatch_types.append("mismatch")
+        # Plain quantities outside the old power/voltage/inequality checks
+        # still need a comparable value; absence is not equality.
+        if required["unit"] not in _EXCLUDED_CONSTRAINT_UNITS and not tu_constraints and not tu_ranges:
+            if not candidates:
+                mismatches.append("Не найден параметр с сопоставимой единицей измерения: " + str(required["unit"]))
+                mismatch_types.append("missing")
+            elif not any(q["value"] == required["value"] for q in candidates):
+                mismatches.append("Различаются значения параметра: " + str(required["unit"]))
+                mismatch_types.append("mismatch")
+    if object_uncertain:
+        mismatches.append("Числовые параметры относятся к разным объектам")
+        mismatch_types.append("object_scope_unknown")
+    checked = bool(tu_power or tu_volt or tu_cat or tu_acc or tu_constraints
+                   or tu_codes or tu_ranges or tu_quantities)
+    comparison_status = "match"
+    if not checked or mismatches:
+        comparison_status = "unknown"
+    if "mismatch" in mismatch_types and not object_uncertain:
+        comparison_status = "mismatch"
+    numeric_required = bool(tu_power or tu_volt or tu_cat or tu_acc or tu_constraints
+                            or tu_ranges or tu_quantities)
+    if not checked:
+        remaining = _ORDER_DATE_RE.sub(" ", _strip_clause_number(tu_text))
+        for pattern in _IDENTIFIER_PATTERNS:
+            remaining = pattern.sub(" ", remaining)
+        numeric_required = bool(re.search(r"\d", remaining))
     return {
-        "params_match": len(mismatches) == 0,
+        "params_match": comparison_status == "match",
+        "comparison_status": comparison_status,
+        "numeric_required": numeric_required,
+        # Non-numerical obligations still use semantic/scope checks; an empty
+        # numeric extractor does not certify their parameters as equal.
+        "supports_safe": comparison_status == "match" or (
+            not numeric_required and not mismatches
+        ),
         "mismatches": mismatches,
         "mismatch_types": mismatch_types,
         "extracted": {
@@ -1198,6 +1338,8 @@ def tool_verify_engineering_params(tu_text: str, znp_text: str) -> dict[str, Any
                     _public_constraint(item) for item in tu_constraints
                 ],
                 "codes": sorted(tu_codes),
+                "ranges": tu_ranges,
+                "quantities": tu_quantities,
             },
             "znp": {
                 "power": list(znp_power),
@@ -1208,6 +1350,8 @@ def tool_verify_engineering_params(tu_text: str, znp_text: str) -> dict[str, Any
                     _public_constraint(item) for item in znp_constraints
                 ],
                 "codes": sorted(znp_codes),
+                "ranges": znp_ranges,
+                "quantities": znp_quantities,
             },
         },
     }

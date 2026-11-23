@@ -377,7 +377,8 @@ def test_normative_codes_ignore_point_numbers_and_read_compressed_lists():
         "Строительство отпайки от опоры № 17 до ячейки № 12.",
         "Строительство отпайки от опоры до ячейки.",
     )
-    assert point_numbers["params_match"] is True
+    assert point_numbers["params_match"] is False
+    assert point_numbers["comparison_status"] == "unknown"
     assert point_numbers["extracted"]["tu"]["codes"] == []
 
     compressed = tool_verify_engineering_params(

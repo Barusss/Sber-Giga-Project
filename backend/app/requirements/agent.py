@@ -482,7 +482,7 @@ class RequirementsAgent:
             )
             confidence = min(confidence, 0.65)
 
-        if not param_check["params_match"] and model_status == RequirementStatus.fulfilled:
+        if not param_check["supports_safe"] and model_status == RequirementStatus.fulfilled:
             status = RequirementStatus.needs_review
             reasoning += f" [Валидатор параметров: {'; '.join(param_check['mismatches'])}]"
             confidence = min(confidence, 0.65)
@@ -586,7 +586,7 @@ class RequirementsAgent:
                         continue
                 entry = {"clause_id": clause.id, "clause_number": clause.clause_number, "quote": quote, "fragment_id": clause.fragment_id, "page": clause.page}
                 params = tool_verify_engineering_params(text, quote)
-                if params["params_match"] and all(_identifier_present(identifier, quote_canonical) for identifier in identifiers):
+                if params["supports_safe"] and all(_identifier_present(identifier, quote_canonical) for identifier in identifiers):
                     evidence.append(entry)
                 else:
                     partial_evidence.append(entry)
@@ -594,7 +594,7 @@ class RequirementsAgent:
             if not evidence and len(partial_evidence) >= 2 and object_ids:
                 combined = " ".join(entry["quote"] for entry in partial_evidence)
                 combined_canonical = _canonical_text(combined)
-                if (tool_verify_engineering_params(text, combined)["params_match"]
+                if (tool_verify_engineering_params(text, combined)["supports_safe"]
                         and all(_identifier_present(identifier, combined_canonical) for identifier in identifiers)):
                     evidence = partial_evidence
             if evidence and first_clause is None:
@@ -721,7 +721,7 @@ class RequirementsAgent:
             and quote_res["znp_quote_atomic"]
         )
         issues: list[str] = []
-        if not param_res["params_match"]:
+        if not param_res["supports_safe"]:
             mismatch_types = set(param_res.get("mismatch_types") or [])
             if mismatch_types == {"missing"}:
                 prefix = "В ЗнП не подтверждены параметры: "

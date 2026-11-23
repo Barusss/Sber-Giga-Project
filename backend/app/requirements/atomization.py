@@ -105,9 +105,9 @@ def atomize_fragments(document_id: str, fragments: Sequence[Fragment], *, pdf_da
         context = tuple(_source(fragment) for path, fragment in headings.items()
                         if clause.section_path and (path == clause.section_path
                         or clause.section_path.startswith(path + " / ")))
-        warnings = ()
+        warnings = clause.warnings
         if clause.section_path and clause.section_path not in headings:
-            warnings = ("section_context_unresolved",)
+            warnings += ("section_context_unresolved",)
         # Title labels remain traceable, but do not impose engineering scope.
         title_only = bool(preamble_sources) and all(
             re.fullmatch(
