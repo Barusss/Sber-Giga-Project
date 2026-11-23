@@ -40,10 +40,12 @@ def run_atom_recheck(db: Session, *, project_id: str, pair_id: str,
             409, "Этот снимок не содержит проверяемых исходных фрагментов ЗнП. "
                  "Для повторной проверки используйте результат новой полной сверки.",
         )
+    fragments_by_id = {}
     for source in row["sources"]:
         fragment = db.get(Fragment, source.get("fragment_id"))
         if fragment is None or fragment.document_id != pair.znp_document_id:
             raise HTTPException(409, "ZnP source fragment no longer matches this document")
+        fragments_by_id[fragment.id] = fragment
         original = " ".join(fragment.text.split()).casefold()
         quote = " ".join(str(source.get("text") or "").split()).casefold()
         if not quote or quote not in original:
@@ -113,6 +115,8 @@ def run_atom_recheck(db: Session, *, project_id: str, pair_id: str,
                 verified = agent._validated_link(
                     atom, agent._requirements[rid], link,
                     candidate["similarity_score"], rejected,
+                    fragments_by_id=fragments_by_id,
+                    znp_document_id=pair.znp_document_id,
                 )
                 if verified is not None:
                     accepted.append({

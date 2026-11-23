@@ -273,6 +273,7 @@ class ZnPFirstAgent:
         atom: ZNPClause, requirement: TURequirement,
         proposal: dict[str, Any], similarity: float,
         rejection_counts: Counter[str] | None = None,
+        *, fragments_by_id=None, znp_document_id: str | None = None,
     ) -> dict[str, Any] | None:
         relation = proposal.get("relation")
         if relation not in {"supports", "conflicts", "partial"}:
@@ -285,7 +286,13 @@ class ZnPFirstAgent:
             if rejection_counts is not None:
                 rejection_counts["missing_quotes"] += 1
             return None
-        quotes = tool_validate_quotes(requirement.text, tu_quote, atom.text, znp_quote)
+        quotes = tool_validate_quotes(
+            requirement.text, tu_quote, atom.text, znp_quote,
+            znp_sources=atom.sources if not any(w in atom.warnings for w in (
+                "table_structure_unverified", "mixed_table_prose_scope_requires_review",
+            )) else None,
+            fragments_by_id=fragments_by_id, znp_document_id=znp_document_id,
+        )
         if not (quotes["tu_quote_valid"] and quotes["znp_quote_valid"]
                 and quotes["znp_quote_atomic"]):
             if rejection_counts is not None:
@@ -543,6 +550,8 @@ class ZnPFirstAgent:
                     valid = self._validated_link(
                         atom, all_requirements[rid], proposal,
                         candidate["similarity_score"], rejected,
+                        fragments_by_id=getattr(self, "_fragments_by_id", None),
+                        znp_document_id=getattr(self, "_znp_document_id", None),
                     )
                     if valid is not None:
                         valid["source_phase"] = "matching"
@@ -787,6 +796,8 @@ class ZnPFirstAgent:
                                     entry = self._validated_link(
                                         atom, requirement, proposal,
                                         suggestion["similarity_score"], rejected,
+                                        fragments_by_id=getattr(self, "_fragments_by_id", None),
+                                        znp_document_id=getattr(self, "_znp_document_id", None),
                                     )
                                     for reason, count in rejected.items():
                                         if count > rejection_before[reason]:

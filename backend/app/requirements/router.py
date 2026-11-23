@@ -846,6 +846,8 @@ def _analyze_test_subset(
 
     if progress_callback:
         progress_callback("preparing", 0, len(tu_schemas), None)
+    agent._fragments_by_id = {fragment.id: fragment for fragment in znp_fragments}
+    agent._znp_document_id = znp_doc.id
     result = agent.verify_all(
         tu_schemas, znp_schemas, progress_callback=progress_callback,
     )
@@ -1306,6 +1308,8 @@ def _analyze_project_requirements(
         znp_count=len(znp_schemas),
         budget=llm_ledger.trace() if llm_ledger is not None else {},
     )
+    agent._fragments_by_id = fragments_by_id
+    agent._znp_document_id = znp_doc.id
     response = (
         agent.verify_all(tu_schemas, znp_schemas, progress_callback=progress_callback)
         if progress_callback else agent.verify_all(tu_schemas, znp_schemas)

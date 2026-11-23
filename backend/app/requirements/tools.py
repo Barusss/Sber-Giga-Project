@@ -815,14 +815,55 @@ def _shorten(text: str, limit: int = 160) -> str:
     return clean if len(clean) <= limit else clean[: limit - 1].rstrip() + "…"
 
 
-def _is_atomic_quote(quote: str | None, max_chars: int = _MAX_ATOMIC_QUOTE_CHARS) -> bool:
+def _is_atomic_quote(quote: str | None, max_chars: int = _MAX_ATOMIC_QUOTE_CHARS,
+                     *, verified_source_text: str | None = None) -> bool:
     """A quote must be one short fragment, not a whole glued list."""
     text = (quote or "").strip()
     if not text or len(text) > max_chars:
         return False
     if text.count("\n") > 1:
-        return False
+        if not verified_source_text or _normalize_quote_text(text) not in _normalize_quote_text(verified_source_text):
+            return False
+        # Layout wraps may continue one statement, but paragraph boundaries
+        # and separate sentences/items are not permission to glue obligations.
+        if re.search(r"\n\s*\n|[.!?;]\s*\n\s*[А-ЯЁа-яёA-Za-z]", text):
+            return False
     return len(_ATOMIC_MARKER_RE.findall(text)) < 2
+
+
+def _verified_quote_source(quote, sources, fragments_by_id, document_id):
+    """Resolve a quote to one exact server-side AtomSource span and owner."""
+    if not document_id or not fragments_by_id or not quote:
+        return None
+    verified = {}
+    for source in sources or ():
+        if not isinstance(source, dict):
+            continue
+        fragment = fragments_by_id.get(source.get("fragment_id"))
+        if fragment is None:
+            continue
+        if isinstance(fragment, dict):
+            owner, raw, page = fragment.get("document_id"), fragment.get("text"), fragment.get("page")
+            identity = fragment.get("id")
+        else:
+            owner, raw, page = fragment.document_id, fragment.text, fragment.page
+            identity = fragment.id
+        start, end, text = source.get("start_offset"), source.get("end_offset"), source.get("text")
+        if identity != source.get("fragment_id") or owner != document_id or not isinstance(raw, str) or not isinstance(text, str):
+            continue
+        if source.get("document_id", document_id) != document_id:
+            continue
+        if page is not None and source.get("page") != page:
+            continue
+        if type(start) is not int or type(end) is not int or not 0 <= start < end <= len(raw):
+            continue
+        if raw[start:end] != text:
+            continue
+        if _normalize_quote_text(quote) in _normalize_quote_text(text):
+            verified[(source["fragment_id"], start, end)] = text
+    if len(verified) != 1:
+        return None
+    return next(iter(verified.values()))
 
 
 def _split_explicit_list_items(text: str) -> list[str]:
@@ -1327,6 +1368,10 @@ def tool_validate_quotes(
     tu_quote: str | None,
     znp_full_text: str | None,
     znp_quote: str | None,
+    *,
+    znp_sources=None,
+    fragments_by_id=None,
+    znp_document_id: str | None = None,
 ) -> dict[str, Any]:
     """Проверяет подлинность и атомарность доказательных цитат."""
     tu_present = bool(tu_quote and tu_quote.strip())
@@ -1347,7 +1392,11 @@ def tool_validate_quotes(
         "tu_quote_chars": len((tu_quote or "").strip()),
         "znp_quote_chars": len((znp_quote or "").strip()),
         "znp_quote_present": znp_present,
-        "znp_quote_atomic": _is_atomic_quote(znp_quote),
+        "znp_quote_atomic": _is_atomic_quote(
+            znp_quote, verified_source_text=_verified_quote_source(
+                znp_quote, znp_sources, fragments_by_id, znp_document_id,
+            ),
+        ),
     }
 
 
