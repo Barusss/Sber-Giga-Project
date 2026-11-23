@@ -24,5 +24,7 @@ COPY requirements-ocr.txt ./
 RUN if [ "$INSTALL_PADDLE_OCR" = "true" ]; then pip install --no-cache-dir -r requirements-ocr.txt; fi
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt && pip install --no-cache-dir "fastembed>=0.4,<1"
+ARG VCS_REF=unknown
+LABEL org.opencontainers.image.revision=$VCS_REF
 COPY . .
 EXPOSE 8000

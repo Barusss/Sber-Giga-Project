@@ -18,6 +18,7 @@ from app.ai import diagnostics
 from app.ai.deepseek import DeepSeekClient, DeepSeekError, DeepSeekResponseError
 from app.ai.embeddings import EmbeddingService
 from app.requirements.retrieval import RequirementRetriever
+from app.requirements.extraction import is_table_metadata
 from app.requirements.llm_tracking import LLMCallLimitExceeded
 from app.requirements.coverage import (
     build_obligations, assess_coverage, all_obligations_covered,
@@ -351,6 +352,10 @@ class ZnPFirstAgent:
                     "tu_quote_not_in_source" if tu_source is None
                     else "znp_quote_not_in_source"
                 ] += 1
+            return None
+        if is_table_metadata(requirement.text) or is_table_metadata(znp_quote):
+            if rejection_counts is not None:
+                rejection_counts["structural_metadata_not_obligation"] += 1
             return None
         if _identity_names_only(znp_quote):
             # Identification can prove identification itself, not an address,

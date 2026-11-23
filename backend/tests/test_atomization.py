@@ -433,7 +433,7 @@ def test_prose_note_cannot_bridge_two_distinct_tables():
     old.block_type = "table_row"
     old.container_id = "docx-table-1"
     note = fragment("note-between", 2, "Только при наличии двух линий.")
-    new = fragment("new-table", 3, "Параметр | Значение")
+    new = fragment("new-table", 3, "Мощность | 236 МВт")
     new.block_type = "table_row"
     new.container_id = "docx-table-2"
     atoms = atomize_fragments("doc", [old, note, new])

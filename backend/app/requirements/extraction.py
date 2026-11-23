@@ -150,6 +150,36 @@ def is_service_clause(text: str) -> bool:
     return any(pattern.match(first_line) for pattern in _SERVICE_RE)
 
 
+def is_table_header(text: str) -> bool:
+    """Only a complete row of column labels, never a global keyword filter."""
+    cells = [" ".join(cell.split()).strip() for cell in text.split("|")]
+    if len(cells) < 2 or any(not cell for cell in cells):
+        return False
+    label = re.compile(
+        r"№(?:\s*п/?п)?|номер|п/?п|параметры?|показател[ьи]|значени[ея]|"
+        r"наименование(?:\s+параметра)?|единиц[аы]\s+измерения|ед\.\s*изм\.?|"
+        r"функци[яи](?:\s+РЗА\s*/\s*ПА)?|нормативн(?:ый|ые)\s+документ(?:ы)?", re.I,
+    )
+    return all(label.fullmatch(cell) for cell in cells)
+
+
+def is_table_description(text: str) -> bool:
+    """Pure navigation prose has no condition/obligation of its own."""
+    text = _HEADING_LABEL_PREFIX_RE.sub("", text.strip())
+    if re.search(r"\b(?:долж\w*|необходим\w*|предусмотр\w*|соответств\w*|"
+                 r"если|кроме|только|либо|или|не|при)\b", text, re.I):
+        return False
+    return bool(re.fullmatch(
+        r"[^.!?;:\n]{3,240}\b(?:приведены|представлены|указаны)\s+"
+        r"в\s+таблице\s+\d+(?:\.\d+)*\.?", text, re.I,
+    ))
+
+
+def is_table_metadata(text: str) -> bool:
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    return bool(lines) and all(is_table_header(line) or is_table_description(line) for line in lines)
+
+
 def _unnumbered_pdf_technical(fragment: Fragment, text: str) -> bool:
     """Recover declarative technical prose, never a project title/reference."""
     if not fragment.bbox or fragment.block_type != "paragraph":
@@ -222,6 +252,11 @@ def extract_clauses(fragments: Sequence[Fragment], *, conservative: bool = False
         if is_noise(text):
             continue
         block_type = fragment.block_type or "paragraph"
+        if ((block_type == "table_row" and is_table_header(text))
+                or (block_type == "paragraph" and is_table_description(text))):
+            current = None
+            pending_heading = None
+            continue
         if block_type == "page_furniture":
             continue
         if block_type == "toc":

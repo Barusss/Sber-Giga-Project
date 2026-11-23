@@ -8,7 +8,7 @@ from uuid import NAMESPACE_URL, uuid5
 
 from app.core.models import Fragment
 from app.documents.parser import TABLE_REVIEW, requires_pdf_layout_review
-from app.requirements.extraction import extract_clauses
+from app.requirements.extraction import extract_clauses, is_table_header, is_table_description
 
 
 @dataclass(frozen=True)
@@ -79,6 +79,18 @@ def atomize_fragments(document_id: str, fragments: Sequence[Fragment], *, pdf_da
 
     atoms = []
     ordered = sorted(fragments, key=lambda fragment: (fragment.page, fragment.position))
+    table_context = {}
+    previous = None
+    for fragment in ordered:
+        if (fragment.block_type == "table_row" and fragment.container_id
+                and is_table_header(fragment.text)):
+            context = table_context.setdefault(fragment.container_id, [])
+            context.append(_source(fragment))
+            if (previous is not None and previous.block_type == "paragraph"
+                    and previous.section_path == fragment.section_path
+                    and is_table_description(previous.text)):
+                context.append(_source(previous))
+        previous = fragment
     headings = {}
     unscoped_headings = []
     # Never index parents by bare number across a whole document: distinct
@@ -105,6 +117,9 @@ def atomize_fragments(document_id: str, fragments: Sequence[Fragment], *, pdf_da
         context = tuple(_source(fragment) for path, fragment in headings.items()
                         if clause.section_path and (path == clause.section_path
                         or clause.section_path.startswith(path + " / ")))
+        # A header describes columns only within its proven table container.
+        # These labels are structural metadata, not uncertain obligations.
+        context += tuple(table_context.get(first.container_id, ()))
         warnings = clause.warnings
         if clause.section_path and clause.section_path not in headings:
             warnings += ("section_context_unresolved",)

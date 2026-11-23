@@ -1323,8 +1323,7 @@ def _analyze_project_requirements(
     )
     if response.trace_info is None:
         response.trace_info = {}
-    if source_coverage is not None:
-        apply_source_coverage_guard(response, source_coverage)
+    apply_source_coverage_guard(response, source_coverage)
     if atomization_trace is not None:
         response.trace_info["atomization"] = atomization_trace
         if atomization_trace["degraded"]:

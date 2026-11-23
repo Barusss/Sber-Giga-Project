@@ -25,7 +25,17 @@ def test_original_control_a_diagnostic_both_apis(client, monkeypatch):
                 rank,c=found[0]
                 assert [s['text'] for s in atom['source_fragments']]==[s['text'] for s in case['z']['sources']]
                 assert [s['text'] for s in c['source_fragments']]==[s['text'] for s in case['t']['sources']]
-                assert [s['text'] for s in atom['context_sources']]==[s['text'] for s in case['z']['context_sources']]
+                from app.requirements.extraction import is_table_header
+                expected_context = [s['text'] for s in case['z']['context_sources']]
+                assert [s['text'] for s in atom['context_sources'] if not is_table_header(s['text'])] == expected_context
+                headers = [s for s in atom['context_sources'] if is_table_header(s['text'])]
+                assert len(headers) == 1
+                with next(app.dependency_overrides[get_db]()) as db:
+                    source_tables = {db.get(Fragment, s['fragment_id']).container_id
+                                     for s in atom['source_fragments']}
+                    header = db.get(Fragment, headers[0]['fragment_id'])
+                    assert header.document_id == docs['znp']
+                    assert header.container_id and header.container_id in source_tables
                 # Explicit adapted test replay after exact text/source proof.
                 # No production ID, source, candidate or rank is changed.
                 reply=json.loads(json.dumps(saved))

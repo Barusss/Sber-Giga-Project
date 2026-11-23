@@ -16,7 +16,8 @@ services:
       context: ./backend
       args:
         INSTALL_PADDLE_OCR: ${INSTALL_PADDLE_OCR:-false}
-    env_file: .env
+        VCS_REF: ${VCS_REF:-unknown}
+    env_file: ${SBER_ENV_FILE:-.env}
     volumes:
       - uploads:/data/uploads
       - ocr_models:/root/.paddlex

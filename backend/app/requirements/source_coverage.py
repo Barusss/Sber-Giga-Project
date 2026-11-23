@@ -169,7 +169,7 @@ def source_coverage_summary(ledger: dict) -> dict:
     }
 
 
-def apply_source_coverage_guard(response, ledger: dict) -> None:
+def apply_source_coverage_guard(response, ledger: dict | None) -> None:
     """Keep a finished AI pass visible, but NEVER auto-fulfill an incomplete ZnP.
 
     Unclassified fragments may contain crucial annex restrictions. They must
@@ -180,8 +180,13 @@ def apply_source_coverage_guard(response, ledger: dict) -> None:
 
     if response.trace_info is None:
         response.trace_info = {}
-    response.trace_info["source_coverage"] = source_coverage_summary(ledger)
-    if ledger["complete"]:
+    unknown = ledger is None
+    response.trace_info["source_coverage"] = (
+        {"schema": "znp-source-coverage-v1", "status": "unknown", "complete": False,
+         "unclassified_count": None, "reason": "Source coverage was not calculated"}
+        if unknown else source_coverage_summary(ledger)
+    )
+    if not unknown and ledger["complete"] is True:
         return
     response.trace_info["degraded"] = True
     downgraded = 0
@@ -191,7 +196,7 @@ def apply_source_coverage_guard(response, ledger: dict) -> None:
         item.status = RequirementStatus.needs_review
         item.automatic_status = RequirementStatus.needs_review
         item.confidence_score = 0.0
-        suffix = (
+        suffix = "Полнота исходного ЗнП неизвестна: проверка покрытия источников отсутствует." if unknown else (
             "Полнота исходного ЗнП не подтверждена: "
             f"{ledger['unclassified_count']} фрагментов не классифицированы. "
             "Автоматическое соответствие отложено до проверки источников."
