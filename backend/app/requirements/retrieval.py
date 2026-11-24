@@ -4,6 +4,7 @@ Scores rank candidates; neither scores nor a bounded batch establish compliance
 or completeness. The caller must validate evidence and handle remaining pages.
 """
 from dataclasses import asdict, is_dataclass
+from time import perf_counter
 
 from app.ai.embeddings import EmbeddingService
 from app.requirements.tools import tool_search_znp_clauses
@@ -23,7 +24,10 @@ class RequirementRetriever:
         self.semantic_weight = semantic_weight
         self.max_section_size = max_section_size
         self._last_ranking = None
+        started = perf_counter()
         vectors = embedder.embed_documents([item.text for item in self.requirements])
+        self.timings_ms = {'document_embeddings': (perf_counter()-started)*1000,
+                           'query_embeddings': 0.0, 'ranking': 0.0}
         self.vectors = vectors if len(vectors) == len(self.requirements) and vectors else None
 
     def search(self, atom, *, query=None, offset=0):
@@ -36,11 +40,15 @@ class RequirementRetriever:
                 raise ValueError("Pagination requires restarting this query at offset zero")
             _, ranked, status, degradation_reason, channels = self._last_ranking
         else:
+            started = perf_counter()
             vector = self.embedder.embed_query(actual_query) if self.vectors is not None else None
+            self.timings_ms['query_embeddings'] += (perf_counter()-started)*1000
             vectors = self.vectors if self.embedder.enabled and vector is not None else None
+            started = perf_counter()
             ranked = tool_search_znp_clauses(actual_query, self.requirements,
                                              top_k=len(self.requirements), query_embedding=vector,
                                              clause_embeddings=vectors, semantic_weight=self.semantic_weight)
+            self.timings_ms['ranking'] += (perf_counter()-started)*1000
             status = self.embedder.status()
             degradation_reason = None
             if vectors is None:

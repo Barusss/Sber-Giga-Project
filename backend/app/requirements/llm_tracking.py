@@ -50,6 +50,7 @@ class TrackedRequirementsLLM:
         self.succeeded: Counter[str] = Counter()
         self.errors: Counter[str] = Counter()
         self.rejected_by_limit: Counter[str] = Counter()
+        self.elapsed_ms: Counter[str] = Counter()
 
     def configure_full_run_limits(
         self, *, atom_count: int, obligation_count: int,
@@ -161,6 +162,8 @@ class TrackedRequirementsLLM:
                     elapsed_ms=round((time.monotonic() - started) * 1000),
                 )
                 raise
+            finally:
+                self.elapsed_ms[phase] += (time.monotonic() - started)*1000
             self.succeeded[phase] += 1
             diagnostics.record(
                 "ledger.success", response_keys=sorted(response) if isinstance(response, dict) else [],
@@ -181,4 +184,5 @@ class TrackedRequirementsLLM:
             "blocked_by_limit": dict(self.rejected_by_limit),
             "limit_reached": self.exhausted or bool(self.rejected_by_limit),
             "limits_by_phase": self.phase_limits,
+            "elapsed_ms_by_phase": {k: round(v, 3) for k, v in self.elapsed_ms.items()},
         }

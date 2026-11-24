@@ -1,6 +1,7 @@
 """Инструменты ИИ-агента для сверки требований ТУ и пунктов ЗнП."""
 import math
 import re
+from decimal import Decimal
 from typing import Any
 
 from app.requirements.schemas import RequirementCategory, ZNPClause
@@ -1085,13 +1086,17 @@ def _verification_text(text: str) -> str:
         cells = [c.strip() for c in re.split(r"\||\s+[—–]\s+", line)]
         if len(cells) < 3:
             continue
-        units = [i for i, c in enumerate(cells) if _TABLE_UNIT_RE.fullmatch(c)]
+        units = [i for i, c in enumerate(cells) if re.fullmatch(
+            r"(?:лет|год(?:а|ов)?|" + _UNIT_SRC + r")", c)]
         labels = [i for i, c in enumerate(cells)
                   if re.search(r"[а-яёa-z]", c, re.I) and i not in units]
         if not units or not labels:
             continue
         for i, cell in enumerate(cells):
-            if i <= labels[0] or not _TABLE_VALUE_RE.fullmatch(cell):
+            if i <= labels[0] or not re.fullmatch(
+                r"(?:(?i:" + _COMPARISON_SRC + r")\s*)?" + _SIGNED_NUMBER
+                + r"(?:\s*±\s*" + _SIGNED_NUMBER + r")?", cell,
+            ):
                 continue
             unit = _table_nearest_unit(cells, i, units)
             extra.append(f"{cells[labels[0]]} {cell} {unit}")
@@ -1099,6 +1104,18 @@ def _verification_text(text: str) -> str:
 
 
 _SIGNED_NUMBER = r"[+-]?\d+(?:[.,]\d+)?"
+_EQUIPMENT_DESIGNATION_RE = re.compile(
+    r"(?<!\w)[А-ЯЁA-Z]{2,8}[-–]\d+(?:[-/]\d+[А-ЯЁA-Z]?\d*)*(?!\w)", re.I,
+)
+_TOLERANCE_RE = re.compile(
+    r"(?<![\w.,])(?P<center>" + _SIGNED_NUMBER + r")\s*±\s*"
+    r"(?P<tolerance>" + _NUMBER_VALUE_RE + r")\s*(?P<unit>" + _UNIT_SRC
+    + r")(?![а-яёa-z0-9])"
+)
+_YEARS_RE = re.compile(
+    r"(?P<op>(?i:" + _COMPARISON_SRC + r"))?\s*(?<![\w.,])"
+    r"(?P<value>" + _NUMBER_VALUE_RE + r")\s*(?:лет|год(?:а|ов)?)(?!\w)", re.I,
+)
 _VERIFICATION_RANGE_RE = re.compile(
     r"(?<![\w.])(?:от\s*)?(?P<lower>" + _SIGNED_NUMBER + r")"
     r"\s*(?:до|\.{2,}|…|[–—-])\s*(?P<upper>" + _SIGNED_NUMBER + r")"
@@ -1134,6 +1151,7 @@ def _verification_ranges(text: str) -> list[dict[str, str]]:
 def _verification_quantities(text: str) -> list[dict[str, str | None]]:
     found = []
     text = _ORDER_DATE_RE.sub(" ", _NORMATIVE_CODE_RE.sub(" ", _normalize_typography(text)))
+    text = _TOLERANCE_RE.sub(lambda m: " " * len(m.group()), text)
     for match in _VERIFICATION_QUANTITY_RE.finditer(text):
         context, _ = _constraint_context(text, match.start())
         objects = list(_PARAMETER_OBJECT_RE.finditer(context))
@@ -1154,6 +1172,39 @@ def _verification_quantities(text: str) -> list[dict[str, str | None]]:
     return found
 
 
+def _verification_tolerances(text: str) -> list[dict[str, str]]:
+    found = []
+    text = _normalize_typography(text)
+    for m in _TOLERANCE_RE.finditer(text):
+        center = Decimal(m.group('center').replace(',', '.'))
+        tolerance = Decimal(m.group('tolerance').replace(',', '.').replace(' ', ''))
+        context, _ = _constraint_context(text, m.start())
+        found.append(dict(lower=_normalize_number(str(center-tolerance)),
+                          upper=_normalize_number(str(center+tolerance)),
+                          unit=_canonical_unit(m.group('unit')), context=context))
+    return found
+
+
+def _verification_lifetimes(text: str) -> list[dict[str, str]]:
+    found = []
+    for m in _YEARS_RE.finditer(text):
+        context, _ = _constraint_context(text, m.start())
+        scope = 'unknown'
+        if re.search(r'срок\w*\s+служб|ресурс', context, re.I):
+            scope = 'equipment_life'
+        elif re.search(r'срок\w*\s+действ|действи\w*\s+документ', context, re.I):
+            scope = 'document_validity'
+        item = dict(value=_normalize_number(m.group('value')), unit='year', scope=scope,
+                    comparison=_comparison_kind(m.group('op')) if m.group('op') else 'value')
+        if item not in found:
+            found.append(item)
+    return found
+
+
+def _same_interval(left, right):
+    return all(left[k] == right[k] for k in ('unit', 'lower', 'upper'))
+
+
 def tool_verify_engineering_params(tu_text: str, znp_text: str) -> dict[str, Any]:
     """Сверяет числовые, единичные и нормативные параметры между ТУ и ЗнП."""
     mismatches: list[str] = []
@@ -1162,6 +1213,10 @@ def tool_verify_engineering_params(tu_text: str, znp_text: str) -> dict[str, Any
     znp_text = _verification_text(znp_text)
     tu_ranges = _verification_ranges(tu_text)
     znp_ranges = _verification_ranges(znp_text)
+    tu_tolerances = _verification_tolerances(tu_text)
+    znp_tolerances = _verification_tolerances(znp_text)
+    tu_lifetimes = _verification_lifetimes(tu_text)
+    znp_lifetimes = _verification_lifetimes(znp_text)
 
     # 1. Мощность (кВт, МВт, кВА, МВА)
     power_re = r"(\d+(?:[.,]\d+)?)\s*(кВт|МВт|кВА|МВА)\b(?!\s*[·*x×]\s*ч)"
@@ -1232,6 +1287,13 @@ def tool_verify_engineering_params(tu_text: str, znp_text: str) -> dict[str, Any
     tu_constraints = _extract_constraints(tu_text)
     znp_constraints = _extract_constraints(znp_text)
     for requirement in tu_constraints:
+        if requirement['comparison'] == 'range' and any(
+            t['unit'] == requirement['unit']
+            and f"{t['lower']}-{t['upper']}" == requirement['value']
+            and _contexts_overlap(requirement['context_tokens'], _content_tokens(t['context']))
+            for t in znp_tolerances
+        ):
+            continue
         same_unit = [
             candidate
             for candidate in znp_constraints
@@ -1270,7 +1332,8 @@ def tool_verify_engineering_params(tu_text: str, znp_text: str) -> dict[str, Any
 
     tu_quantities = _verification_quantities(tu_text)
     znp_quantities = _verification_quantities(znp_text)
-    range_uncertain = bool(tu_ranges and tu_ranges != znp_ranges)
+    range_uncertain = any(not any(_same_interval(r, c) for c in znp_ranges + znp_tolerances)
+                          for r in tu_ranges)
     if range_uncertain:
         # A wider capability and a violated allowable interval are not the
         # same engineering claim. Retain both bounds for expert review.
@@ -1293,7 +1356,8 @@ def tool_verify_engineering_params(tu_text: str, znp_text: str) -> dict[str, Any
             mismatch_types.append("mismatch")
         # Plain quantities outside the old power/voltage/inequality checks
         # still need a comparable value; absence is not equality.
-        if required["unit"] not in _EXCLUDED_CONSTRAINT_UNITS and not tu_constraints and not tu_ranges:
+        if (required["unit"] not in _EXCLUDED_CONSTRAINT_UNITS and not tu_constraints
+                and not tu_ranges and not tu_tolerances):
             if not candidates:
                 mismatches.append("Не найден параметр с сопоставимой единицей измерения: " + str(required["unit"]))
                 mismatch_types.append("missing")
@@ -1303,17 +1367,49 @@ def tool_verify_engineering_params(tu_text: str, znp_text: str) -> dict[str, Any
     if object_uncertain:
         mismatches.append("Числовые параметры относятся к разным объектам")
         mismatch_types.append("object_scope_unknown")
+    for required in tu_tolerances:
+        candidates = [c for c in znp_tolerances + znp_ranges if c['unit'] == required['unit']]
+        if any(_same_interval(required, c) for c in candidates):
+            continue
+        kind = 'tolerance_scope_unknown'
+        if candidates and all(float(c['upper']) < float(required['lower'])
+                              or float(c['lower']) > float(required['upper']) for c in candidates):
+            kind = 'mismatch'
+        mismatches.append('Абсолютный допуск не подтверждён или требует проверки направления ограничения')
+        mismatch_types.append(kind)
+    for required in tu_lifetimes:
+        candidates = [c for c in znp_lifetimes if c['scope'] == required['scope'] != 'unknown']
+        matches = False
+        contradicted = []
+        for candidate in candidates:
+            a, b = float(required['value']), float(candidate['value'])
+            if required['comparison'] == 'min' and candidate['comparison'] in {'value', 'min'}:
+                matches = matches or b >= a
+                contradicted.append(b < a)
+            elif required['comparison'] == 'max' and candidate['comparison'] in {'value', 'max'}:
+                matches = matches or b <= a
+                contradicted.append(b > a)
+            else:
+                matches = matches or (required['comparison'] == candidate['comparison'] and a == b)
+        if not matches:
+            mismatches.append('Срок службы/действия не подтверждён в своей области применения')
+            mismatch_types.append('mismatch' if contradicted and all(contradicted) else 'lifetime_scope_unknown')
     checked = bool(tu_power or tu_volt or tu_cat or tu_acc or tu_constraints
-                   or tu_codes or tu_ranges or tu_quantities)
+                   or tu_codes or tu_ranges or tu_quantities or tu_tolerances or tu_lifetimes)
     comparison_status = "match"
     if not checked or mismatches:
         comparison_status = "unknown"
     if "mismatch" in mismatch_types and not object_uncertain:
         comparison_status = "mismatch"
     numeric_required = bool(tu_power or tu_volt or tu_cat or tu_acc or tu_constraints
-                            or tu_ranges or tu_quantities)
+                            or tu_ranges or tu_quantities or tu_tolerances or tu_lifetimes)
+    numeric_extracted = numeric_required
     if not checked:
         remaining = _ORDER_DATE_RE.sub(" ", _strip_clause_number(tu_text))
+        remaining = _EQUIPMENT_DESIGNATION_RE.sub(' ', remaining)
+        # Only an ordinal before a textual label is metadata; values in
+        # other cells remain material numbers if their unit is unsupported.
+        remaining = re.sub(r'(?m)^\s*\d+(?:\.\d+)*\s*\|(?=\s*[А-ЯЁA-Za-zа-яё][^|]{3,}\|)', '', remaining)
         for pattern in _IDENTIFIER_PATTERNS:
             remaining = pattern.sub(" ", remaining)
         numeric_required = bool(re.search(r"\d", remaining))
@@ -1321,6 +1417,8 @@ def tool_verify_engineering_params(tu_text: str, znp_text: str) -> dict[str, Any
         "params_match": comparison_status == "match",
         "comparison_status": comparison_status,
         "numeric_required": numeric_required,
+        "numeric_applicability": ('not_applicable' if not numeric_required else
+                                  ('applicable' if numeric_extracted else 'unparsed')),
         # Non-numerical obligations still use semantic/scope checks; an empty
         # numeric extractor does not certify their parameters as equal.
         "supports_safe": comparison_status == "match" or (
@@ -1340,6 +1438,8 @@ def tool_verify_engineering_params(tu_text: str, znp_text: str) -> dict[str, Any
                 "codes": sorted(tu_codes),
                 "ranges": tu_ranges,
                 "quantities": tu_quantities,
+                "tolerances": tu_tolerances,
+                "lifetimes": tu_lifetimes,
             },
             "znp": {
                 "power": list(znp_power),
@@ -1352,6 +1452,8 @@ def tool_verify_engineering_params(tu_text: str, znp_text: str) -> dict[str, Any
                 "codes": sorted(znp_codes),
                 "ranges": znp_ranges,
                 "quantities": znp_quantities,
+                "tolerances": znp_tolerances,
+                "lifetimes": znp_lifetimes,
             },
         },
     }

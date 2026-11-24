@@ -19,6 +19,7 @@ from app.ai.deepseek import DeepSeekClient, DeepSeekError, DeepSeekResponseError
 from app.ai.embeddings import EmbeddingService
 from app.requirements.retrieval import RequirementRetriever
 from app.requirements.extraction import is_table_metadata
+from app.requirements.tools import _EQUIPMENT_DESIGNATION_RE
 from app.requirements.llm_tracking import LLMCallLimitExceeded
 from app.requirements.coverage import (
     build_obligations, assess_coverage, all_obligations_covered,
@@ -357,6 +358,28 @@ class ZnPFirstAgent:
             if rejection_counts is not None:
                 rejection_counts["structural_metadata_not_obligation"] += 1
             return None
+        functions = (
+            r'\bМТЗ\b|максимальн\w*\s+токов\w*\s+защит',
+            r'\bЗМН\b|защит\w*\s+минимальн\w*\s+напряжен',
+            r'\bУРОВ\b|резервирован\w*\s+отказ\w*\s+выключател',
+            r'\bАПВ\b|автоматическ\w*\s+повторн\w*\s+включ',
+        )
+        required_functions = [pattern for pattern in functions if re.search(pattern, requirement.text, re.I)]
+        type_requirement = re.search(r'\b(?:тип|марка|модель|обозначение)\s+(?:генерирующ\w*\s+)?'
+                                     r'(?:установк\w*|оборудован\w*|трансформатор\w*)', requirement.text, re.I)
+        required_designations = {m.group().casefold().replace('–', '-')
+                                 for m in _EQUIPMENT_DESIGNATION_RE.finditer(requirement.text)}
+        quoted_designations = {m.group().casefold().replace('–', '-')
+                               for m in _EQUIPMENT_DESIGNATION_RE.finditer(znp_quote)}
+        type_unproven = bool(type_requirement and required_designations and (
+            not required_designations.intersection(quoted_designations)
+            or not re.search(r'\b(?:тип|марка|модель|обозначение)\b', znp_quote, re.I)
+        ))
+        if type_unproven or (required_functions and not any(
+                re.search(pattern, znp_quote, re.I) for pattern in required_functions)):
+            if rejection_counts is not None:
+                rejection_counts['insufficient_obligation_evidence'] += 1
+            return None
         if _identity_names_only(znp_quote):
             # Identification can prove identification itself, not an address,
             # engineering parameter or contract condition in the same clause.
@@ -426,6 +449,14 @@ class ZnPFirstAgent:
         progress_callback: Callable[[str, int, int, str | None], None] | None = None,
     ) -> CheckRequirementsResponse:
         start = time.perf_counter()
+        validation_ms = 0.0
+        def validate_link(*args, **kwargs):
+            nonlocal validation_ms
+            started = time.perf_counter()
+            try:
+                return self._validated_link(*args, **kwargs)
+            finally:
+                validation_ms += (time.perf_counter()-started)*1000
         diagnostics.record(
             "matching.start", tu_count=len(tu_requirements),
             znp_atoms=len(znp_clauses), batch_size=self.batch_size,
@@ -590,7 +621,7 @@ class ZnPFirstAgent:
                     if (atom.id, rid) in seen:
                         rejected["duplicate_link"] += 1
                         continue
-                    valid = self._validated_link(
+                    valid = validate_link(
                         atom, all_requirements[rid], proposal,
                         candidate["similarity_score"], rejected,
                         fragments_by_id=getattr(self, "_fragments_by_id", None),
@@ -836,7 +867,7 @@ class ZnPFirstAgent:
                                     trace = traces_by_atom[aid]
                                     trace["proposed_links"] += 1
                                     rejection_before = rejected.copy()
-                                    entry = self._validated_link(
+                                    entry = validate_link(
                                         atom, requirement, proposal,
                                         suggestion["similarity_score"], rejected,
                                         fragments_by_id=getattr(self, "_fragments_by_id", None),
@@ -1145,6 +1176,8 @@ class ZnPFirstAgent:
             trace_info={
                 "pipeline": "znp_first_conservative",
                 "execution_time_ms": round((time.perf_counter() - start) * 1000, 2),
+                "local_timings_ms": {**{k: round(v, 3) for k, v in retriever.timings_ms.items()},
+                                     'link_validation': round(validation_ms, 3)},
                 "znp_atoms_processed": len(znp_clauses),
                 "znp_atoms_total": len(znp_clauses),
                 "links_total": sum(len(entries) for entries in links.values()),

@@ -177,7 +177,16 @@ def is_table_description(text: str) -> bool:
 
 def is_table_metadata(text: str) -> bool:
     lines = [line.strip() for line in text.splitlines() if line.strip()]
-    return bool(lines) and all(is_table_header(line) or is_table_description(line) for line in lines)
+    return bool(lines) and all(is_table_header(line) or is_table_description(line)
+                               or is_table_caption(line) for line in lines)
+
+
+def is_table_caption(text: str) -> bool:
+    """A nominal caption, not a sentence imposing a table-related condition."""
+    if not re.fullmatch(r'Таблица\s+\d+(?:\.\d+)*\s*[—–-]\s+[^\n]{3,350}', text.strip(), re.I):
+        return False
+    return not re.search(r'\b(?:долж\w*|необходим\w*|предусмотр\w*|соответств\w*|'
+                         r'если|кроме|при)\b', text, re.I)
 
 
 def _unnumbered_pdf_technical(fragment: Fragment, text: str) -> bool:
@@ -253,7 +262,7 @@ def extract_clauses(fragments: Sequence[Fragment], *, conservative: bool = False
             continue
         block_type = fragment.block_type or "paragraph"
         if ((block_type == "table_row" and is_table_header(text))
-                or (block_type == "paragraph" and is_table_description(text))):
+                or (block_type == "paragraph" and (is_table_description(text) or is_table_caption(text)))):
             current = None
             pending_heading = None
             continue

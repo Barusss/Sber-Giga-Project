@@ -11,6 +11,7 @@ the final decision.
 import logging
 import re
 import threading
+from time import perf_counter
 from datetime import datetime, timezone
 from uuid import NAMESPACE_URL, uuid5
 
@@ -925,6 +926,8 @@ def _analyze_project_requirements(
     on_published: Callable[[CheckRequirementsResponse, Session], None] | None = None,
 ) -> CheckRequirementsResponse:
     project_id = payload.project_id
+    preparation_started = perf_counter()
+    atomization_ms = 0.0
     if progress_callback:
         progress_callback("reading", 0, 0, None)
 
@@ -1086,7 +1089,9 @@ def _analyze_project_requirements(
                     blockers=plan.blockers, no_paid_calls=True,
                 )
                 raise HTTPException(status_code=422, detail=plan.refusal_message())
+            atomization_started = perf_counter()
             semantic_result = semantic_atomize(original_atoms, agent.ai)
+            atomization_ms = (perf_counter()-atomization_started)*1000
             conservative_atoms = semantic_result.atoms
             atomization_trace = semantic_result.trace()
             diagnostics.record("comparison.atomization_complete", **atomization_trace)
@@ -1310,10 +1315,12 @@ def _analyze_project_requirements(
     )
     agent._fragments_by_id = fragments_by_id
     agent._znp_document_id = znp_doc.id
+    verification_started = perf_counter()
     response = (
         agent.verify_all(tu_schemas, znp_schemas, progress_callback=progress_callback)
         if progress_callback else agent.verify_all(tu_schemas, znp_schemas)
     )
+    verification_finished = perf_counter()
     diagnostics.record(
         "comparison.verification_complete",
         status_counts=response.stats,
@@ -1586,6 +1593,12 @@ def _analyze_project_requirements(
 
     # The official snapshot must commit atomically with verifications and
     # findings; otherwise a crash between two commits loses the run history.
+    response.trace_info['stage_timings_ms'] = dict(
+        preparation=max(0.0, (verification_started-preparation_started)*1000-atomization_ms),
+        semantic_atomization=atomization_ms,
+        agent=(verification_finished-verification_started)*1000,
+        result_validation_and_db_preparation=(perf_counter()-verification_finished)*1000,
+    )
     if on_published is not None and not payload.test_mode:
         on_published(response, db)
     db.commit()

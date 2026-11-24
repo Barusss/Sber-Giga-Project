@@ -15,7 +15,11 @@ from typing import Sequence
 
 from app.core.models import Fragment
 from app.requirements.atomization import DocumentAtom
-from app.requirements.extraction import is_noise, is_toc_line
+from app.requirements.extraction import is_noise, is_toc_line, is_table_header, is_table_description, is_table_caption
+
+
+def _declares_incomplete(text: str) -> bool:
+    return bool(re.search(r'не\s+полный\s+документ|показаны\s+только\s+выбранные\s+исходные\s+строки', text, re.I))
 
 
 def _skip_reason(fragment: Fragment) -> str | None:
@@ -28,6 +32,8 @@ def _skip_reason(fragment: Fragment) -> str | None:
         return "toc"
     if text.casefold().strip(" .:") in ("оглавление", "содержание"):
         return "toc_heading"
+    if text.casefold().strip(' .:') == 'задание на проектирование':
+        return 'document_title'
     # A short table cell such as "10", "6" or "А" can be an electrical
     # parameter. Never classify it as disposable noise just because it is
     # short or numeric. The same applies to standalone numeric values.
@@ -54,6 +60,8 @@ def _review_hint(fragment: Fragment) -> str | None:
     """A triage hint is NOT a source role and never clears a safety gate."""
     text = (fragment.text or "").strip()
     section = fragment.section_path or ""
+    if is_table_header(text) or is_table_description(text) or is_table_caption(text):
+        return 'structural_table_context_unverified'
     if (_NORMATIVE_CATALOG_RE.search(section)
             and _NUMBERED_REFERENCE_RE.match(text)):
         return "normative_reference_candidate"
@@ -71,6 +79,7 @@ def source_coverage_ledger(
     """
     source_ids = {s.fragment_id for atom in atoms for s in atom.sources}
     context_ids = {s.fragment_id for atom in atoms for s in atom.context_sources}
+    incompleteness_ids = {f.id for f in fragments if _declares_incomplete(f.text or '')}
     ranges = {}
     for atom in atoms:
         for source in (*atom.sources, *atom.context_sources):
@@ -103,8 +112,10 @@ def source_coverage_ledger(
             unclassified_by_block_type[fragment.block_type or "unknown"] += 1
         elif fragment.id in source_ids:
             role = "atom_source"
-        elif fragment.id in context_ids:
+        elif fragment.id in context_ids or fragment.id in incompleteness_ids:
             role = "context_only"
+            if fragment.id in incompleteness_ids:
+                reason = 'document_incompleteness_notice'
         else:
             reason = _skip_reason(fragment)
             role = "excluded" if reason else "unclassified"
@@ -152,7 +163,10 @@ def source_coverage_ledger(
             if item["role"] == "unclassified"
         ],
         "unclassified_count": by_role["unclassified"],
-        "complete": by_role["unclassified"] == 0,
+        "complete": by_role["unclassified"] == 0 and not incompleteness_ids,
+        "fragment_coverage_complete": by_role["unclassified"] == 0,
+        "document_completeness": 'declared_incomplete' if incompleteness_ids else 'not_declared',
+        "incompleteness_fragment_ids": sorted(incompleteness_ids),
         "records": records,
     }
 
@@ -160,12 +174,14 @@ def source_coverage_ledger(
 def source_coverage_summary(ledger: dict) -> dict:
     """Compact report-safe summary, not a list of private fragment contents."""
     return {
-        key: ledger[key] for key in (
+        **{key: ledger[key] for key in (
             "schema", "total_fragments", "atoms", "by_role",
             "unclassified_by_block_type", "excluded_by_reason",
             "review_hint_counts", "unclassified_fragment_ids",
             "unclassified_count", "complete",
-        )
+        )},
+        **{key: ledger[key] for key in ('fragment_coverage_complete', 'document_completeness',
+                                        'incompleteness_fragment_ids') if key in ledger},
     }
 
 
@@ -201,6 +217,8 @@ def apply_source_coverage_guard(response, ledger: dict | None) -> None:
             f"{ledger['unclassified_count']} фрагментов не классифицированы. "
             "Автоматическое соответствие отложено до проверки источников."
         )
+        if not unknown and ledger.get('document_completeness') == 'declared_incomplete':
+            suffix = 'В исходном документе явно указана неполнота/выборка. Автоматическое соответствие требует проверки полного исходного документа.'
         item.reasoning = ((item.reasoning or "").rstrip() + " " + suffix).strip()
         details = dict(item.validation_details or {})
         details["source_coverage_incomplete"] = True

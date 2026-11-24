@@ -8,7 +8,7 @@ from uuid import NAMESPACE_URL, uuid5
 
 from app.core.models import Fragment
 from app.documents.parser import TABLE_REVIEW, requires_pdf_layout_review
-from app.requirements.extraction import extract_clauses, is_table_header, is_table_description
+from app.requirements.extraction import extract_clauses, is_table_header, is_table_description, is_table_caption
 
 
 @dataclass(frozen=True)
@@ -82,13 +82,17 @@ def atomize_fragments(document_id: str, fragments: Sequence[Fragment], *, pdf_da
     table_context = {}
     previous = None
     for fragment in ordered:
+        if (fragment.block_type == 'paragraph' and is_table_caption(fragment.text)
+                and previous is not None and previous.block_type == 'table_row'
+                and previous.container_id and previous.section_path == fragment.section_path):
+            table_context.setdefault(previous.container_id, []).append(_source(fragment))
         if (fragment.block_type == "table_row" and fragment.container_id
                 and is_table_header(fragment.text)):
             context = table_context.setdefault(fragment.container_id, [])
             context.append(_source(fragment))
             if (previous is not None and previous.block_type == "paragraph"
                     and previous.section_path == fragment.section_path
-                    and is_table_description(previous.text)):
+                    and (is_table_description(previous.text) or is_table_caption(previous.text))):
                 context.append(_source(previous))
         previous = fragment
     headings = {}
