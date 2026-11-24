@@ -134,10 +134,13 @@ def test_current_saved_demo_replay_is_source_grounded(tmp_path, monkeypatch):
     import json
     import runpy
     from pathlib import Path
-    if not Path('/current/replay.py').is_file() or not Path('/demo-export.zip').is_file():
-        pytest.skip('Private current-run fixtures unavailable')
+    import os
+    runner = os.environ.get('P0_DEMO_REPLAY_SCRIPT')
+    archive = os.environ.get('P0_DEMO_REPLAY_ARCHIVE')
+    if not runner or not archive or not Path(runner).is_file() or not Path(archive).is_file():
+        pytest.skip('Optional private replay: set P0_DEMO_REPLAY_SCRIPT and P0_DEMO_REPLAY_ARCHIVE')
     monkeypatch.setenv('P0_DEMO_REPLAY_DIR', str(tmp_path))
-    runpy.run_path('/current/replay.py', run_name='__main__')
+    runpy.run_path(runner, run_name='__main__')
     result = json.loads((tmp_path/'replay.json').read_text())['summary']
     entries = json.loads((tmp_path/'replay.private.json').read_text())
     assert result['new_http'] == 0 and result['source_archive_unchanged']
@@ -146,3 +149,56 @@ def test_current_saved_demo_replay_is_source_grounded(tmp_path, monkeypatch):
     assert result['relations'] == {'supports': 12, 'partial': 1}
     assert result['source_coverage']['document_completeness'] == 'declared_incomplete'
     assert not result['source_coverage']['complete'] and result['fulfilled'] == 0
+
+
+@pytest.mark.parametrize("left,right,status", [
+    ("Частота генератора 50 ± 0,2 Гц", "Частота внешней сети 50 ± 0,2 Гц", "unknown"),
+    ("Частота генератора 50 ± 0,2 Гц", "Частота внешней сети 55 ± 0,2 Гц", "unknown"),
+    ("Мощность генератора 236 ± 1 МВт", "Мощность генератора от 235 до 237 МВт", "match"),
+    ("Напряжение генератора 10 ± 0,5 кВ", "Напряжение генератора от 9,5 до 10,5 кВ", "match"),
+    ("Напряжение генератора от 9,5 до 10,5 кВ", "Напряжение генератора 10 ± 0,5 кВ", "match"),
+    ("Срок службы трансформатора 40 лет", "Срок службы генератора 40 лет", "unknown"),
+    ("Срок службы трансформатора не менее 40 лет", "Срок службы трансформатора не менее 30 лет", "unknown"),
+    ("Срок службы трансформатора не менее 40 лет", "Срок службы трансформатора не менее 50 лет", "match"),
+    ("Срок службы трансформатора не менее 40 лет", "Срок службы трансформатора не более 30 лет", "mismatch"),
+    ("Срок службы трансформатора более 40 лет", "Срок службы трансформатора 40 лет", "mismatch"),
+    ("Срок службы трансформатора 40 лет", "Срок службы трансформатора 30 лет", "mismatch"),
+    ("Срок службы трансформатора не менее 40 лет", "Срок службы трансформатора 50 лет", "match"),
+])
+def test_scoped_numeric_review_cases(left, right, status):
+    assert verify(left, right)["comparison_status"] == status
+
+
+def test_different_explicit_type_is_conflict_not_absent_evidence():
+    from app.requirements.coverage import conflict_candidates
+    tu = TURequirement(id="t", clause_number="1", category=RequirementCategory.other,
+                       text="Тип установки | ПГУ-236")
+    atom = ZNPClause(id="z", clause_number="1", text="Тип установки | ПГУ-400")
+    assert verify(tu.text, atom.text)["comparison_status"] == "mismatch"
+    link = ZnPFirstAgent._validated_link(atom, tu, dict(
+        relation="conflicts", confidence=.95, tu_quote=tu.text, znp_quote=atom.text), .9)
+    assert link is not None and link["relation"] == "conflicts"
+    assert [c["atom_id"] for c in conflict_candidates(tu, [atom])] == ["z"]
+    support = ZnPFirstAgent._validated_link(atom, tu, dict(
+        relation="supports", confidence=.95, tu_quote=tu.text, znp_quote=atom.text), .9)
+    assert support is None or support["relation"] != "supports"
+
+
+def test_caption_between_two_table_containers_is_not_dual_context():
+    from app.core.models import Fragment
+    from app.requirements.atomization import atomize_fragments
+    from app.requirements.source_coverage import source_coverage_ledger
+    def fragment(id_, pos, text, block, container=None):
+        return Fragment(id=id_, document_id="d", page=1, position=pos,
+                        text=text, block_type=block, container_id=container)
+    fragments = [
+        fragment("a", 0, "1 | Мощность | 236 МВт", "table_row", "A"),
+        fragment("c", 1, "Таблица 2 — Параметры напряжения", "paragraph"),
+        fragment("h", 2, "№ | Параметр | Значение", "table_row", "B"),
+        fragment("b", 3, "1 | Напряжение | 110 кВ", "table_row", "B"),
+    ]
+    atoms = atomize_fragments("d", fragments)
+    assert len(atoms) == 2
+    assert all("c" not in {s.fragment_id for s in atom.context_sources} for atom in atoms)
+    ledger = source_coverage_ledger(fragments, atoms)
+    assert "c" in ledger["unclassified_fragment_ids"] and not ledger["complete"]

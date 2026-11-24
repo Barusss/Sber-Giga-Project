@@ -216,6 +216,7 @@ def conflict_candidates(requirement: TURequirement, atoms: list[Any]) -> list[di
     """
     from app.requirements.tools import (
         _content_tokens, _extract_identifiers, tool_verify_engineering_params,
+        equipment_type_comparison,
     )
     object_id = re.compile(r"^[а-яa-z]{1,8}-?\d{1,4}(?:[./-]\d+)?$", re.IGNORECASE)
     tu_ids = {x for x in _extract_identifiers(requirement.text)
@@ -237,12 +238,16 @@ def conflict_candidates(requirement: TURequirement, atoms: list[Any]) -> list[di
         other_ids = {x for x in _extract_identifiers(atom.text)
                      if object_id.fullmatch(x)}
         shared_ids = tu_ids & other_ids
-        if tu_ids and not shared_ids:
-            continue
-        if not tu_ids and other_ids:
-            continue
+        # A model/type value is not the identity of the object whose type is
+        # prescribed. Explicit different type values are a conflict candidate.
+        explicit_type_conflict = equipment_type_comparison(requirement.text, atom.text) == "mismatch"
+        if not explicit_type_conflict:
+            if tu_ids and not shared_ids:
+                continue
+            if not tu_ids and other_ids:
+                continue
         shared_words = (tu_words & _content_tokens(atom.text)) - generic
-        if not shared_ids and len(shared_words) < 2:
+        if not explicit_type_conflict and not shared_ids and len(shared_words) < 2:
             continue
         diff = tool_verify_engineering_params(requirement.text, atom.text)
         if ("mismatch" not in diff["mismatch_types"]

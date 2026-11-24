@@ -112,10 +112,21 @@ def source_coverage_ledger(
             unclassified_by_block_type[fragment.block_type or "unknown"] += 1
         elif fragment.id in source_ids:
             role = "atom_source"
-        elif fragment.id in context_ids or fragment.id in incompleteness_ids:
+        elif fragment.id in context_ids:
             role = "context_only"
             if fragment.id in incompleteness_ids:
                 reason = 'document_incompleteness_notice'
+        elif fragment.id in incompleteness_ids:
+            # A notice can coexist with technical material. Only a standalone
+            # notice may be classified without a verified source/context span.
+            if re.fullmatch(r'\s*(?:внимание\s*[:!—-]?\s*)?не\s+полный\s+документ[.!\s]*',
+                            fragment.text or '', re.I):
+                role = 'context_only'
+                reason = 'document_incompleteness_notice'
+            else:
+                role = 'unclassified'
+                reason = 'document_incompleteness_notice_unverified'
+                unclassified_by_block_type[fragment.block_type or "unknown"] += 1
         else:
             reason = _skip_reason(fragment)
             role = "excluded" if reason else "unclassified"

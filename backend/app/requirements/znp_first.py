@@ -19,7 +19,9 @@ from app.ai.deepseek import DeepSeekClient, DeepSeekError, DeepSeekResponseError
 from app.ai.embeddings import EmbeddingService
 from app.requirements.retrieval import RequirementRetriever
 from app.requirements.extraction import is_table_metadata
-from app.requirements.tools import _EQUIPMENT_DESIGNATION_RE
+from app.requirements.tools import (
+    _EQUIPMENT_DESIGNATION_RE, equipment_type_field, equipment_type_comparison,
+)
 from app.requirements.llm_tracking import LLMCallLimitExceeded
 from app.requirements.coverage import (
     build_obligations, assess_coverage, all_obligations_covered,
@@ -358,25 +360,19 @@ class ZnPFirstAgent:
             if rejection_counts is not None:
                 rejection_counts["structural_metadata_not_obligation"] += 1
             return None
-        functions = (
-            r'\bМТЗ\b|максимальн\w*\s+токов\w*\s+защит',
-            r'\bЗМН\b|защит\w*\s+минимальн\w*\s+напряжен',
-            r'\bУРОВ\b|резервирован\w*\s+отказ\w*\s+выключател',
-            r'\bАПВ\b|автоматическ\w*\s+повторн\w*\s+включ',
+        # A reference to a table is not evidence of any particular function.
+        # Do not enumerate the four abbreviations from the demo.
+        generic_reference = re.fullmatch(
+            r"[^.!?;\n]{1,350}\b(?:должн\w*\s+быть\s+)?(?:реализован\w*|предусмотрен\w*|"
+            r"установлен\w*)\s+[^.!?;\n]{1,80},?\s*"
+            r"(?:привед[её]нн\w*|указанн\w*|представленн\w*)\s+в\s+таблице\s+\d+(?:\.\d+)*\.?",
+            znp_quote.strip(), re.I,
         )
-        required_functions = [pattern for pattern in functions if re.search(pattern, requirement.text, re.I)]
-        type_requirement = re.search(r'\b(?:тип|марка|модель|обозначение)\s+(?:генерирующ\w*\s+)?'
-                                     r'(?:установк\w*|оборудован\w*|трансформатор\w*)', requirement.text, re.I)
-        required_designations = {m.group().casefold().replace('–', '-')
-                                 for m in _EQUIPMENT_DESIGNATION_RE.finditer(requirement.text)}
-        quoted_designations = {m.group().casefold().replace('–', '-')
-                               for m in _EQUIPMENT_DESIGNATION_RE.finditer(znp_quote)}
-        type_unproven = bool(type_requirement and required_designations and (
-            not required_designations.intersection(quoted_designations)
-            or not re.search(r'\b(?:тип|марка|модель|обозначение)\b', znp_quote, re.I)
-        ))
-        if type_unproven or (required_functions and not any(
-                re.search(pattern, znp_quote, re.I) for pattern in required_functions)):
+        required_type = equipment_type_field(requirement.text)
+        quoted_type = equipment_type_field(znp_quote)
+        type_status = equipment_type_comparison(tu_quote, znp_quote)
+        if generic_reference or (required_type and quoted_type is None
+                and not _EQUIPMENT_DESIGNATION_RE.search(znp_quote)):
             if rejection_counts is not None:
                 rejection_counts['insufficient_obligation_evidence'] += 1
             return None
@@ -414,9 +410,11 @@ class ZnPFirstAgent:
             warnings.append("engineering_params_unknown")
         if relation == "supports":
             if (not params["supports_safe"] or confidence < 0.7 or warnings
+                    or (required_type and type_status != "match")
                     or not scope_overlap(requirement.text, atom.text)):
                 relation = "partial"
-        if relation == "conflicts" and params["comparison_status"] != "mismatch":
+        if relation == "conflicts" and (params["comparison_status"] != "mismatch"
+                or (required_type and type_status == "unknown")):
             # Semantic opposition may be real, but Python cannot certify it.
             relation = "partial"
         return {

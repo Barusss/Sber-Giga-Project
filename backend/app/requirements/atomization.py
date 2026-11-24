@@ -80,21 +80,27 @@ def atomize_fragments(document_id: str, fragments: Sequence[Fragment], *, pdf_da
     atoms = []
     ordered = sorted(fragments, key=lambda fragment: (fragment.page, fragment.position))
     table_context = {}
-    previous = None
-    for fragment in ordered:
-        if (fragment.block_type == 'paragraph' and is_table_caption(fragment.text)
-                and previous is not None and previous.block_type == 'table_row'
-                and previous.container_id and previous.section_path == fragment.section_path):
-            table_context.setdefault(previous.container_id, []).append(_source(fragment))
+    for index, fragment in enumerate(ordered):
+        previous = ordered[index - 1] if index else None
+        following = ordered[index + 1] if index + 1 < len(ordered) else None
+        if fragment.block_type == "paragraph" and is_table_caption(fragment.text):
+            neighbors = {
+                neighbor.container_id for neighbor in (previous, following)
+                if neighbor is not None and neighbor.block_type == "table_row"
+                and neighbor.container_id and neighbor.section_path == fragment.section_path
+            }
+            # Between distinct tables the ownership is not proved. Leave the
+            # caption unclassified rather than attach it to both containers.
+            if len(neighbors) == 1:
+                table_context.setdefault(next(iter(neighbors)), []).append(_source(fragment))
         if (fragment.block_type == "table_row" and fragment.container_id
                 and is_table_header(fragment.text)):
             context = table_context.setdefault(fragment.container_id, [])
             context.append(_source(fragment))
             if (previous is not None and previous.block_type == "paragraph"
                     and previous.section_path == fragment.section_path
-                    and (is_table_description(previous.text) or is_table_caption(previous.text))):
+                    and is_table_description(previous.text)):
                 context.append(_source(previous))
-        previous = fragment
     headings = {}
     unscoped_headings = []
     # Never index parents by bare number across a whole document: distinct
