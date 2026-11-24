@@ -228,3 +228,30 @@ def test_disagreeing_intervals_of_same_parameter_require_review():
     result = verify("Частота генератора 50 ± 0,2 Гц",
                     "Частота генератора 50 ± 0,2 Гц.\nЧастота генератора 55 ± 0,2 Гц.")
     assert result["comparison_status"] == "unknown"
+
+
+@pytest.mark.parametrize("left,right,status", [
+    ("Диапазон регулирования мощности | % | 30…100",
+     "Диапазон регулирования мощности от 30 до 100 %", "match"),
+    ("Диапазон регулирования мощности | % | 30…100",
+     "Диапазон регулирования мощности | % | 30…85", "unknown"),
+    ("Диапазон коэффициента | о.е. | −0,30…+0,40",
+     "Диапазон коэффициента от -0,30 до +0,40 о.е.", "match"),
+    ("Частота генератора Г-1 50 ± 0,2 Гц",
+     "Частота генератора Г-2 50 ± 0,2 Гц", "unknown"),
+    ("Срок службы генератора 1 40 лет",
+     "Срок службы генератора 2 40 лет", "unknown"),
+])
+def test_table_intervals_and_explicit_object_identifiers(left, right, status):
+    result = verify(left, right)
+    assert result["comparison_status"] == status
+
+
+def test_table_reference_can_itself_be_an_obligation():
+    text = "Должны быть реализованы функции, приведённые в таблице 12.1."
+    tu = TURequirement(id="t", clause_number="1", category=RequirementCategory.protection,
+                       text=text)
+    atom = ZNPClause(id="z", clause_number="2", text=text)
+    link = ZnPFirstAgent._validated_link(atom, tu, dict(
+        relation="partial", confidence=.9, tu_quote=text, znp_quote=text), .9)
+    assert link is not None and link["relation"] == "partial"

@@ -1076,6 +1076,11 @@ def tool_get_neighbor_clauses(
 # ---------------------------------------------------------------------------
 # ИНСТРУМЕНТ 3: Детерминированный валидатор инженерных параметров
 # ---------------------------------------------------------------------------
+def _verification_table_unit(cell: str) -> bool:
+    return bool(_TABLE_UNIT_RE.fullmatch(cell)
+                or re.fullmatch(r"лет|год(?:а|ов)?|о\.?\s*е\.?", cell, re.I))
+
+
 def _verification_text(text: str) -> str:
     """Read a separated table unit/value without altering source evidence."""
     units = {"mw": "МВт", "kw": "кВт", "mva": "МВА", "kva": "кВА", "kv": "кВ"}
@@ -1086,22 +1091,27 @@ def _verification_text(text: str) -> str:
         cells = [c.strip() for c in re.split(r"\||\s+[—–]\s+", line)]
         if len(cells) < 3:
             continue
-        units = [i for i, c in enumerate(cells) if re.fullmatch(
-            r"(?:лет|год(?:а|ов)?)", c, re.I) or _TABLE_UNIT_RE.fullmatch(c)]
+        units = [i for i, c in enumerate(cells) if _verification_table_unit(c)]
         labels = [i for i, c in enumerate(cells)
                   if re.search(r"[а-яёa-z]", c, re.I) and i not in units]
         if not units or not labels:
             continue
         for i, cell in enumerate(cells):
-            if i <= labels[0] or not re.fullmatch(
+            if i <= labels[0]:
+                continue
+            interval = _VERIFICATION_RANGE_RE.fullmatch(_normalize_typography(cell))
+            scalar = re.fullmatch(
                 r"(?:(?i:" + _COMPARISON_SRC + r")\s*)?[+-]?" + _NUMBER_VALUE_RE
                 + r"(?:\s*±\s*" + _NUMBER_VALUE_RE + r")?", cell,
-            ):
+            )
+            if not scalar and not (interval and interval.group("unit") is None):
                 continue
             unit = _table_nearest_unit(cells, i, units)
+            if re.fullmatch(r"о\.?\s*е\.?", unit, re.I):
+                unit = "о.е."
             label = cells[labels[0]]
             label_op = _TABLE_LABEL_OP_RE.search(label)
-            if label_op and not re.match(r"(?i:" + _COMPARISON_SRC + r")", cell):
+            if label_op and not interval and not re.match(r"(?i:" + _COMPARISON_SRC + r")", cell):
                 label = _TABLE_LABEL_OP_RE.sub("", label).strip()
                 cell = f"{label_op.group('op')} {cell}"
             extra.append(f"{label} {cell} {unit}")
@@ -1177,6 +1187,12 @@ def _verification_ranges(text: str) -> list[dict[str, str]]:
         line = _NORMATIVE_CODE_RE.sub(" ", line)
         for match in _VERIFICATION_RANGE_RE.finditer(line):
             unit = match.group("unit")
+            if not unit and "|" in line and any(
+                _verification_table_unit(cell.strip()) for cell in line.split("|")
+            ):
+                # The normalized row already carries its unit. Do not add a
+                # second, dimensionless copy of the same table interval.
+                continue
             if not unit and re.search(r"(?<!\w)о\.?\s*е\.?(?!\w)", line, re.I):
                 unit = "о.е."
             # Bare dates/identifiers are not engineering ranges.
@@ -1185,7 +1201,8 @@ def _verification_ranges(text: str) -> list[dict[str, str]]:
             context, _ = _constraint_context(line, match.start())
             found.append(dict(lower=_normalize_number(match.group("lower")),
                               upper=_normalize_number(match.group("upper")),
-                              unit=_canonical_unit(unit or "1"), context=context))
+                              unit=("о.е." if unit and re.fullmatch(r"о\.?\s*е\.?", unit, re.I)
+                                    else _canonical_unit(unit or "1")), context=context))
     return found
 
 
@@ -1251,8 +1268,12 @@ def _verification_lifetimes(text: str) -> list[dict[str, str]]:
 def _parameter_context_key(context: str) -> tuple[frozenset[str], frozenset[str]]:
     # Keep the subject and parameter label, not just one shared generic word.
     # Retain explicit object identifiers (e.g. generator G-1 vs G-2).
-    identifiers = frozenset(_normalize_typography(x.group()).casefold()
-                            for x in _EQUIPMENT_DESIGNATION_RE.finditer(context))
+    context = re.sub(r"^\s*\d+(?:\.\d+)*\s*\|", "", context)
+    normalized = _normalize_typography(context).casefold()
+    identifiers = frozenset(re.findall(
+        r"(?<!\w)[а-яa-z]{1,8}-\d+(?:[-/]\d+[а-яa-z]?\d*)*(?!\w)"
+        r"|(?<!\w)\d+(?!\w)", normalized
+    ))
     words = frozenset(t for t in _content_tokens(context)
                       if not t.isdigit() and t not in {
                           'должен', 'должна', 'должно', 'должны', 'быть',

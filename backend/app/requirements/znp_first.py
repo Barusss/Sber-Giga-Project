@@ -372,8 +372,10 @@ class ZnPFirstAgent:
         required_type = equipment_type_field(requirement.text)
         quoted_type = equipment_type_field(znp_quote)
         type_status = equipment_type_comparison(tu_quote, znp_quote)
-        if generic_reference or (required_type and quoted_type is None
-                and not _EQUIPMENT_DESIGNATION_RE.search(znp_quote)):
+        if ((generic_reference and not re.search(
+                r"\b(?:в\s+таблиц\w*|согласно\s+таблиц\w*)\b", requirement.text, re.I))
+                or (required_type and quoted_type is None
+                    and not _EQUIPMENT_DESIGNATION_RE.search(znp_quote))):
             if rejection_counts is not None:
                 rejection_counts['insufficient_obligation_evidence'] += 1
             return None
