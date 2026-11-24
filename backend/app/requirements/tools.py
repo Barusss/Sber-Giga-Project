@@ -1113,7 +1113,8 @@ _EQUIPMENT_DESIGNATION_RE = re.compile(
     r"(?<!\w)[А-ЯЁA-Z]{2,8}[-–]\d+(?:[-/]\d+[А-ЯЁA-Z]?\d*)*(?!\w)", re.I,
 )
 _EQUIPMENT_TYPE_RE = re.compile(
-    r"\b(?P<field>тип|марка|модель|обозначение)\s+(?:генерирующ\w*\s+)?"
+    r"^\s*(?:\d+(?:\.\d+)*[.)]?\s*(?:\|\s*)?)?"
+    r"(?P<field>тип|марка|модель|обозначение)\s+(?:генерирующ\w*\s+)?"
     r"(?P<object>установк\w*|оборудован\w*|трансформатор\w*)"
     r"[\s|:—–-]*", re.I,
 )
@@ -1126,6 +1127,10 @@ def equipment_type_field(text: str) -> tuple[str, str, str] | None:
         for match in _EQUIPMENT_TYPE_RE.finditer(line):
             designation = _EQUIPMENT_DESIGNATION_RE.match(line, match.end())
             if designation is None:
+                continue
+            # An alternative, negation, qualification or another object's
+            # prefix is not an unambiguous single-valued type field.
+            if line[designation.end():].strip(" .;|"):
                 continue
             subject = match.group("object").casefold()
             subject = next(prefix for prefix in ("установк", "оборудован", "трансформатор")
@@ -1440,8 +1445,13 @@ def tool_verify_engineering_params(tu_text: str, znp_text: str) -> dict[str, Any
 
     tu_quantities = _verification_quantities(tu_scalar_text)
     znp_quantities = _verification_quantities(znp_scalar_text)
-    range_uncertain = any(not any(_same_interval(r, c) for c in znp_ranges + znp_tolerances)
-                          for r in tu_ranges)
+    range_uncertain = False
+    for required in tu_ranges:
+        candidates = [c for c in znp_ranges + znp_tolerances
+                      if c['unit'] == required['unit'] and _same_parameter_context(required, c)]
+        if not candidates or not all(_same_interval(required, c) for c in candidates):
+            range_uncertain = True
+            break
     if range_uncertain:
         # A wider capability and a violated allowable interval are not the
         # same engineering claim. Retain both bounds for expert review.
@@ -1479,7 +1489,7 @@ def tool_verify_engineering_params(tu_text: str, znp_text: str) -> dict[str, Any
     for required in tu_tolerances:
         candidates = [c for c in znp_tolerances + znp_ranges
                       if c['unit'] == required['unit'] and _same_parameter_context(required, c)]
-        if any(_same_interval(required, c) for c in candidates):
+        if candidates and all(_same_interval(required, c) for c in candidates):
             continue
         kind = 'tolerance_scope_unknown'
         if candidates and all(float(c['upper']) < float(required['lower'])

@@ -363,8 +363,9 @@ class ZnPFirstAgent:
         # A reference to a table is not evidence of any particular function.
         # Do not enumerate the four abbreviations from the demo.
         generic_reference = re.fullmatch(
-            r"[^.!?;\n]{1,350}\b(?:должн\w*\s+быть\s+)?(?:реализован\w*|предусмотрен\w*|"
-            r"установлен\w*)\s+[^.!?;\n]{1,80},?\s*"
+            r"[^.!?;\n]{0,350}\b(?:должн\w*\s+быть\s+)?(?:реализован\w*|предусмотрен\w*|"
+            r"установлен\w*)\s+(?:(?:все|следующ\w*|перечисленн\w*)\s+)?"
+            r"(?:функци\w*|мероприяти\w*|решени\w*)\s*,?\s*"
             r"(?:привед[её]нн\w*|указанн\w*|представленн\w*)\s+в\s+таблице\s+\d+(?:\.\d+)*\.?",
             znp_quote.strip(), re.I,
         )
@@ -414,7 +415,8 @@ class ZnPFirstAgent:
                     or not scope_overlap(requirement.text, atom.text)):
                 relation = "partial"
         if relation == "conflicts" and (params["comparison_status"] != "mismatch"
-                or (required_type and type_status == "unknown")):
+                or (required_type and (type_status == "unknown" or warnings
+                                       or requirement.warnings))):
             # Semantic opposition may be real, but Python cannot certify it.
             relation = "partial"
         return {

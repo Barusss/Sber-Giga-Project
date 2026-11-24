@@ -202,3 +202,29 @@ def test_caption_between_two_table_containers_is_not_dual_context():
     assert all("c" not in {s.fragment_id for s in atom.context_sources} for atom in atoms)
     ledger = source_coverage_ledger(fragments, atoms)
     assert "c" in ledger["unclassified_fragment_ids"] and not ledger["complete"]
+
+
+@pytest.mark.parametrize("candidate", [
+    "Тип установки ПГУ-236 или ПГУ-400",
+    "Тип установки ПГУ-400 не применяется",
+    "Блок 2: Тип установки ПГУ-400",
+])
+def test_type_field_does_not_certify_alternative_or_qualified_conflict(candidate):
+    from app.requirements.tools import equipment_type_comparison
+    assert equipment_type_comparison("Тип установки ПГУ-236", candidate) == "unknown"
+
+
+def test_named_function_with_table_reference_remains_evidence():
+    tu = TURequirement(id="t", clause_number="1", category=RequirementCategory.protection,
+                       text="Реализовать МТЗ блока.")
+    atom = ZNPClause(id="z", clause_number="2",
+                     text="Должны быть реализованы МТЗ и АПВ, приведённые в таблице 12.1.")
+    link = ZnPFirstAgent._validated_link(atom, tu, dict(
+        relation="partial", confidence=.9, tu_quote=tu.text, znp_quote=atom.text), .9)
+    assert link is not None and link["relation"] == "partial"
+
+
+def test_disagreeing_intervals_of_same_parameter_require_review():
+    result = verify("Частота генератора 50 ± 0,2 Гц",
+                    "Частота генератора 50 ± 0,2 Гц.\nЧастота генератора 55 ± 0,2 Гц.")
+    assert result["comparison_status"] == "unknown"
