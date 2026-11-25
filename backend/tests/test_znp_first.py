@@ -130,3 +130,24 @@ def test_ambiguous_atom_warning_never_confirms():
     )
     assert result.checked_requirements[0].status.value == "needs_review"
     assert result.checked_requirements[0].validation_details["matches"][0]["relation"] == "partial"
+
+
+def test_matching_prompt_uses_retrieved_source_fragments():
+    from app.requirements.retrieval import RequirementRetriever
+
+    tu = requirement()
+    tu.sources = [{"fragment_id": "t1", "page": 1, "text": tu.text}]
+    zn = atom(1)
+
+    class CapturingAI:
+        def complete_json(self, *, system_prompt, user_prompt):
+            candidates = json.loads(user_prompt)["tu_candidates"]
+            assert candidates[0]["source_fragments"] == [
+                {"fragment_id": "t1", "text": tu.text}
+            ]
+            return {"links": []}
+
+    embedder = EmbeddingService(enabled=False)
+    agent = ZnPFirstAgent(ai_client=CapturingAI(), embedder=embedder)
+    candidates = RequirementRetriever([tu], embedder).search(zn)["candidates"]
+    assert agent._judge(zn, candidates, []) == {"links": []}

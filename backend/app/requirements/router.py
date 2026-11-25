@@ -706,11 +706,11 @@ def analyze_requirements(
     - explicit lists of TU requirements and ZnP clauses (tests, benchmarks);
     - a stored project with TU and ZnP documents (atomic clauses from fragments).
     """
-    agent = RequirementsAgent()
-
     if isinstance(payload, CheckRequirementsRequest):
         if any(TABLE_REVIEW in item.warnings for item in (*payload.tu_requirements, *payload.znp_clauses)):
-            agent = ZnPFirstAgent(ai_client=agent.ai, embedder=agent.embedder)
+            agent = ZnPFirstAgent()
+        else:
+            agent = RequirementsAgent()
         response = agent.verify_all(payload.tu_requirements, payload.znp_clauses)
         _attach_provenance(
             response.checked_requirements,
@@ -720,7 +720,7 @@ def analyze_requirements(
         return response
 
     project_id = payload.project_id
-    agent = ZnPFirstAgent(ai_client=agent.ai, embedder=agent.embedder)
+    agent = ZnPFirstAgent()
 
     with _analysis_lock(project_id):
         _lock_project_for_analysis(db, project_id)
@@ -847,8 +847,7 @@ def _analyze_test_subset(
 
     if progress_callback:
         progress_callback("preparing", 0, len(tu_schemas), None)
-    agent._fragments_by_id = {fragment.id: fragment for fragment in znp_fragments}
-    agent._znp_document_id = znp_doc.id
+    agent.bind_source_document(znp_doc.id, {fragment.id: fragment for fragment in znp_fragments})
     result = agent.verify_all(
         tu_schemas, znp_schemas, progress_callback=progress_callback,
     )
@@ -1313,8 +1312,7 @@ def _analyze_project_requirements(
         znp_count=len(znp_schemas),
         budget=llm_ledger.trace() if llm_ledger is not None else {},
     )
-    agent._fragments_by_id = fragments_by_id
-    agent._znp_document_id = znp_doc.id
+    agent.bind_source_document(znp_doc.id, fragments_by_id)
     verification_started = perf_counter()
     response = (
         agent.verify_all(tu_schemas, znp_schemas, progress_callback=progress_callback)

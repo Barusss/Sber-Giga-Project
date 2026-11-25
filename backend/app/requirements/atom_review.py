@@ -76,7 +76,7 @@ def run_atom_recheck(db: Session, *, project_id: str, pair_id: str,
     agent = ZnPFirstAgent(
         ai_client=model, embedder=EmbeddingService(),
     )
-    agent._requirements = {item.id: item for item in tu_items}
+    requirements_by_id = {item.id: item for item in tu_items}
     try:
         model.check_control()
         retriever = RequirementRetriever(
@@ -113,7 +113,7 @@ def run_atom_recheck(db: Session, *, project_id: str, pair_id: str,
                     rejected["unknown_requirement"] += 1
                     continue
                 verified = agent._validated_link(
-                    atom, agent._requirements[rid], link,
+                    atom, requirements_by_id[rid], link,
                     candidate["similarity_score"], rejected,
                     fragments_by_id=fragments_by_id,
                     znp_document_id=pair.znp_document_id,
@@ -121,8 +121,8 @@ def run_atom_recheck(db: Session, *, project_id: str, pair_id: str,
                 if verified is not None:
                     accepted.append({
                         "tu_requirement_id": rid,
-                        "tu_clause_number": agent._requirements[rid].clause_number,
-                        "tu_text": agent._requirements[rid].text,
+                        "tu_clause_number": requirements_by_id[rid].clause_number,
+                        "tu_text": requirements_by_id[rid].text,
                         "relation": verified["relation"],
                         "tu_quote": verified["tu_quote"],
                         "znp_quote": verified["quote"],

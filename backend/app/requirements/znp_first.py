@@ -123,6 +123,13 @@ class ZnPFirstAgent:
         self.batch_size = batch_size
         self.max_batches = max_batches
         self.targeted_enabled = targeted_enabled
+        self._fragments_by_id = None
+        self._znp_document_id = None
+
+    def bind_source_document(self, document_id: str, fragments_by_id: dict) -> None:
+        """Supply the original fragments used to validate layout-spanning quotes."""
+        self._znp_document_id = document_id
+        self._fragments_by_id = fragments_by_id
 
     def _judge(self, atom: ZNPClause, candidates: list[dict[str, Any]], context: list[dict[str, Any]], phase: str = "primary") -> dict[str, Any]:
         payload = {
@@ -149,10 +156,8 @@ class ZnPFirstAgent:
                 "source_fragments": [
                     {"fragment_id": source.get("fragment_id"),
                      "text": str(source.get("text", ""))[:1600]}
-                    for source in (
-                        getattr(getattr(self, "_requirements", {}).get(item["requirement_id"]),
-                                "sources", []) or []
-                    )[:3] if isinstance(source, dict)
+                    for source in (item.get("sources") or [])[:3]
+                    if isinstance(source, dict)
                 ],
                 "similarity_score": item["similarity_score"],
                 "context_sources": item.get("context_sources", []),
@@ -476,7 +481,6 @@ class ZnPFirstAgent:
         targeted_links_total = 0
         stopped_due_to_invalid_evidence = False
         all_requirements = {item.id: item for item in tu_requirements}
-        self._requirements = all_requirements
         znp_by_id = {item.id: item for item in znp_clauses}
         model_available = True
         model_error: str | None = None
@@ -626,8 +630,8 @@ class ZnPFirstAgent:
                     valid = validate_link(
                         atom, all_requirements[rid], proposal,
                         candidate["similarity_score"], rejected,
-                        fragments_by_id=getattr(self, "_fragments_by_id", None),
-                        znp_document_id=getattr(self, "_znp_document_id", None),
+                        fragments_by_id=self._fragments_by_id,
+                        znp_document_id=self._znp_document_id,
                     )
                     if valid is not None:
                         valid["source_phase"] = "matching"
@@ -872,8 +876,8 @@ class ZnPFirstAgent:
                                     entry = validate_link(
                                         atom, requirement, proposal,
                                         suggestion["similarity_score"], rejected,
-                                        fragments_by_id=getattr(self, "_fragments_by_id", None),
-                                        znp_document_id=getattr(self, "_znp_document_id", None),
+                                        fragments_by_id=self._fragments_by_id,
+                                        znp_document_id=self._znp_document_id,
                                     )
                                     for reason, count in rejected.items():
                                         if count > rejection_before[reason]:

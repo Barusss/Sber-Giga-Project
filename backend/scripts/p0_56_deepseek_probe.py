@@ -99,7 +99,6 @@ def run_probe(raw, transport, *, dry_run=True, config=None):
         ai_client=DeepSeekClient(config=config, http_client=transport),
         embedder=EmbeddingService(enabled=False),
     )
-    agent._requirements = {item.id: item for item in requirements}
     retriever = RequirementRetriever(
         requirements, EmbeddingService(enabled=False), batch_size=len(requirements),
     )
