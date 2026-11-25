@@ -1,25 +1,20 @@
 from datetime import datetime
-from enum import Enum
+from dataclasses import dataclass
 from typing import List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
 
-class RequirementStatus(str, Enum):
-    fulfilled = "fulfilled"
-    missing = "missing"
-    needs_review = "needs_review"
+from app.core.types import RequirementCategory, RequirementStatus
 
 
-class RequirementCategory(str, Enum):
-    power = "power"
-    reliability = "reliability"
-    voltage = "voltage"
-    connection_point = "connection_point"
-    metering = "metering"
-    protection = "protection"
-    equipment = "equipment"
-    other = "other"
+@dataclass(frozen=True)
+class AtomSource:
+    fragment_id: str
+    page: int
+    start_offset: int
+    end_offset: int
+    text: str
 
 
 class TURequirement(BaseModel):

@@ -7,7 +7,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.db import Base
-from app.core.types import Vector384
+from app.core.types import RequirementCategory, RequirementStatus, Vector384
 
 
 def now():
@@ -189,23 +189,6 @@ class Finding(Base):
     evidence: Mapped[list] = mapped_column(JSON, default=list)
     review_status: Mapped[ReviewStatus] = mapped_column(Enum(ReviewStatus), default=ReviewStatus.pending)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
-
-
-class RequirementStatus(str, enum.Enum):
-    fulfilled = "fulfilled"
-    missing = "missing"
-    needs_review = "needs_review"
-
-
-class RequirementCategory(str, enum.Enum):
-    power = "power"
-    reliability = "reliability"
-    voltage = "voltage"
-    connection_point = "connection_point"
-    metering = "metering"
-    protection = "protection"
-    equipment = "equipment"
-    other = "other"
 
 
 class TURequirement(Base):

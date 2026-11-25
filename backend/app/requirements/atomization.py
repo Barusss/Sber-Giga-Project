@@ -9,15 +9,7 @@ from uuid import NAMESPACE_URL, uuid5
 from app.core.models import Fragment
 from app.documents.parser import TABLE_REVIEW, requires_pdf_layout_review
 from app.requirements.extraction import extract_clauses, is_table_header, is_table_description, is_table_caption
-
-
-@dataclass(frozen=True)
-class AtomSource:
-    fragment_id: str
-    page: int
-    start_offset: int
-    end_offset: int
-    text: str
+from app.requirements.schemas import AtomSource
 
 
 @dataclass(frozen=True)

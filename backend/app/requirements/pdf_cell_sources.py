@@ -4,7 +4,7 @@ import re
 import fitz
 
 from app.documents.pdf_vector_grid import extract_closed_two_column_grid
-from app.requirements.atomization import AtomSource
+from app.requirements.schemas import AtomSource
 
 
 def bind_pdf_cells(data, fragments):
