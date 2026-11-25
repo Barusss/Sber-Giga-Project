@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 
 from app.core.models import Document, RequirementAnalysis
 from app.core.schemas import DocumentOut
-from app.requirements.router import get_project_requirements
+from app.requirements.storage import load_project_requirements
 
 
 def build_requirements_report(db: Session, project_id: str, tu_document_id: str | None, znp_document_id: str | None) -> dict:
@@ -26,7 +26,7 @@ def build_requirements_report(db: Session, project_id: str, tu_document_id: str 
     if run is None:
         raise ValueError("Сохранённая проверка выбранной пары не найдена")
     pair = next(p for p in pairs if p["tu_document_id"] == tu_document_id and p["znp_document_id"] == znp_document_id)
-    response = get_project_requirements(project_id, tu_document_id, znp_document_id, db)
+    response = load_project_requirements(db, project_id, tu_document_id, znp_document_id)
     entries = [item.model_dump(mode="json") for item in response.checked_requirements]
     tu_pagination = DocumentOut.model_validate(by_id[tu_document_id]).pagination_kind
     znp_pagination = DocumentOut.model_validate(by_id[znp_document_id]).pagination_kind

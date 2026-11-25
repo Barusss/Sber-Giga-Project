@@ -19,9 +19,10 @@ from app.core.models import (
     ComparisonPair, ComparisonRun, ComparisonAtomReview, Document, DocumentKind, Fragment, Finding, Project,
     RequirementAnalysis, RequirementVerification, TURequirement, ReviewState,
 )
-from app.requirements.router import (
-    _analysis_lock, _confirm_requirement, _finding_in_pair,
-    _lock_project_for_analysis, _analyze_project_requirements, get_project_requirements,
+from app.requirements.router import _analyze_project_requirements
+from app.requirements.storage import (
+    analysis_lock, confirm_requirement, finding_in_pair,
+    get_project, lock_project_for_analysis, load_project_requirements,
 )
 from app.requirements.znp_first import ZnPFirstAgent
 from app.requirements.atomization import atomize_fragments, atomize_document
@@ -52,17 +53,8 @@ class RunConfirm(BaseModel):
     comment: str | None = None
 
 
-def _project(db: Session, project_id: str, edit: bool = False):
-    project = db.get(Project, project_id)
-    if project is None:
-        raise HTTPException(404, "Project not found")
-    if edit and project.state == ReviewState.approved:
-        raise HTTPException(409, "Approved project cannot be modified")
-    return project
-
-
 def _pair(db: Session, project_id: str, pair_id: str, edit: bool = False) -> ComparisonPair:
-    _project(db, project_id, edit=edit)
+    get_project(db, project_id, edit=edit)
     pair = db.get(ComparisonPair, pair_id)
     if pair is None or pair.project_id != project_id:
         raise HTTPException(404, "Comparison not found")
@@ -145,7 +137,7 @@ def _legacy_pairs(db: Session, project_id: str) -> None:
         )
         db.add(pair)
         db.flush()
-        saved = get_project_requirements(project_id, key[0], key[1], db)
+        saved = load_project_requirements(db, project_id, key[0], key[1])
         result = saved.model_dump(mode="json")
         db.add(ComparisonRun(
             pair_id=pair.id, result=result, is_current=True,
@@ -159,8 +151,8 @@ def _legacy_pairs(db: Session, project_id: str) -> None:
 
 @router.get("/projects/{project_id}/comparisons")
 def list_comparisons(project_id: str, db: Session = Depends(get_db)):
-    _project(db, project_id)
-    with _analysis_lock(project_id):
+    get_project(db, project_id)
+    with analysis_lock(project_id):
         _legacy_pairs(db, project_id)
     pairs = db.scalars(
         select(ComparisonPair).where(ComparisonPair.project_id == project_id)
@@ -172,14 +164,14 @@ def list_comparisons(project_id: str, db: Session = Depends(get_db)):
 
 @router.post("/projects/{project_id}/comparisons", status_code=201)
 def create_comparisons(project_id: str, payload: PairBatch, db: Session = Depends(get_db)):
-    _project(db, project_id, edit=True)
+    get_project(db, project_id, edit=True)
     docs = db.scalars(select(Document).where(Document.project_id == project_id)).all()
     by_id = {doc.id: doc for doc in docs}
     for entry in payload.pairs:
         tu, znp = by_id.get(entry.tu_document_id), by_id.get(entry.znp_document_id)
         if tu is None or znp is None or tu.kind != DocumentKind.tu or znp.kind != DocumentKind.znp:
             raise HTTPException(422, "Each pair must contain TU and ZNP documents from this project")
-    with _analysis_lock(project_id):
+    with analysis_lock(project_id):
         _legacy_pairs(db, project_id)
         existing = {
             (p.tu_document_id, p.znp_document_id)
@@ -265,8 +257,8 @@ def run_comparison(
         session.flush()
 
     try:
-        with _analysis_lock(project_id):
-            _lock_project_for_analysis(db, project_id)
+        with analysis_lock(project_id):
+            lock_project_for_analysis(db, project_id)
             response = _analyze_project_requirements(
                 AnalyzeProjectRequirementsRequest(
                     project_id=project_id,
@@ -370,9 +362,9 @@ def confirm_run_item(project_id: str, pair_id: str, run_id: str,
     item = next((v for v in items if v.get("id") == payload.verification_id), None)
     if item is None:
         raise HTTPException(404, "Verification not found in this run")
-    with _analysis_lock(project_id):
-        _lock_project_for_analysis(db, project_id)
-        verification = _confirm_requirement(project_id, ConfirmRequirementRequest(
+    with analysis_lock(project_id):
+        lock_project_for_analysis(db, project_id)
+        verification = confirm_requirement(project_id, ConfirmRequirementRequest(
             verification_id=payload.verification_id,
             requirement_id=item["requirement"]["id"],
             znp_document_id=pair.znp_document_id,
@@ -396,7 +388,7 @@ def confirm_run_item(project_id: str, pair_id: str, run_id: str,
 
 @router.delete("/projects/{project_id}/comparisons/{pair_id}/runs/{run_id}", status_code=204)
 def delete_run(project_id: str, pair_id: str, run_id: str, db: Session = Depends(get_db)):
-    with _analysis_lock(project_id):
+    with analysis_lock(project_id):
         pair = _pair(db, project_id, pair_id, edit=True)
         db.delete(_run(db, pair, run_id))
         db.commit()
@@ -404,7 +396,7 @@ def delete_run(project_id: str, pair_id: str, run_id: str, db: Session = Depends
 
 @router.delete("/projects/{project_id}/comparisons/{pair_id}", status_code=204)
 def delete_comparison(project_id: str, pair_id: str, db: Session = Depends(get_db)):
-    with _analysis_lock(project_id):
+    with analysis_lock(project_id):
         pair = _pair(db, project_id, pair_id, edit=True)
         tu_reqs = db.scalars(select(TURequirement).where(
             TURequirement.project_id == project_id,
@@ -419,7 +411,7 @@ def delete_comparison(project_id: str, pair_id: str, db: Session = Depends(get_d
         for finding in db.scalars(select(Finding).where(
             Finding.project_id == project_id, Finding.module == "requirements",
         )).all():
-            if _finding_in_pair(finding, pair.tu_document_id, pair.znp_document_id):
+            if finding_in_pair(finding, pair.tu_document_id, pair.znp_document_id):
                 db.delete(finding)
         analysis = db.get(RequirementAnalysis, (pair.tu_document_id, pair.znp_document_id))
         if analysis:

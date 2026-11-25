@@ -13,8 +13,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.ai.deepseek import DeepSeekAPIError, DeepSeekClient, DeepSeekNotConfigured, DeepSeekResponseError
 from app.core.models import Chunk, ChunkSource, Document, Fact, FactEvidence, ReviewStatus
-from app.core.schemas import FactOut
-from app.search.router import fact_out
+from app.core.schemas import FactOut, fact_out
 
 EXTRACTION_VERSION = "deepseek-normative-v2"
 OLD_EXTRACTION_VERSION = "deepseek-normative-v1"

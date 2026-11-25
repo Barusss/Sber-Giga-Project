@@ -14,8 +14,8 @@ from sqlalchemy.orm import Session, selectinload
 from app.core.db import get_db
 from app.core.models import Chunk, ChunkSource, Document, Fact, FactEvidence, Fragment, Project, ReviewState
 from app.core.schemas import (
-    ChunkOut, ChunkSourceOut, EmbeddingUpdate, FactCreate, FactEvidenceOut,
-    FactOut, SearchHit, SearchInput,
+    ChunkOut, ChunkSourceOut, EmbeddingUpdate, FactCreate,
+    FactOut, SearchHit, SearchInput, fact_out,
 )
 
 router = APIRouter(tags=["retrieval"])
@@ -53,19 +53,6 @@ def chunk_out(chunk: Chunk) -> ChunkOut:
             start_offset=source.start_offset, end_offset=source.end_offset,
             bbox=source.fragment.bbox,
         ) for source in chunk.sources],
-    )
-
-
-def fact_out(fact: Fact) -> FactOut:
-    return FactOut(
-        id=fact.id, document_id=fact.document_id, fact_type=fact.fact_type,
-        value=fact.value, confidence=fact.confidence,
-        extraction_version=fact.extraction_version,
-        review_status=fact.review_status, created_at=fact.created_at,
-        evidence=[FactEvidenceOut(
-            fragment_id=e.fragment_id, document_id=e.fragment.document_id,
-            page=e.fragment.page, quote=e.quote,
-        ) for e in fact.evidence],
     )
 
 

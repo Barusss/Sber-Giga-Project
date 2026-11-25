@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator, model_validator
-from app.core.models import DocumentKind, ReviewState, ReviewStatus
+from app.core.models import DocumentKind, Fact, ReviewState, ReviewStatus
 
 class Schema(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -145,6 +145,19 @@ class FactOut(BaseModel):
     review_status: ReviewStatus
     created_at: datetime
     evidence: list[FactEvidenceOut]
+
+
+def fact_out(fact: Fact) -> FactOut:
+    return FactOut(
+        id=fact.id, document_id=fact.document_id, fact_type=fact.fact_type,
+        value=fact.value, confidence=fact.confidence,
+        extraction_version=fact.extraction_version,
+        review_status=fact.review_status, created_at=fact.created_at,
+        evidence=[FactEvidenceOut(
+            fragment_id=e.fragment_id, document_id=e.fragment.document_id,
+            page=e.fragment.page, quote=e.quote,
+        ) for e in fact.evidence],
+    )
 
 
 class EmbeddingUpdate(BaseModel):
