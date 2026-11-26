@@ -547,7 +547,6 @@ class ZnPFirstAgent:
                     break
                 batches += 1
                 candidates = page["candidates"]
-                candidate_by_id = {item["requirement_id"]: item for item in candidates}
                 if not model_available:
                     break
                 if len(atom.text) > 10000 or any(len(c["text"]) > 10000 for c in candidates):
@@ -558,17 +557,7 @@ class ZnPFirstAgent:
                     break
                 # Expand around the highest-ranked TU clauses while preserving
                 # distinct IDs; neighboring requirements are evidence candidates too.
-                context = retriever.context_details(
-                    [candidate["requirement_id"] for candidate in candidates[:2]],
-                    known_ids=candidate_by_id.keys(),
-                    include_section=False,
-                )["items"]
-                for neighbor in context:
-                    rid = neighbor["requirement_id"]
-                    if rid not in candidate_by_id:
-                        candidate_by_id[rid] = {
-                            **neighbor, "similarity_score": 0.0,
-                        }
+                context, candidate_by_id = retriever.matching_context(candidates)
                 diagnostics.record(
                     "matching.batch.begin", atom_index=number, batch=batches,
                     candidate_count=len(candidates), context_count=len(context),

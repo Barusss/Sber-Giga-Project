@@ -85,15 +85,7 @@ def run_atom_recheck(db: Session, *, project_id: str, pair_id: str,
         )
         page = retriever.search(atom)
         selected = page["candidates"]
-        selected_by_id = {c["requirement_id"]: c for c in selected}
-        context = retriever.context_details(
-            [c["requirement_id"] for c in selected[:2]],
-            known_ids=selected_by_id.keys(), include_section=False,
-        )["items"] if selected else []
-        for adjacent in context:
-            rid = adjacent["requirement_id"]
-            if rid not in selected_by_id:
-                selected_by_id[rid] = {**adjacent, "similarity_score": 0.0}
+        context, selected_by_id = retriever.matching_context(selected)
         accepted = []
         rejected: Counter[str] = Counter()
         proposal_count = 0

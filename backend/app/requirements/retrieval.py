@@ -75,6 +75,19 @@ class RequirementRetriever:
                 "embedding_status": status, "embedding_current_status": self.embedder.status(),
                 "ranking_channels": channels}
 
+    def matching_context(self, candidates):
+        """Return neighbouring evidence and the allowed IDs for a matching request."""
+        by_id = {item["requirement_id"]: item for item in candidates}
+        context = self.context(
+            [item["requirement_id"] for item in candidates[:2]],
+            known_ids=by_id.keys(),
+        ) if candidates else []
+        for item in context:
+            rid = item["requirement_id"]
+            if rid not in by_id:
+                by_id[rid] = {**item, "similarity_score": 0.0}
+        return context, by_id
+
     def context(self, requirement_ids, *, known_ids=(), include_section=False):
         return self.context_details(requirement_ids, known_ids=known_ids, include_section=include_section)["items"]
 
