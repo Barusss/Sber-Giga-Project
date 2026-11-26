@@ -99,7 +99,7 @@ def test_full_run_budget_guard_refuses_before_model_and_keeps_history(client, mo
 
     # Simulate a larger source workload than this tiny API fixture.
     monkeypatch.setattr(
-        "app.requirements.router.atomization_workload",
+        "app.requirements.analysis.atomization_workload",
         lambda parents: {"total": len(parents), "eligible": 2},
     )
     monkeypatch.setattr(settings, "requirements_llm_max_calls", 1)
