@@ -193,7 +193,7 @@ def test_empty_reanalysis_rejected_before_mutating_existing_results(client, monk
     tu = upload(client, project, 'tu', ['1.1. Предусмотреть питание 24 В.'])
     znp = upload(client, project, 'znp', ['1.1. Предусмотреть питание 24 В.'])
     original = analyze(client, project, tu, znp)
-    monkeypatch.setattr('app.requirements.router._extract_clauses_from_doc', lambda *args: [])
+    monkeypatch.setattr('app.requirements.analysis._extract_clauses_from_doc', lambda *args: [])
     response = client.post('/api/v1/requirements/analyze', json={
         'project_id': project, 'tu_document_id': tu, 'znp_document_id': znp})
     assert response.status_code == 422

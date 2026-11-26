@@ -19,7 +19,7 @@ from app.core.models import (
     ComparisonPair, ComparisonRun, ComparisonAtomReview, Document, DocumentKind, Fragment, Finding, Project,
     RequirementAnalysis, RequirementVerification, TURequirement, ReviewState,
 )
-from app.requirements.router import _analyze_project_requirements
+from app.requirements.analysis import analyze_project_requirements
 from app.requirements.storage import (
     analysis_lock, confirm_requirement, finding_in_pair,
     get_project, lock_project_for_analysis, load_project_requirements,
@@ -259,7 +259,7 @@ def run_comparison(
     try:
         with analysis_lock(project_id):
             lock_project_for_analysis(db, project_id)
-            response = _analyze_project_requirements(
+            response = analyze_project_requirements(
                 AnalyzeProjectRequirementsRequest(
                     project_id=project_id,
                     tu_document_id=pair.tu_document_id,
