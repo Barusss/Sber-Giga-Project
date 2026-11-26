@@ -514,6 +514,9 @@ def _search_tokens(text: str) -> set[str]:
     }
 
 
+_VOLTAGE_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*(?:([кК][вВ])|(В))\b")
+
+
 def _extract_search_parameters(text: str) -> list[dict[str, Any]]:
     """Параметры для поиска: сравнения, мощность и напряжение."""
     clean = _normalize_space(text)
@@ -563,8 +566,7 @@ def _extract_search_parameters(text: str) -> list[dict[str, Any]]:
             match.start(),
         )
 
-    voltage_re = re.compile(r"(\d+(?:[.,]\d+)?)\s*(?:([кК][вВ])|(В))\b")
-    for match in voltage_re.finditer(clean):
+    for match in _VOLTAGE_RE.finditer(clean):
         add(
             "value",
             _normalize_number(match.group(1)),
@@ -1288,6 +1290,11 @@ def _same_parameter_context(left, right):
     return bool(a[0]) and a == b
 
 
+def _comparable_intervals(required, candidates):
+    return [item for item in candidates
+            if item['unit'] == required['unit'] and _same_parameter_context(required, item)]
+
+
 def _same_interval(left, right):
     return (_same_parameter_context(left, right)
             and all(left[k] == right[k] for k in ('unit', 'lower', 'upper')))
@@ -1332,6 +1339,24 @@ def _lifetime_relation(required, candidate):
     return 'unknown'
 
 
+def _verification_power(text: str) -> set[tuple[str, str]]:
+    power_re = r"(\d+(?:[.,]\d+)?)\s*(кВт|МВт|кВА|МВА)\b(?!\s*[·*x×]\s*ч)"
+    shared_power_re = (
+        r"\b(?:с|от)\s+(\d+(?:[.,]\d+)?)\s+до\s+"
+        r"\d+(?:[.,]\d+)?\s*(кВт|МВт|кВА|МВА)\b(?!\s*[·*x×]\s*ч)"
+    )
+    values = {(_normalize_number(value), unit.lower())
+              for value, unit in re.findall(power_re, text, re.IGNORECASE)}
+    for value, unit in re.findall(shared_power_re, text, re.IGNORECASE):
+        values.add((_normalize_number(value), unit.lower()))
+    return values
+
+
+def _verification_voltage(text: str) -> set[tuple[str, str]]:
+    return {(_normalize_number(value), "кв" if kv else "в")
+            for value, kv, _ in _VOLTAGE_RE.findall(text)}
+
+
 def tool_verify_engineering_params(tu_text: str, znp_text: str) -> dict[str, Any]:
     """Сверяет числовые, единичные и нормативные параметры между ТУ и ЗнП."""
     mismatches: list[str] = []
@@ -1353,23 +1378,8 @@ def tool_verify_engineering_params(tu_text: str, znp_text: str) -> dict[str, Any
     znp_scalar_text = _mask_intervals(znp_text)
 
     # 1. Мощность (кВт, МВт, кВА, МВА)
-    power_re = r"(\d+(?:[.,]\d+)?)\s*(кВт|МВт|кВА|МВА)\b(?!\s*[·*x×]\s*ч)"
-    tu_power = {
-        (_normalize_number(m[0]), m[1].lower())
-        for m in re.findall(power_re, tu_scalar_text, re.IGNORECASE)
-    }
-    znp_power = {
-        (_normalize_number(m[0]), m[1].lower())
-        for m in re.findall(power_re, znp_scalar_text, re.IGNORECASE)
-    }
-    shared_power_re = (
-        r"\b(?:с|от)\s+(\d+(?:[.,]\d+)?)\s+до\s+"
-        r"\d+(?:[.,]\d+)?\s*(кВт|МВт|кВА|МВА)\b(?!\s*[·*x×]\s*ч)"
-    )
-    for value, unit in re.findall(shared_power_re, tu_scalar_text, re.IGNORECASE):
-        tu_power.add((_normalize_number(value), unit.lower()))
-    for value, unit in re.findall(shared_power_re, znp_scalar_text, re.IGNORECASE):
-        znp_power.add((_normalize_number(value), unit.lower()))
+    tu_power = _verification_power(tu_scalar_text)
+    znp_power = _verification_power(znp_scalar_text)
     if tu_power and znp_power and tu_power != znp_power:
         mismatches.append(f"Несовпадение мощности: ТУ={tu_power}, ЗнП={znp_power}")
         power_range = any(r["unit"] in {"квт", "мвт", "ква", "мва"} for r in tu_ranges)
@@ -1379,15 +1389,8 @@ def tool_verify_engineering_params(tu_text: str, znp_text: str) -> dict[str, Any
         mismatch_types.append("missing")
 
     # 2. Класс напряжения: кВ регистронезависимо, а одиночная 'В' — только заглавная (не предлог 'в')
-    volt_re = r"(\d+(?:[.,]\d+)?)\s*(?:([кК][вВ])|(В))\b"
-    tu_volt = {
-        (_normalize_number(m[0]), "кв" if m[1] else "в")
-        for m in re.findall(volt_re, tu_scalar_text)
-    }
-    znp_volt = {
-        (_normalize_number(m[0]), "кв" if m[1] else "в")
-        for m in re.findall(volt_re, znp_scalar_text)
-    }
+    tu_volt = _verification_voltage(tu_scalar_text)
+    znp_volt = _verification_voltage(znp_scalar_text)
     if tu_volt and not znp_volt:
         mismatches.append(f"В ЗнП не указано значение напряжения из ТУ ({tu_volt})")
         mismatch_types.append("missing")
@@ -1468,8 +1471,7 @@ def tool_verify_engineering_params(tu_text: str, znp_text: str) -> dict[str, Any
     znp_quantities = _verification_quantities(znp_scalar_text)
     range_uncertain = False
     for required in tu_ranges:
-        candidates = [c for c in znp_ranges + znp_tolerances
-                      if c['unit'] == required['unit'] and _same_parameter_context(required, c)]
+        candidates = _comparable_intervals(required, znp_ranges + znp_tolerances)
         if not candidates or not all(_same_interval(required, c) for c in candidates):
             range_uncertain = True
             break
@@ -1508,8 +1510,7 @@ def tool_verify_engineering_params(tu_text: str, znp_text: str) -> dict[str, Any
         mismatches.append("Числовые параметры относятся к разным объектам")
         mismatch_types.append("object_scope_unknown")
     for required in tu_tolerances:
-        candidates = [c for c in znp_tolerances + znp_ranges
-                      if c['unit'] == required['unit'] and _same_parameter_context(required, c)]
+        candidates = _comparable_intervals(required, znp_tolerances + znp_ranges)
         if candidates and all(_same_interval(required, c) for c in candidates):
             continue
         kind = 'tolerance_scope_unknown'
