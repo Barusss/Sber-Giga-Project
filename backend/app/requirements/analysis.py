@@ -568,9 +568,6 @@ def analyze_project_requirements(
         raise HTTPException(422, "preview_znp_source_id requires test_mode=true")
     if pdf_review and payload.test_mode:
         raise HTTPException(422, f"{TABLE_REVIEW}: используйте полную проверку источников.")
-    if pdf_review and not isinstance(agent, ZnPFirstAgent):
-        agent = ZnPFirstAgent(ai_client=agent.ai, embedder=agent.embedder)
-
     tu_raw = [
         clause
         for clause in _extract_clauses_from_doc(db, tu_doc)
@@ -619,8 +616,6 @@ def analyze_project_requirements(
     }
 
     if payload.test_mode:
-        if not isinstance(agent, ZnPFirstAgent):
-            raise HTTPException(422, "Test mode requires ZnP-first agent")
         return _analyze_test_subset(
             tu_doc, znp_doc, tu_raw, db, agent, progress_callback,
             preview_znp_source_id=payload.preview_znp_source_id,
@@ -631,7 +626,6 @@ def analyze_project_requirements(
     conservative_atoms = []
     atomization_trace = None
     source_coverage = None
-    llm_ledger = None
     znp_fragments = db.scalars(
         select(Fragment)
         .where(Fragment.document_id == znp_doc.id)
@@ -665,80 +659,60 @@ def analyze_project_requirements(
                 "allow_incomplete_sources=true to continue with "
                 "automatic fulfilled verdicts disabled.",
             )
-    if isinstance(agent, ZnPFirstAgent):
-        llm_ledger = TrackedRequirementsLLM(
-            agent.ai,
-            max_calls=settings.requirements_llm_max_calls,
-            atomization_limit=settings.requirements_llm_atomization_calls,
-            targeted_limit=settings.requirements_llm_targeted_calls,
+    llm_ledger = TrackedRequirementsLLM(
+        agent.ai,
+        max_calls=settings.requirements_llm_max_calls,
+        atomization_limit=settings.requirements_llm_atomization_calls,
+        targeted_limit=settings.requirements_llm_targeted_calls,
+    )
+    agent.ai = llm_ledger
+    if znp_fragments:
+        diagnostics.record(
+            "comparison.source_atoms", count=len(original_atoms),
+            max_chars=max((len(a.text) for a in original_atoms), default=0),
         )
-        agent.ai = llm_ledger
-        if znp_fragments:
-            diagnostics.record(
-                "comparison.source_atoms", count=len(original_atoms),
-                max_chars=max((len(a.text) for a in original_atoms), default=0),
+    # Check the first-pass budget before either path can make paid requests.
+    plan = plan_full_run(
+        tu_clauses=tu_raw,
+        znp_source_atoms=len(original_atoms) if znp_fragments else len(znp_raw),
+        atomization_eligible=atomization_workload(original_atoms)["eligible"] if znp_fragments else 0,
+        max_calls=llm_ledger.max_calls,
+        atomization_limit=llm_ledger.phase_limits["atomization"],
+        targeted_limit=llm_ledger.phase_limits["targeted"],
+        matching_batches=agent.max_batches,
+        targeted_enabled=agent.targeted_enabled,
+    )
+    diagnostics.record("comparison.budget_preflight", **plan.as_dict())
+    if plan.blockers:
+        diagnostics.record(
+            "comparison.budget_preflight_refused",
+            blockers=plan.blockers, no_paid_calls=True,
+        )
+        raise HTTPException(status_code=422, detail=plan.refusal_message())
+
+    if znp_fragments:
+        atomization_started = perf_counter()
+        semantic_result = semantic_atomize(original_atoms, agent.ai)
+        atomization_ms = (perf_counter()-atomization_started)*1000
+        conservative_atoms = semantic_result.atoms
+        atomization_trace = semantic_result.trace()
+        diagnostics.record("comparison.atomization_complete", **atomization_trace)
+        znp_raw = [
+            Clause(
+                clause_number=atom.clause_number,
+                text=atom.text,
+                page=atom.sources[0].page,
+                fragment_id=atom.sources[0].fragment_id,
+                fragment_ids=[source.fragment_id for source in atom.sources],
+                section_path=atom.section_path,
+                fragment_text=atom.sources[0].text,
             )
-            # Evaluate affordability before the FIRST paid LLM call.
-            workload = atomization_workload(original_atoms)
-            plan = plan_full_run(
-                tu_clauses=tu_raw,
-                znp_source_atoms=len(original_atoms),
-                atomization_eligible=workload["eligible"],
-                max_calls=llm_ledger.max_calls,
-                atomization_limit=llm_ledger.phase_limits["atomization"],
-                targeted_limit=llm_ledger.phase_limits["targeted"],
-                matching_batches=agent.max_batches,
-                targeted_enabled=agent.targeted_enabled,
+            for atom in conservative_atoms
+        ]
+        if not znp_raw:
+            raise HTTPException(
+                422, "No traceable ZnP statements extracted; check document structure"
             )
-            diagnostics.record("comparison.budget_preflight", **plan.as_dict())
-            if plan.blockers:
-                diagnostics.record(
-                    "comparison.budget_preflight_refused",
-                    blockers=plan.blockers, no_paid_calls=True,
-                )
-                raise HTTPException(status_code=422, detail=plan.refusal_message())
-            atomization_started = perf_counter()
-            semantic_result = semantic_atomize(original_atoms, agent.ai)
-            atomization_ms = (perf_counter()-atomization_started)*1000
-            conservative_atoms = semantic_result.atoms
-            atomization_trace = semantic_result.trace()
-            diagnostics.record("comparison.atomization_complete", **atomization_trace)
-            znp_raw = [
-                Clause(
-                    clause_number=atom.clause_number,
-                    text=atom.text,
-                    page=atom.sources[0].page,
-                    fragment_id=atom.sources[0].fragment_id,
-                    fragment_ids=[source.fragment_id for source in atom.sources],
-                    section_path=atom.section_path,
-                    fragment_text=atom.sources[0].text,
-                )
-                for atom in conservative_atoms
-            ]
-            if not znp_raw:
-                raise HTTPException(
-                    422, "No traceable ZnP statements extracted; check document structure"
-                )
-        else:
-            # Legacy chunk fallback: no semantic atomization, but still check
-            # the full-run global cap before any model call.
-            plan = plan_full_run(
-                tu_clauses=tu_raw,
-                znp_source_atoms=len(znp_raw),
-                atomization_eligible=0,
-                max_calls=llm_ledger.max_calls,
-                atomization_limit=llm_ledger.phase_limits["atomization"],
-                targeted_limit=llm_ledger.phase_limits["targeted"],
-                matching_batches=agent.max_batches,
-                targeted_enabled=agent.targeted_enabled,
-            )
-            diagnostics.record("comparison.budget_preflight", **plan.as_dict())
-            if plan.blockers:
-                diagnostics.record(
-                    "comparison.budget_preflight_refused",
-                    blockers=plan.blockers, no_paid_calls=True,
-                )
-                raise HTTPException(status_code=422, detail=plan.refusal_message())
 
     existing_requirements = db.scalars(
         select(DBTURequirement).where(DBTURequirement.project_id == project_id,
@@ -908,18 +882,17 @@ def analyze_project_requirements(
             )
         )
 
-    if llm_ledger is not None and isinstance(agent, ZnPFirstAgent):
-        llm_ledger.configure_full_run_limits(
-            atom_count=len(znp_schemas),
-            obligation_count=sum(len(build_obligations(item)) for item in tu_schemas),
-            requirement_count=len(tu_schemas),
-            matching_batches=agent.max_batches,
-        )
+    llm_ledger.configure_full_run_limits(
+        atom_count=len(znp_schemas),
+        obligation_count=sum(len(build_obligations(item)) for item in tu_schemas),
+        requirement_count=len(tu_schemas),
+        matching_batches=agent.max_batches,
+    )
 
     diagnostics.record(
         "comparison.verification_start", tu_count=len(tu_schemas),
         znp_count=len(znp_schemas),
-        budget=llm_ledger.trace() if llm_ledger is not None else {},
+        budget=llm_ledger.trace(),
     )
     agent.bind_source_document(znp_doc.id, fragments_by_id)
     verification_started = perf_counter()
@@ -933,7 +906,7 @@ def analyze_project_requirements(
         status_counts=response.stats,
         degraded=bool((response.trace_info or {}).get("degraded")),
         provider_failure_type=(response.trace_info or {}).get("model_failure_kind"),
-        llm_usage=llm_ledger.trace() if llm_ledger is not None else {},
+        llm_usage=llm_ledger.trace(),
     )
     if response.trace_info is None:
         response.trace_info = {}
@@ -942,24 +915,16 @@ def analyze_project_requirements(
         response.trace_info["atomization"] = atomization_trace
         if atomization_trace["degraded"]:
             response.trace_info["degraded"] = True
-    if llm_ledger is not None:
-        response.trace_info["llm_usage"] = llm_ledger.trace()
-        if llm_ledger.trace()["limit_reached"]:
-            response.trace_info["degraded"] = True
+    response.trace_info["llm_usage"] = llm_ledger.trace()
+    if response.trace_info["llm_usage"]["limit_reached"]:
+        response.trace_info["degraded"] = True
     coverage_unreviewed = (
         (response.trace_info.get("comparison_stages") or {})
         .get("coverage", {}).get("unreviewed", 0)
     )
-    if (
-        not payload.test_mode
-        and isinstance(agent, ZnPFirstAgent)
-        and (
-            coverage_unreviewed
-            or response.trace_info.get("model_failure_kind") in {
-                "DeepSeekConnectionError", "DeepSeekAPIError", "DeepSeekResponseError"
-            }
-        )
-    ):
+    if coverage_unreviewed or response.trace_info.get("model_failure_kind") in {
+        "DeepSeekConnectionError", "DeepSeekAPIError", "DeepSeekResponseError"
+    }:
         # Fail before any new result is committed, but preserve diagnostic
         # counters even when the surrounding DB transaction rolls back.
         detail = _report_failed_ai_comparison(
@@ -971,7 +936,7 @@ def analyze_project_requirements(
             "comparison.persistence_blocked",
             failure_kind=response.trace_info.get("model_failure_kind"),
             coverage_unreviewed=coverage_unreviewed,
-            llm_usage=llm_ledger.trace() if llm_ledger is not None else {},
+            llm_usage=llm_ledger.trace(),
         )
         raise HTTPException(
             503,
@@ -1206,7 +1171,7 @@ def analyze_project_requirements(
         agent=(verification_finished-verification_started)*1000,
         result_validation_and_db_preparation=(perf_counter()-verification_finished)*1000,
     )
-    if on_published is not None and not payload.test_mode:
+    if on_published is not None:
         on_published(response, db)
     db.commit()
     return response
