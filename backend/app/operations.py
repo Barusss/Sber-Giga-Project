@@ -27,7 +27,7 @@ from app.core.models import (
     Document, DocumentKind, OperationJob, Project, ReviewState, now,
 )
 from app.documents.parser import extract_blocks
-from app.documents.router import _read_upload, _save_document
+from app.documents.storage import read_upload, save_document
 from app.normatives.extraction import extract_normative_facts
 from app.normatives.verification import DEFAULT_STANDARDS_BATCH, check_document_standards
 from app.requirements.workspace import run_comparison as execute_comparison
@@ -143,7 +143,7 @@ def _run_upload(db: Session, job: OperationJob) -> dict:
         filename=params["filename"], file=BytesIO(data),
         headers=Headers({"content-type": params["mime_type"]}),
     )
-    saved = _save_document(job.project_id, DocumentKind(params["kind"]), upload,
+    saved = save_document(job.project_id, DocumentKind(params["kind"]), upload,
                            data, params["suffix"], blocks, db)
     return {"document_id": saved.id, "filename": saved.filename}
 
@@ -443,7 +443,7 @@ def _enqueue(db: Session, project_id: str, kind: str, params: dict) -> Operation
 @router.post("/projects/{project_id}/operations/upload", status_code=202)
 async def enqueue_upload(project_id: str, kind: DocumentKind = Form(...),
                          file: UploadFile = File(...), db: Session = Depends(get_db)):
-    data, suffix = await _read_upload(project_id, file, db)
+    data, suffix = await read_upload(project_id, file, db)
     temp_id = uuid4().hex
     path = settings.upload_dir / "pending" / f"{temp_id}{suffix}"
     path.parent.mkdir(parents=True, exist_ok=True)
