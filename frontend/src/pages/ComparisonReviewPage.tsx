@@ -2,60 +2,11 @@ import {useEffect, useMemo, useRef, useState} from 'react'
 import {useOperations} from '../operations/OperationsPanel'
 import {Link, useParams, useSearchParams} from 'react-router-dom'
 import {json, request} from '../api/client'
+import type {RequirementStatus as Status, RequirementCheckItem as VerificationItem} from '../api/client'
 import {ComparisonPair, RunSummary} from './ComparisonsPage'
 import {AnalysisConfidence, AnalysisFallbackNotice, AnalysisScoreExplanation} from '../components/AnalysisQuality'
 import type {AnalysisTrace} from '../components/AnalysisQuality'
 
-type Status = 'fulfilled'|'missing'|'needs_review'
-type VerificationItem = {
-  id: string
-  requirement: {id: string; clause_number: string; category: string; text: string}
-  status: Status
-  automatic_status?: Status|null
-  reasoning?: string|null
-  tu_quote?: string|null
-  znp_quote?: string|null
-  matched_clause?: {clause_number: string; text: string}|null
-  validation_details?: {
-    pipeline?: string
-    matches?: Array<{
-      atom_id: string; clause_number: string; relation: string; quote: string
-      reasoning?: string; page?: number|null; fragment_id?: string|null
-      confidence?: number|null; param_check?: {mismatches?: string[]}
-      atom_text?: string; tu_quote?: string; source_phase?: string
-      search_score?: number|null
-    }>
-    obligations?: Array<{id: string; text: string; context: string}>
-    obligation_coverage?: Array<{
-      obligation_id: string; text: string; status: string; reasoning: string
-      evidence_ids?: string[]; checked?: boolean
-    }>
-    contradiction_audit?: {
-      candidates_checked: number
-      confirmed: Array<{atom_id: string; clause_number: string; quote: string; reasoning?: string}>
-      uncertain_atom_ids: string[]
-    }
-    primary_candidate_evaluations?: number
-    ai_model_evaluations?: number
-    validated_links?: number
-    targeted_diagnostics?: {
-      candidates: number; candidates_total?: number; checked: boolean
-      skip_reason?: string|null
-      checked_candidates?: number; unchecked_candidates?: number
-      truncated_responses?: number
-    }
-    candidate_limit_reached?: boolean
-    model_error?: string|null
-    model_reasoning?: string; items?: Array<{
-    item_id: number; text?: string; status?: string
-    evidence?: Array<{clause_number?: string; quote: string}>
-  }>}|null
-  is_confirmed_by_human: boolean
-  human_override_status?: Status|null
-  human_comment?: string|null
-  confidence_score?: number|null
-  method?: string|null
-}
 type AnalysisResult = {
   checked_requirements: VerificationItem[]
   stats: {total: number; fulfilled: number; missing: number; needs_review: number}

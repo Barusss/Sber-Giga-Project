@@ -1,73 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Document, Project, json, request } from '../api/client'
-
-type RequirementStatus = 'fulfilled' | 'missing' | 'needs_review'
-type RequirementCategory =
-  | 'power'
-  | 'reliability'
-  | 'voltage'
-  | 'connection_point'
-  | 'metering'
-  | 'protection'
-  | 'equipment'
-  | 'other'
-
-type TURequirement = {
-  id: string
-  clause_number: string
-  category: RequirementCategory
-  text: string
-  fragment_id?: string | null
-  page?: number | null
-  fragment_text?: string | null
-}
-
-type ZNPClause = {
-  id: string
-  clause_number: string
-  text: string
-  fragment_id?: string | null
-  page?: number | null
-  fragment_text?: string | null
-}
-
-type RequirementCheckItem = {
-  id: string
-  requirement: TURequirement
-  status: RequirementStatus
-  confidence_score: number
-  matched_clause?: ZNPClause | null
-  tu_quote?: string | null
-  znp_quote?: string | null
-  reasoning?: string | null
-  is_confirmed_by_human: boolean
-  human_comment?: string | null
-  human_override_status?: RequirementStatus | null
-  tu_fragment_id?: string | null
-  tu_page?: number | null
-  tu_fragment_text?: string | null
-  znp_fragment_id?: string | null
-  znp_page?: number | null
-  znp_fragment_text?: string | null
-  channels?: string[]
-  method?: string | null
-  validation_details?: {version: number; pipeline?: string
-    matches?: Array<{atom_id: string; clause_number: string; relation: string; quote: string; reasoning?: string; page?: number|null; param_check?: {mismatches?: string[]}}>
-    obligation_coverage?: Array<{
-      obligation_id: string; text: string; status: string; reasoning?: string
-      evidence_ids?: string[]
-    }>
-    contradiction_audit?: {
-      candidates_checked: number
-      confirmed: Array<{atom_id: string; quote: string; clause_number: string; reasoning?: string}>
-      uncertain_atom_ids: string[]
-    }
-    candidate_limit_reached?: boolean; model_error?: string|null
-    model_status?: string; model_reasoning?: string; items?: Array<{
-    item_id: number; text: string; status: string
-    evidence: Array<{document_id?: string; fragment_id?: string; clause_number: string; quote: string; page?: number | null}>
-  }>} | null
-}
+import type { RequirementStatus, RequirementCategory, RequirementCheckItem } from '../api/client'
 
 type RequirementVerification = {
   id: string
@@ -360,19 +293,11 @@ export function RequirementsPage() {
     })
   }
 
-  async function runProjectAnalysis() {
-    if (!selectedProjectId) return
+  async function runAnalysis(payload: unknown, demo: boolean) {
     setBusy(true)
     setError('')
-    setIsDemoMode(false)
+    setIsDemoMode(demo)
     try {
-      const payload: Record<string, unknown> = {
-        project_id: selectedProjectId,
-        force: forceReanalyze,
-      }
-      if (tuDocId) payload.tu_document_id = tuDocId
-      if (znpDocId) payload.znp_document_id = znpDocId
-
       const res = await request<CheckRequirementsResponse>(
         '/requirements/analyze',
         json('POST', payload)
@@ -385,21 +310,19 @@ export function RequirementsPage() {
     }
   }
 
-  async function runDemoAnalysis() {
-    setBusy(true)
-    setError('')
-    setIsDemoMode(true)
-    try {
-      const res = await request<CheckRequirementsResponse>(
-        '/requirements/analyze',
-        json('POST', DEMO_PAYLOAD)
-      )
-      applyResponse(res)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    } finally {
-      setBusy(false)
+  async function runProjectAnalysis() {
+    if (!selectedProjectId) return
+    const payload: Record<string, unknown> = {
+      project_id: selectedProjectId,
+      force: forceReanalyze,
     }
+    if (tuDocId) payload.tu_document_id = tuDocId
+    if (znpDocId) payload.znp_document_id = znpDocId
+    await runAnalysis(payload, false)
+  }
+
+  async function runDemoAnalysis() {
+    await runAnalysis(DEMO_PAYLOAD, true)
   }
 
   async function handleConfirm(item: RequirementCheckItem, newStatus: RequirementStatus) {

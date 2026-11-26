@@ -7,6 +7,94 @@ export type Evidence = {document_id:string;znp_document_id?:string|null;fragment
 export type Finding = {id:string;project_id:string;module:string;type:string;severity:string;explanation:string;suggested_action:string|null;evidence:Evidence[];review_status:'pending'|'accepted'|'rejected'}
 export type Normative = {id:string;code:string;title:string;status:'active'|'obsolete'|'unknown';replacement?:string|null;source_url?:string|null;registry_status?:string|null;checked_at?:string|null;updated_at?:string|null}
 
+export type RequirementStatus = 'fulfilled' | 'missing' | 'needs_review'
+export type RequirementCategory =
+  | 'power'
+  | 'reliability'
+  | 'voltage'
+  | 'connection_point'
+  | 'metering'
+  | 'protection'
+  | 'equipment'
+  | 'other'
+
+export type TURequirement = {
+  id: string
+  clause_number: string
+  category: RequirementCategory
+  text: string
+  fragment_id?: string | null
+  page?: number | null
+  fragment_text?: string | null
+}
+
+export type ZNPClause = {
+  id: string
+  clause_number: string
+  text: string
+  fragment_id?: string | null
+  page?: number | null
+  fragment_text?: string | null
+}
+
+export type RequirementCheckItem = {
+  id: string
+  requirement: TURequirement
+  status: RequirementStatus
+  automatic_status?: RequirementStatus | null
+  confidence_score: number
+  matched_clause?: ZNPClause | null
+  tu_quote?: string | null
+  znp_quote?: string | null
+  reasoning?: string | null
+  is_confirmed_by_human: boolean
+  human_comment?: string | null
+  human_override_status?: RequirementStatus | null
+  tu_fragment_id?: string | null
+  tu_page?: number | null
+  tu_fragment_text?: string | null
+  znp_fragment_id?: string | null
+  znp_page?: number | null
+  znp_fragment_text?: string | null
+  channels?: string[]
+  method?: string | null
+  validation_details?: {
+    version?: number
+    pipeline?: string
+    matches?: Array<{
+      atom_id: string; clause_number: string; relation: string; quote: string
+      reasoning?: string; page?: number|null; fragment_id?: string|null
+      confidence?: number|null; param_check?: {mismatches?: string[]}
+      atom_text?: string; tu_quote?: string; source_phase?: string
+      search_score?: number|null
+    }>
+    obligations?: Array<{id: string; text: string; context: string}>
+    obligation_coverage?: Array<{
+      obligation_id: string; text: string; status: string; reasoning: string
+      evidence_ids?: string[]; checked?: boolean
+    }>
+    contradiction_audit?: {
+      candidates_checked: number
+      confirmed: Array<{atom_id: string; clause_number: string; quote: string; reasoning?: string}>
+      uncertain_atom_ids: string[]
+    }
+    primary_candidate_evaluations?: number
+    ai_model_evaluations?: number
+    validated_links?: number
+    targeted_diagnostics?: {
+      candidates: number; candidates_total?: number; checked: boolean
+      skip_reason?: string|null
+      checked_candidates?: number; unchecked_candidates?: number
+      truncated_responses?: number
+    }
+    candidate_limit_reached?: boolean
+    model_error?: string|null
+    model_status?: string; model_reasoning?: string; items?: Array<{
+    item_id: number; text: string; status: string
+    evidence: Array<{document_id?: string; fragment_id?: string; clause_number: string; quote: string; page?: number | null}>
+  }>}|null
+}
+
 export async function request<T>(path:string, options:RequestInit={}):Promise<T> {
   const method = options.method ?? 'GET'
   const operation = beginDiagnostic(`${method} ${path.split('?')[0]}`, 'Запрос отправлен')
